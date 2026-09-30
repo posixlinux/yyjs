@@ -18,7 +18,7 @@ describe("HTTP happy path", () => {
     expect(schema.properties.company.properties.exchange).toMatchObject({ const: "KOSPI" });
   });
 
-  it("has no manual dataset ingestion or manual mode", async () => {
+  it("rejects mode=manual and has no dataset ingestion route", async () => {
     const { app } = await setup({}, DEMO_NOW);
     expect((await app.inject({ method: "POST", url: "/v1/datasets", payload: {} })).statusCode).toBe(404);
     const res = await analyse(app, { ticker: "005930", asOf: "2026-09-28", mode: "manual" });
