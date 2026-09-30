@@ -689,6 +689,46 @@ describe("ZIP handling", () => {
     try { unzip(zip({ a: "1", b: "1", c: "1" }), { ...limits, maxEntries: 2 }); } catch (e) { code = (e as { code: string }).code; }
     expect(code).toBe("zip_too_large");
   });
+  const missing = (rcepts: string[]): Handler => (u) =>
+    u.pathname === "/api/document.xml" && rcepts.includes(u.searchParams.get("rcept_no")!)
+      ? new Response('<?xml version="1.0" encoding="UTF-8"?><result><status>014</status><message>파일이 존재하지 않습니다.</message></result>')
+      : undefined;
+  const docCalls = (f: ReturnType<typeof fake>) => f.calls.filter((u) => u.pathname === "/api/document.xml").map((u) => u.searchParams.get("rcept_no"));
+
+  it("replaces a document DART no longer has (status 014) with the same period's other receipt", async () => {
+    const f = fake(either(naverHandler, missing(["20260601000002"]), dartHandler()));
+    const e = await run(f, withKey);
+    expect(docCalls(f)).toContain("20260515000003"); // the original the correction superseded
+    const i = e.issues.find((x) => x.code === "document_unavailable");
+    expect(i).toMatchObject({ provider: "dart", severity: "warning" });
+    expect(i?.message).toContain("used document 20260515000003 instead");
+    expect(e.issues.some((x) => x.code === "upstream_error")).toBe(false);
+    // the substitute is listed next to its period so its excerpts stay attributable
+    expect(e.filings.list.map((x) => x.rceptNo)).toEqual(["20260814000004", "20260601000002", "20260515000003", "20260310000001", "20251114000001"]);
+    expect(e.filings.excerpts.some((x) => x.rceptNo === "20260515000003")).toBe(true);
+    expect(e.filings.excerpts.some((x) => x.rceptNo === "20260601000002")).toBe(false);
+  });
+
+  it("falls back to the next unfetched filing when a period has no other receipt", async () => {
+    const f = fake(either(naverHandler, missing(["20260814000004"]), dartHandler()));
+    const e = await run(f, { ...withKey, maxDocuments: 1 });
+    expect(docCalls(f)).toEqual(["20260814000004", "20260601000002"]);
+    expect(e.issues.find((x) => x.code === "document_unavailable")?.message).toContain("used document 20260601000002 instead");
+    expect(e.filings.excerpts.some((x) => x.rceptNo === "20260601000002")).toBe(true);
+  });
+
+  it("reports an error when no substitute document exists", async () => {
+    const all = ["20260814000004", "20260601000002", "20260515000003", "20260310000001", "20251114000001"];
+    const f = fake(either(naverHandler, missing(all), dartHandler()));
+    const e = await run(f, withKey);
+    const i = e.issues.filter((x) => x.code === "document_unavailable");
+    expect(i.length).toBeGreaterThan(0);
+    expect(i.every((x) => x.message.includes("no substitute document was available") || x.message.includes("instead"))).toBe(true);
+    expect(i.some((x) => x.severity === "error")).toBe(true);
+    expect(new Set(docCalls(f)).size).toBe(docCalls(f).length); // every receipt is fetched at most once
+    expect(e.filings.statements.length).toBeGreaterThan(0);
+  });
+
   it("surfaces a corrupt document ZIP as a DART issue", async () => {
     const f = fake(either(naverHandler, (u) => (u.pathname === "/api/document.xml" ? new Response(zip({ "x.xml": "hello" }).subarray(0, 40)) : undefined), dartHandler()));
     const e = await run(f, { ...withKey, maxDocuments: 1 });

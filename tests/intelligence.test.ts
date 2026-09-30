@@ -455,6 +455,8 @@ describe("provider failures", () => {
     ["schema violation", ok(JSON.stringify({ subtype: "success", result: JSON.stringify({ dataset: 1 }) })), "SCHEMA_INVALID"],
     ["permission denials", ok(JSON.stringify({ subtype: "success", result: "{}", permission_denials: [{ tool_name: "Bash" }] })), "TOOL_USE_DETECTED"],
     ["output limit", { ...ok(""), outputLimitExceeded: true, exitCode: null }, "OUTPUT_LIMIT"],
+    ["output-token cap", ok(JSON.stringify({ subtype: "success", is_error: false, result: "API Error: Claude's response exceeded the 32000 output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable." })), "OUTPUT_LIMIT"],
+    ["max_tokens stop", ok(JSON.stringify({ subtype: "success", stop_reason: "max_tokens", result: '{"dataset":{"company":' })), "OUTPUT_LIMIT"],
     ["exit code", { ...ok(""), exitCode: 2, stderr: "boom" }, "EXIT_NONZERO"],
   ])("claude %s -> %s: not an expiry, so agy is not asked to take over", async (_n, res, code) => {
     let agyCalls = 0;
@@ -465,6 +467,14 @@ describe("provider failures", () => {
     expect(r.dataset).toBeNull();
     expect(r.unavailable).toEqual([]);
     expect(agyCalls).toBe(0);
+  });
+
+  it("BAD_JSON describes the reply's shape (cut off vs prose) without quoting it", async () => {
+    const r = await run(ok(JSON.stringify({ subtype: "success", result: '{"dataset":{"company":{"name":"비밀 원문' })));
+    expect(r.providers.claude.code).toBe("BAD_JSON");
+    expect(r.providers.claude.message).toContain("startsWithBrace=true endsWithBrace=false");
+    expect(r.providers.claude.message).toContain("cut off");
+    expect(r.providers.claude.message).not.toContain("비밀");
   });
 
   it("claude draft TIMEOUT falls back to a healthy agy for the draft, and claude is never called again as auditor in that run", async () => {

@@ -155,6 +155,7 @@ Claude와 agy 중 하나가 만료(쿼터/로그인/CLI 없음)되어도 검사 
 - 작업 결과 `error.code`가 `JOB_TIMEOUT`이면 **전체 작업**(수집+모델 호출 전체)이 `RESEARCH_JOB_TIMEOUT_MS`(기본은 설정하지 않으며, `INTELLIGENCE_TIMEOUT_MS × 최대 7회 호출 + 300000ms 여유`로 자동 계산됨— 기본값끼리는 4500000ms=75분)를 넘긴 것입니다. 이 둘은 서로 다른 메커니즘이며 서버 로그에서 `[intel]`/`[config]` `DIAGNOSTIC` 줄로 둘의 관계(설정된 예산이 실제 필요한 값보다 작은지)를 알려줍니다.
 - **`INTELLIGENCE_TIMEOUT_MS`는 절대 자동으로 줄어들지 않습니다.** 예전 버전은 `RESEARCH_JOB_TIMEOUT_MS`의 옛 고정 기본값(900000ms)과 맞지 않으면 개별 호출 타임아웃을 몰래 줄였는데(예: 600000ms를 280000ms로), 지금은 그러지 않고 서버 시작/실행 로그에 경고만 남깁니다. `RESEARCH_JOB_TIMEOUT_MS`를 직접 설정했다면 항상 그 값 그대로 적용됩니다.
 - `INTELLIGENCE_TIMEOUT_MS`를 바꾸면(`.env`) **서버를 재시작**해야 적용됩니다(`RESEARCH_JOB_TIMEOUT_MS`를 명시하지 않았다면 재시작 시 새 기본 작업 예산도 함께 다시 계산됩니다).
+- `BAD_JSON`은 모델 호출은 성공했지만 응답에서 JSON 객체를 꺼내지 못한 경우입니다. 로그의 `reason=`에 응답의 형태만 남습니다(내용은 남기지 않음). `startsWithBrace=true endsWithBrace=false`와 `Unterminated string`/`Unexpected end`가 함께 보이면 응답이 중간에 잘린 것이고, `startsWithBrace=false`면 모델이 JSON 대신 문장으로 답한 것입니다. Claude Code가 출력 토큰 한도에 걸린 것이 확인되면 `OUTPUT_LIMIT`으로 보고됩니다. 이때는 `.env`에 `CLAUDE_CODE_MAX_OUTPUT_TOKENS`(예: `64000`)를 설정하고 서버를 재시작하세요.
 - 모델에 보내는 근거 문서 크기는 `INTELLIGENCE_EVIDENCE_CHAR_BUDGET`(기본 90000자)로 제한되지만, 문서 종류(시세, 재무제표, 사업의 내용, 표, 참고 지표, 뉴스)별로 최소 배분을 보장하므로 재무제표가 많다고 사업 서술·주식수 근거가 사라지지 않습니다. 원본 수집 데이터(`GET /v1/research/:id`의 `evidence` 필드)는 잘리지 않습니다.
 
 ### 추정치와 경쟁사 합계

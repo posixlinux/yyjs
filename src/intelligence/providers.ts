@@ -148,6 +148,26 @@ export const extractJson = (text: string): unknown => {
   return undefined;
 };
 
+/** Shape-only description of a reply that held no parsable JSON (never its content): enough to tell a reply cut off
+ * mid-object (starts with "{", no closing "}", "Unterminated string" / "Unexpected end") from prose or a syntax slip. */
+export const badJsonDetail = (text: string): string => {
+  const t = text.trim();
+  const body = /^```(?:json)?\s*([\s\S]*?)\s*(?:```)?$/i.exec(t)?.[1] ?? t;
+  let parseError = "";
+  try {
+    JSON.parse(body.slice(Math.max(0, body.indexOf("{"))));
+  } catch (e) {
+    parseError = sanitize(String((e as Error)?.message ?? e).replace(/\s*\(line \d+ column \d+\)/g, "").replace(/,? ".*is not valid JSON$/s, ""), undefined, 100);
+  }
+  const shape = `replyChars=${t.length} startsWithBrace=${body.startsWith("{")} endsWithBrace=${body.endsWith("}")} fenced=${t.startsWith("```")}`;
+  const truncated = body.startsWith("{") && !body.endsWith("}") ? " -- the reply looks cut off mid-object (output length limit?)" : "";
+  return `${shape}${parseError ? ` parseError=${JSON.stringify(parseError)}` : ""}${truncated}`;
+};
+
+// Claude Code ends a turn that hits its output-token cap with this text as a "successful" result (no is_error), so
+// without this check the model's truncated work surfaces only as a vague BAD_JSON.
+const OUTPUT_TOKEN_CAP_RE = /exceeded the \d+ output token maximum/i;
+
 type Envelope = { text: string } | { code: string; message: string; cooldownMs?: number };
 
 /** Quota / login problems reported inside an envelope (agy and Claude both exit 0 for some of them). */
@@ -167,6 +187,11 @@ const claudeEnvelope = (raw: string): Envelope => {
   if (Array.isArray(e.permission_denials) && e.permission_denials.length > 0)
     return { code: "TOOL_USE_DETECTED", message: "claude attempted a tool call; result discarded" };
   if (typeof e.result !== "string") return { code: "BAD_ENVELOPE", message: "claude envelope has no string result" };
+  if (e.stop_reason === "max_tokens" || (OUTPUT_TOKEN_CAP_RE.test(e.result) && !e.result.trimStart().startsWith("{")))
+    return {
+      code: "OUTPUT_LIMIT",
+      message: "claude reply hit Claude Code's output-token maximum and was cut off; raise CLAUDE_CODE_MAX_OUTPUT_TOKENS in the server environment",
+    };
   return { text: e.result };
 };
 
@@ -204,7 +229,9 @@ export async function callProvider<S extends z.ZodType>(
   const outcome = await callProviderInner(provider, cfg, prompt, schema, promptChars, promptBytes);
   console.log(
     `[intel/${provider}/${stage}] chars=${promptChars} bytes=${promptBytes} timeoutMs=${cfg.timeoutMs} ` +
-    `durationMs=${outcome.status.durationMs} status=${outcome.status.status} code=${outcome.status.code}`,
+    `durationMs=${outcome.status.durationMs} status=${outcome.status.status} code=${outcome.status.code}` +
+    // These messages carry only sizes/shape and fixed text, never prompt or reply content.
+    (outcome.status.code === "BAD_JSON" || outcome.status.code === "OUTPUT_LIMIT" ? ` reason=${JSON.stringify(outcome.status.message)}` : ""),
   );
   return outcome;
 }
@@ -255,7 +282,7 @@ async function callProviderInner<S extends z.ZodType>(
     if ("code" in env) return { ...fail(provider, env.code, env.message, t0), cooldownMs: env.cooldownMs };
 
     const json = extractJson(env.text);
-    if (json === undefined) return fail(provider, "BAD_JSON", `${provider} reply did not contain a JSON object`, t0);
+    if (json === undefined) return fail(provider, "BAD_JSON", `${provider} reply did not contain a JSON object (${badJsonDetail(env.text)})`, t0);
     const parsed = schema.safeParse(json);
     if (!parsed.success) {
       const first = parsed.error.issues[0];
