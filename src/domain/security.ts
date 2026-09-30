@@ -35,20 +35,24 @@ const FUND_INDUSTRY = /^6420\d?$/;
 export function classifySecurity(f: SecurityFacts): SecurityRejection[] {
   const out: SecurityRejection[] = [];
   const names = (f.names ?? []).map((n) => (n ?? "").trim()).filter(Boolean);
-  const named = (re: RegExp) => names.some((n) => re.test(n));
+  // The matching name is quoted in the message so a false positive can be traced to the exact source string.
+  const named = (re: RegExp) => names.find((n) => re.test(n));
+  const by = (n: string) => ` (matched name "${n.slice(0, 80)}")`;
+  let hit: string | undefined;
 
   if (f.endType && f.endType.toLowerCase() !== "stock")
     out.push({ code: /^et[fn]$/i.test(f.endType) ? "ETF_ETN" : "NON_STOCK", message: `Instrument type "${f.endType}" is not a common stock` });
-  else if (named(ETF_NAME)) out.push({ code: "ETF_ETN", message: "Name indicates an ETF/ETN" });
+  else if ((hit = named(ETF_NAME))) out.push({ code: "ETF_ETN", message: `Name indicates an ETF/ETN${by(hit)}` });
 
   if ((f.checkTickerSuffix ?? true) && /^\d{6}$/.test(f.ticker) && !f.ticker.endsWith("0"))
     out.push({ code: "PREFERRED_STOCK", message: `Ticker ${f.ticker} does not end in 0, which marks a preferred (or other non-common) share class` });
-  else if (named(PREFERRED_NAME)) out.push({ code: "PREFERRED_STOCK", message: "Name indicates a preferred share (우선주)" });
+  else if ((hit = named(PREFERRED_NAME))) out.push({ code: "PREFERRED_STOCK", message: `Name indicates a preferred share (우선주)${by(hit)}` });
 
-  if (named(REIT_NAME)) out.push({ code: "REIT", message: "Name indicates a REIT (부동산투자회사/리츠)" });
-  if (named(INFRA_NAME) || (f.industryCode && FUND_INDUSTRY.test(f.industryCode))) out.push({ code: "INFRA_FUND", message: "Listed infrastructure/investment fund, not an operating company" });
-  if (named(SPAC_NAME)) out.push({ code: "SPAC", message: "Name indicates a special purpose acquisition company (스팩)" });
-  if (named(SHIP_NAME)) out.push({ code: "SHIP_FUND", message: "Name indicates a ship investment company (선박투자회사)" });
+  if ((hit = named(REIT_NAME))) out.push({ code: "REIT", message: `Name indicates a REIT (부동산투자회사/리츠)${by(hit)}` });
+  if ((hit = named(INFRA_NAME))) out.push({ code: "INFRA_FUND", message: `Listed infrastructure/investment fund, not an operating company${by(hit)}` });
+  else if (f.industryCode && FUND_INDUSTRY.test(f.industryCode)) out.push({ code: "INFRA_FUND", message: `Listed infrastructure/investment fund, not an operating company (KSIC ${f.industryCode})` });
+  if ((hit = named(SPAC_NAME))) out.push({ code: "SPAC", message: `Name indicates a special purpose acquisition company (스팩)${by(hit)}` });
+  if ((hit = named(SHIP_NAME))) out.push({ code: "SHIP_FUND", message: `Name indicates a ship investment company (선박투자회사)${by(hit)}` });
   return out;
 }
 

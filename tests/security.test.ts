@@ -99,4 +99,9 @@ describe("collector common-stock gate", () => {
     expect(e.issues.some((i) => i.code === "not_common_stock")).toBe(false);
     expect(e.market.quote?.close).toBe(71200);
   });
+
+  it("names the source string that triggered a rejection", () => {
+    const [r] = classifySecurity({ ticker: "100000", names: ["예시전자", "Hana Financial SPAC No.25"] });
+    expect(r?.message).toContain('matched name "Hana Financial SPAC No.25"');
+  });
 });
