@@ -222,6 +222,8 @@ export function extractDocument(xml: string, customBudget: PartialBudget = {}): 
 
 // ---- metric / product candidates (never verified, never converted) ----
 
+/** Market-research firms whose figures Korean press commonly quotes. */
+export const RESEARCH_FIRMS = /트렌드포스|TrendForce|옴디아|Omdia|카운터포인트|Counterpoint|IDC|가트너|Gartner|SNE\s*리서치|SNE\s*Research|테크인사이츠|TechInsights|욜|Yole|WSTS|SEMI|스트래티지\s*애널리틱스|Strategy\s*Analytics|마크라인즈|MarkLines|프리시던스|Precedence|포춘\s*비즈니스|Fortune\s*Business|마켓츠앤마켓츠|MarketsandMarkets|디스플레이서치|유비리서치|IHS|S&P\s*글로벌|캐널리스|Canalys|시너지\s*리서치|Synergy/i;
 const SHARE_KW = /점유율|점유|market\s*share/i;
 const SIZE_KW = /시장\s*규모|시장규모|market\s*size|시장은|시장의\s*크기/i;
 const GROWTH_KW = /성장률|cagr|성장/i;
@@ -248,12 +250,16 @@ function measureOf(s: string): "revenue" | "volume" | "unspecified" {
   return rev === vol ? "unspecified" : rev ? "revenue" : "volume";
 }
 
-export function extractMetrics(text: string, source: SourceLocator, max = 60): MetricCandidate[] {
-  const out: MetricCandidate[] = [];
+/** News wording for a market total: "글로벌 D램 매출", "전 세계 파운드리 시장 매출은", "세계 시장은 ...". */
+const NEWS_SIZE_KW = /(글로벌|세계|전\s*세계|전체|업계)\s*[^\s,.]{0,12}\s*(시장\s*)?(매출|규모|매출액)/;
+
+export function extractMetrics<S = SourceLocator>(text: string, source: S, max = 60, opts: { news?: boolean } = {}): MetricCandidate<S>[] {
+  const out: MetricCandidate<S>[] = [];
   const sentences = text.split(/\n|(?<=[.!?。])\s+/).map(collapse).filter((x) => x.length > 5);
   for (const sent of sentences) {
     const context = clip(sent, 300);
-    const base = { context, source, verificationStatus: "candidate" as const };
+    const cites = opts.news ? (RESEARCH_FIRMS.exec(sent)?.[0] ?? null) : undefined;
+    const base = { context, source, verificationStatus: "candidate" as const, ...(cites !== undefined && { cites }) };
     const label = (idx: number) => clip(sent.slice(Math.max(0, idx - 40), idx).trim(), 60);
     const period = PERIOD_HINT.exec(sent)?.[0] ?? null;
     if (SHARE_KW.test(sent) || GROWTH_KW.test(sent)) {
@@ -276,7 +282,7 @@ export function extractMetrics(text: string, source: SourceLocator, max = 60): M
         });
       }
     }
-    if (SIZE_KW.test(sent)) {
+    if (SIZE_KW.test(sent) || (opts.news && NEWS_SIZE_KW.test(sent))) {
       for (const m of [...sent.matchAll(MONEY)].slice(0, 5)) {
         out.push({
           ...base,

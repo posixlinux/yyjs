@@ -879,12 +879,30 @@ describe("evidence documents", () => {
     const items = Array.from({ length: 14 }, (_, i) => news(String(100 + i), `일반 주가 ${i}`, "주가 등락"));
     items.push(news("999", "반도체 시장 점유율 성장", "짧음", { articleText: "글로벌 시장 규모 점유율 성장 전망 ".repeat(20), articleTruncated: true, publishedAt: "2026-01-01T09:00:00+09:00" }));
     const docs = buildDocuments(evidence({ market: { news: items } })).documents.filter((d) => d.id.startsWith("news-"));
-    expect(docs.length).toBeLessThanOrEqual(10);
+    expect(docs.length).toBeLessThanOrEqual(12);
     expect(docs[0]!.id).toBe("news-n-999"); // older, but about the product market => first
-    expect(docs[0]!.text).toContain("기사 본문 발췌(잘림)");
+    expect(docs[0]!.text).toContain("기사 본문 발췌(수치 문단 위주로 잘림)");
     expect(docs[0]!.text).toContain("글로벌 시장 규모");
     expect(docs[1]!.text).toContain("짧은 스니펫만 확보");
     expect(docs[0]!.text).toContain("검증되지 않은 보도");
+  });
+
+  it("puts market-report articles first, cuts long bodies to figure paragraphs and lists the extracted figures", () => {
+    const url = "https://n.news.naver.com/mnews/article/001/0000000777";
+    const long = ["리드 문단입니다.", ...Array.from({ length: 200 }, (_, i) => `무관한 문단 ${i} 입니다. 날씨가 좋았다.`), "트렌드포스에 따르면 2분기 글로벌 D램 매출은 250억 달러다.", "삼성전자 점유율은 40.5%다."].join("\n");
+    const report = { id: "777", title: "D램 시장 보고서", snippet: "짧음", publishedAt: "2025-12-01T09:00:00+09:00", officeName: null, url, originalUrl: null, origin: "naver-search" as const, query: "DRAM 점유율 매출 분기", topic: "market" as const, articleText: long };
+    const src = { newsId: "777", url, title: report.title, publishedAt: report.publishedAt };
+    const ev = evidence({ market: { searchNews: [report], newsMetricCandidates: [
+      { kind: "market_size", label: "글로벌 D램 매출은", rawText: "250억 달러", value: 250, unit: "달러", scale: "억", measure: null, basis: "quarterly", periodHint: "2분기", context: "", cites: "트렌드포스", source: src, verificationStatus: "candidate" },
+    ] } });
+    const docs = buildDocuments(ev).documents.filter((d) => d.id.startsWith("news-"));
+    expect(docs[0]!.id).toBe("news-s-777"); // older than the stock news item but carries market figures
+    expect(docs[0]!.text).toContain("기사 본문 발췌(수치 문단 위주로 잘림)");
+    expect(docs[0]!.text).toContain("[검색어: DRAM 점유율 매출 분기]");
+    expect(docs[0]!.text).toContain("리드 문단입니다.");
+    expect(docs[0]!.text).toContain("250억 달러다.");
+    expect(docs[0]!.text).not.toContain("무관한 문단 199");
+    expect(docs[0]!.text).toContain("[시장 규모/quarterly] 글로벌 D램 매출은 … 250억 달러 (2분기) · 인용: 트렌드포스");
   });
 
   it("maps DART excerpts/tables to the actual receipt URL and receipt date, with unverified candidates labelled", () => {

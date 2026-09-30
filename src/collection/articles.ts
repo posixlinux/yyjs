@@ -1,6 +1,7 @@
 import type { HttpClient } from "./http.js";
 import { CollectionError, issue } from "./types.js";
 import type { CollectionIssue, NewsItem } from "./types.js";
+import { RESEARCH_FIRMS } from "./extract.js";
 import { collapse, decodeEntities, kstDate, mapLimit } from "./text.js";
 import type { AsOf } from "./text.js";
 
@@ -82,22 +83,38 @@ function score(item: NewsItem, extra: string[]): number {
 }
 
 /**
+ * Rank for market-report articles: a named research firm, market-size / share wording and printed figures
+ * (money amounts, percentages, quarters) in the title or snippet.
+ */
+export function marketArticleScore(item: NewsItem): number {
+  const hay = `${item.title} ${item.snippet}`;
+  return (RESEARCH_FIRMS.test(hay) ? 4 : 0)
+    + (/점유율|market\s*share/i.test(hay) ? 2 : 0)
+    + (/시장\s*규모|시장규모|(글로벌|세계|전\s*세계)\s*\S{0,12}\s*(시장\s*)?매출/.test(hay) ? 2 : 0)
+    + (/\d[\d,.]*\s*(조|억|만)?\s*(달러|원|위안|엔)/.test(hay) ? 1 : 0)
+    + (/\d+(\.\d+)?\s*%/.test(hay) ? 1 : 0)
+    + (/\d\s*분기|Q[1-4]/.test(hay) ? 1 : 0);
+}
+
+/**
  * Fetches up to `max` article bodies (most relevant first, then most recent) and sets articleText on the items.
  * Each failure is isolated: the item keeps its snippet and a warning issue is returned.
  */
 export async function enrichArticles(
   items: NewsItem[],
-  o: { http: HttpClient; asOf: AsOf; max: number; keywords: string[]; ttlMs: number },
+  o: { http: HttpClient; asOf: AsOf; max: number; keywords: string[]; ttlMs: number; rank?: (item: NewsItem) => number; tried?: Set<string> },
 ): Promise<CollectionIssue[]> {
   const issues: CollectionIssue[] = [];
   if (o.max <= 0) return issues;
   const extra = o.keywords.map((k) => k.toLowerCase()).filter((k) => k.length >= 2);
-  const seen = new Set<string>();
+  const seen = new Set<string>(o.tried ?? []); // URLs an earlier pass already tried (success or failure)
   const picked = items
-    .map((item) => ({ item, url: articleFetchUrl(item), score: score(item, extra) }))
+    .filter((item) => item.articleText === undefined) // already fetched by an earlier pass
+    .map((item) => ({ item, url: articleFetchUrl(item), score: o.rank ? o.rank(item) : score(item, extra) }))
     .filter((x): x is { item: NewsItem; url: string; score: number } => !!x.url && !seen.has(x.url) && !!seen.add(x.url))
     .sort((a, b) => b.score - a.score || Date.parse(b.item.publishedAt) - Date.parse(a.item.publishedAt))
     .slice(0, o.max);
+  for (const p of picked) o.tried?.add(p.url);
   await mapLimit(picked, 2, async ({ item, url }) => {
     const warn = (code: string, message: string) => issues.push(issue("naver", code, `Article ${item.id}: ${message}`, "warning"));
     try {
