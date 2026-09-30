@@ -21,9 +21,13 @@ export type SecurityFacts = {
 // a six-digit numeric common-stock code ends in 0.
 const PREFERRED_NAME = /(?:\d우[ABC]?|우[ABC]|우\(전환\)|우선주)$|\(우\)/;
 const ETF_NAME = /\b(?:ETF|ETN)\b|^(?:KODEX|TIGER|KBSTAR|ARIRANG|HANARO|KOSEF)\b|상장지수/;
-const REIT_NAME = /리츠|REITs?\b|부동산투자회사|부동산투자신탁|위탁관리|기업구조조정부동산/i;
-const INFRA_NAME = /인프라(?:투융자|펀드)|투융자회사|사회기반시설|인프라$/; // "맥쿼리인프라"-style listed funds
-const SPAC_NAME = /스팩|SPAC|기업인수목적/i;
+// English tokens are matched as whole words only: DART's English legal names are screened too, and a bare
+// substring match rejected operating companies ("Hanwha AeroSPACe" looked like a SPAC).
+const REIT_NAME = /리츠|\bREITs?\b|부동산투자회사|부동산투자신탁|위탁관리|기업구조조정부동산/i;
+// Listed infrastructure funds by legal-name wording; the short name "맥쿼리인프라" is listed explicitly instead of any
+// name ending in "인프라", which would also reject operating companies. DART's KSIC 6420x catches the rest.
+const INFRA_NAME = /인프라(?:투융자|펀드)|투융자회사|사회기반시설|^맥쿼리인프라$/;
+const SPAC_NAME = /스팩|기업인수목적|\bSPAC\b|\bSpecial Purpose Acquisition\b/i;
 const SHIP_NAME = /선박투자회사/;
 // KSIC 6420x: trusts & collective investment vehicles (e.g. Macquarie Korea Infrastructure Fund).
 const FUND_INDUSTRY = /^6420\d?$/;
