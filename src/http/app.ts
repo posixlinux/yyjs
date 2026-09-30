@@ -20,7 +20,6 @@ const TickerParam = z.object({ ticker: z.string().regex(/^\d{6}$/, "six-digit KO
 const IdParam = z.object({ id: z.uuid() });
 // Long-poll: ?wait=<seconds, 0..60> holds a queued/running job's status request until it finishes (or the wait ends).
 const WaitQuery = z.object({ wait: z.coerce.number().int().min(0).max(60).optional() });
-const ModeQuery = z.enum(["demo", "manual"]).optional();
 
 export function buildApp(
   service: Service,
@@ -30,14 +29,14 @@ export function buildApp(
   strategy?: StrategyService,
 ): FastifyInstance {
   const app = Fastify({
-    bodyLimit: 1_000_000, // datasets are small; oversize -> 413
+    bodyLimit: 1_000_000, // requests are small; oversize -> 413
     logger: config.logLevel === "silent" ? false : { level: config.logLevel, redact: ["req.headers.x-api-key", "req.headers.authorization"] },
   });
   app.addHook("onClose", async () => {
     await research.close(); // abort running jobs, fail queued ones
   });
 
-  // API_KEY (when configured) protects data mutation and every expensive/public-collection route and its results.
+  // API_KEY (when configured) protects every expensive/public-collection route, its results and strategy records.
   const requireKey = (headers: Record<string, unknown>) => {
     if (!config.apiKey) return;
     const given = headers["x-api-key"];
@@ -69,7 +68,7 @@ export function buildApp(
     status: "ok",
     modelVersion: MODEL_VERSION,
     demoEnabled: config.demoEnabled,
-    apiKeyRequired: !!config.apiKey, // for dataset mutation and public analysis/research jobs
+    apiKeyRequired: !!config.apiKey, // for public analysis/research jobs and strategy records
     jobs: research.jobs.stats(),
     capabilities: config.capabilities ?? {}, // booleans only, e.g. dartConfigured; never key material
   }));
@@ -106,22 +105,22 @@ export function buildApp(
   });
 
   app.get("/v1/schema", async () => ({
-    note: "JSON Schema for POST /v1/datasets. Cross-field rules (consecutive quarters, coverage, share bounds, currency match, source dates) are enforced server-side and reported as 422 issues.",
+    note: "JSON Schema of the company dataset (result.research.draftDataset.dataset of a public analysis job). Cross-field rules (consecutive quarters, coverage, share bounds, currency match, source dates) are enforced server-side.",
     schema: z.toJSONSchema(DatasetSchema, { unrepresentable: "any" }),
   }));
 
+  // Bundled demo fixtures only (fictional data).
   app.get("/v1/companies", async (req) => {
-    const q = z.object({ query: z.string().max(100).optional(), mode: ModeQuery }).parse(req.query);
-    return { companies: await service.listCompanies(q.query, q.mode) };
+    const q = z.object({ query: z.string().max(100).optional() }).parse(req.query);
+    return { companies: await service.listCompanies(q.query) };
   });
 
   app.get("/v1/companies/:ticker", async (req) => {
     const { ticker } = TickerParam.parse(req.params);
-    const mode = ModeQuery.parse((req.query as { mode?: string }).mode) ?? "manual";
-    return service.getCompany(ticker, mode);
+    return service.getCompany(ticker, "demo");
   });
 
-  // mode=public (default): asynchronous job (202). mode=demo|manual: synchronous deterministic analysis of stored data.
+  // mode=public (default): asynchronous job (202). mode=demo: synchronous deterministic analysis of a demo fixture.
   app.post("/v1/analyses", async (req, reply) => {
     const body = AnalysisRequestSchema.parse(req.body);
     if (body.mode !== "public") {
@@ -151,11 +150,6 @@ export function buildApp(
     requireKey(req.headers);
     const { wait } = WaitQuery.parse(req.query);
     return research.waitJob(IdParam.parse(req.params).id, "research", (wait ?? 0) * 1000);
-  });
-
-  app.post("/v1/datasets", { onRequest: async (req) => requireKey(req.headers) }, async (req, reply) => {
-    const r = await service.ingest(req.body);
-    return reply.status(r.created ? 201 : 200).send(r);
   });
 
   // earnings-gap-auto/v1 research/paper-trading slice (docs/STRATEGY_SPEC.md); a separate experiment surface from

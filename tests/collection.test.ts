@@ -133,9 +133,25 @@ const quarterlyFinance = () => ({ itemCode: "005930", financePeriodType: "quarte
   ],
 } });
 
+const annualFinance = () => ({ itemCode: "005930", financePeriodType: "annual", financeInfo: {
+  itemCode: "005930", trTitleList: [{ key: "202412", isConsensus: "N" }, { key: "202512", isConsensus: "N" }, { key: "202612", isConsensus: "Y" }, { key: "2027xx", isConsensus: "Y" }],
+  rowList: [
+    { title: "매출액", columns: { "202412": { value: "3,000,000" }, "202512": { value: "3,300,000" }, "202612": { value: "3,630,000" } } },
+    { title: "영업이익", columns: { "202512": { value: "400,000" }, "202612": { value: "-" } } },
+    { title: "EPS", columns: { "202612": { value: "6,000" } } },
+  ],
+} });
+
+// ECB reference rates via Frankfurter (EUR base), requested for the day before asOf.
+const fxHandler: Handler = (u) => {
+  if (u.hostname !== "api.frankfurter.dev") return undefined;
+  return json({ amount: 1, base: "EUR", date: "2026-09-25", rates: { KRW: 1600, USD: 1.25, JPY: 160, CNY: 8, GBP: 0.8, HKD: 10, CHF: 1, SGD: 1.6 } });
+};
+
 const naverHandler: Handler = (u) => {
   if (u.hostname !== "m.stock.naver.com") return undefined;
   if (u.pathname === "/api/stock/005930/basic") return json(basic());
+  if (u.pathname === "/api/stock/005930/finance/annual") return json(annualFinance());
   if (u.pathname === "/api/stock/005930/finance/quarter") return json(quarterlyFinance());
   if (u.pathname === "/api/stock/005930/integration") {
     return json({
@@ -222,6 +238,13 @@ function dartHandler(over: { key?: string; list?: (u: URL) => Response; corp?: (
       }
       case "/api/document.xml":
         return new Response(zip({ [`${u.searchParams.get("rcept_no")}.xml`]: DOC_XML }));
+      case "/api/stockTotqySttus.json":
+        if (u.searchParams.get("bsns_year") !== "2026" || u.searchParams.get("reprt_code") !== "11012") return json({ status: "013", message: "조회된 데이타가 없습니다." });
+        return json({ status: "000", list: [
+          { rcept_no: "20260814000004", corp_code: "00126380", se: "보통주", istc_totqy: "5,969,782,550", tesstk_co: "100", distb_stock_co: "5,969,782,450" },
+          { rcept_no: "20260814000004", corp_code: "00126380", se: "우선주", istc_totqy: "822,886,700", tesstk_co: "0", distb_stock_co: "822,886,700" },
+          { rcept_no: "20260814000004", corp_code: "00126380", se: "합계", istc_totqy: "6,792,669,250", tesstk_co: "100", distb_stock_co: "6,792,669,150" },
+        ] });
     }
     return undefined;
   };
@@ -242,7 +265,7 @@ describe("input validation", () => {
 
 describe("Naver provider", () => {
   it("collects quote, reference metrics and deduped news without any key", async () => {
-    const f = fake(naverHandler);
+    const f = fake(either(naverHandler, fxHandler));
     const e = await run(f);
     expect(e.status).toBe("partial"); // DART not configured
     expect(e.modelReady).toBe(false);
@@ -283,10 +306,29 @@ describe("Naver provider", () => {
     expect(paths).toContain("/api/stock/005930/integration");
     for (const p of [1, 2, 3]) expect(paths).toContain(`/api/news/stock/005930?pageSize=20&page=${p}`);
     expect(paths.some((p) => p.includes("page=4"))).toBe(false);
-    expect(f.calls.every((u) => u.protocol === "https:" && u.hostname === "m.stock.naver.com")).toBe(true);
+    expect(f.calls.every((u) => u.protocol === "https:" && ["m.stock.naver.com", "api.frankfurter.dev"].includes(u.hostname))).toBe(true);
     expect(f.calls.some((u) => u.hostname.includes("opendart"))).toBe(false);
     expect(paths).toContain("/api/stock/005930/price?pageSize=60&page=1");
-    expect(e.requestsUsed).toBe(7); // + one daily-price page (404 here: a warning, provider stays ok)
+    expect(e.requestsUsed).toBe(9); // + one daily-price page (404 here: a warning, provider stays ok), annual table, FX
+
+    // annual actuals/consensus (malformed period keys skipped), amounts in KRW
+    expect(e.market.annualFinance?.map((a) => [a.period, a.isConsensus, a.revenueKRW])).toEqual([["2024.12", false, 3e14], ["2025.12", false, 3.3e14], ["2026.12", true, 3.63e14]]);
+    // FX: the day before asOf, KRW per unit crossed through EUR
+    expect(f.calls.find((u) => u.hostname === "api.frankfurter.dev")?.pathname).toBe("/v1/2026-09-27");
+    expect(e.market.fxRates?.find((x) => x.currency === "USD")).toMatchObject({ krwPerUnit: 1280, rateDate: "2026-09-25" });
+    expect(e.market.fxRates?.find((x) => x.currency === "EUR")?.krwPerUnit).toBe(1600);
+    expect(e.market.fxRates?.find((x) => x.currency === "JPY")?.krwPerUnit).toBe(10);
+    expect(e.providers.fx?.status).toBe("ok");
+    expect(e.requiredInputs.find((x) => x.field === "fxToKrw")?.status).toBe("available_unverified");
+    expect(e.requiredInputs.find((x) => x.field === "growthAssumptions")?.status).toBe("candidate_only");
+  });
+
+  it("keeps FX failures a warning and never fetches FX for a rejected ticker", async () => {
+    const e = await run(fake(naverHandler)); // FX host answers 404
+    expect(e.market.fxRates).toEqual([]);
+    expect(e.providers.fx?.status).toBe("partial");
+    expect(e.issues.find((i) => i.provider === "fx")?.severity).toBe("warning");
+    expect(e.requiredInputs.find((x) => x.field === "fxToKrw")?.status).toBe("missing");
   });
 
   it("collects daily closes on or before asOf and reported quarterly EPS for the next-quarter price", async () => {
@@ -312,8 +354,9 @@ describe("Naver provider", () => {
     const need = (field: string) => e.requiredInputs.find((r) => r.field === field);
     expect(need("quarterlyGlobalMarketRevenue")?.status).toBe("missing");
     expect(need("comparableRevenueShare")?.status).toBe("missing");
-    expect(need("growthAssumptions")?.status).toBe("missing");
-    expect(need("fxToKrw")?.status).toBe("missing");
+    expect(need("growthAssumptions")?.status).toBe("candidate_only"); // Naver annual consensus (company revenue) only
+    expect(need("growthAssumptions")?.detail).toContain("company revenue, not the market");
+    expect(need("fxToKrw")?.status).toBe("missing"); // FX host not answering here
     expect(need("dilutedCommonShares")?.status).toBe("missing");
     expect(need("companyQuarterlyFinancials")?.status).toBe("missing");
     expect(need("valuationMultiple")?.status).toBe("reference_only");
@@ -464,7 +507,7 @@ describe("transport safety", () => {
 
 describe("DART provider", () => {
   it("collects filings, statements, derived Q4, excerpts, tables and candidates", async () => {
-    const f = fake(either(naverHandler, dartHandler()));
+    const f = fake(either(naverHandler, dartHandler(), fxHandler));
     const e = await run(f, withKey);
     expect(e.status).toBe("ok");
     expect(e.providers.dart.status).toBe("ok");
@@ -478,7 +521,7 @@ describe("DART provider", () => {
     expect(list?.searchParams.get("last_reprt_at")).toBe("N");
     expect(list?.searchParams.get("page_count")).toBe("100");
     expect(f.calls.find((u) => u.pathname === "/api/company.json")?.searchParams.get("corp_code")).toBe("00126380");
-    expect(f.calls.every((u) => ["m.stock.naver.com", "opendart.fss.or.kr"].includes(u.hostname))).toBe(true);
+    expect(f.calls.every((u) => ["m.stock.naver.com", "opendart.fss.or.kr", "api.frankfurter.dev"].includes(u.hostname))).toBe(true);
 
     // future / audit / attachment filings excluded, correction supersedes the original
     expect(e.filings.list.map((x) => x.rceptNo)).toEqual(["20260814000004", "20260601000002", "20260310000001", "20251114000001"]);
@@ -533,7 +576,18 @@ describe("DART provider", () => {
     const shareTable = e.filings.tables.find((t) => t.rceptNo === "20260814000004" && t.category === "shares");
     expect(shareTable?.unit).toBe("주");
     expect(shareTable?.rows[1]).toEqual(["발행주식의 총수", "5,969,782,550", "822,886,700"]);
-    expect(e.requiredInputs.find((r) => r.field === "dilutedCommonShares")?.status).toBe("candidate_only");
+    // structured share totals (stockTotqySttus) of the newest filing make the common count available (unverified)
+    const totq = f.calls.find((u) => u.pathname === "/api/stockTotqySttus.json");
+    expect([totq?.searchParams.get("bsns_year"), totq?.searchParams.get("reprt_code")]).toEqual(["2026", "11012"]);
+    expect(e.filings.shareCounts).toEqual([{
+      fiscalYear: 2026, period: "H1", periodEnd: "2026-06-30", rceptNo: "20260814000004", receiptUrl: "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260814000004", receivedDate: "2026-08-14",
+      classes: [
+        { kind: "common", label: "보통주", issued: 5969782550, treasury: 100, outstanding: 5969782450 },
+        { kind: "preferred", label: "우선주", issued: 822886700, treasury: 0, outstanding: 822886700 },
+        { kind: "total", label: "합계", issued: 6792669250, treasury: 100, outstanding: 6792669150 },
+      ],
+    }]);
+    expect(e.requiredInputs.find((r) => r.field === "dilutedCommonShares")?.status).toBe("available_unverified");
     expect(e.requiredInputs.find((r) => r.field === "dilutedCommonShares")?.detail).toContain("not the diluted weighted-average");
     expect(e.filings.metricCandidates.every((m) => m.source.sectionTitle !== "2. 주당이익 및 희석주식수")).toBe(true);
     expect(ex.every((x) => x.receiptUrl === "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260814000004")).toBe(true);
@@ -568,7 +622,7 @@ describe("DART provider", () => {
     expect(need("quarterlyGlobalMarketRevenue")?.status).toBe("candidate_only");
     expect(need("comparableRevenueShare")?.status).toBe("candidate_only");
     expect(need("companyQuarterlyFinancials")?.status).toBe("available_unverified");
-    expect(need("dilutedCommonShares")?.status).toBe("candidate_only"); // share-note excerpts exist; still not a diluted count
+    expect(need("dilutedCommonShares")?.status).toBe("available_unverified"); // structured outstanding common count; still not a diluted count
     expect(e.modelReady).toBe(false);
 
     // no key in output
@@ -836,9 +890,10 @@ describe("DART share / EPS extraction budget", () => {
   });
   it("reports diluted shares as missing when no share evidence exists", async () => {
     const doc = `<DOCUMENT><TITLE>II. 사업의 내용</TITLE><P>x</P></DOCUMENT>`;
-    const f = fake(either(naverHandler, (u) => (u.pathname === "/api/document.xml" ? new Response(zip({ "d.xml": doc })) : undefined), dartHandler()));
+    const f = fake(either(naverHandler, (u) => (u.pathname === "/api/document.xml" ? new Response(zip({ "d.xml": doc })) : u.pathname === "/api/stockTotqySttus.json" ? json({ status: "013" }) : undefined), dartHandler()));
     const e = await run(f, withKey);
     expect(e.filings.excerpts.some((x) => x.category === "shares")).toBe(false);
+    expect(e.filings.shareCounts).toEqual([]);
     expect(e.requiredInputs.find((r) => r.field === "dilutedCommonShares")?.status).toBe("missing");
   });
 });
@@ -981,8 +1036,8 @@ describe("Naver article bodies", () => {
     await run(none, { maxArticles: 0 });
     expect(none.calls.some((u) => u.hostname === "n.news.naver.com")).toBe(false);
 
-    const f = fake(either(naverHandler, articleHandler({ "/mnews/article/001/0000000001": () => new Response(ARTICLE()) })));
-    const e = await run(f, { maxArticles: 3, maxRequests: 8 }); // 7 Naver calls (including consensus and one price page) + 1 article
+    const f = fake(either(naverHandler, fxHandler, articleHandler({ "/mnews/article/001/0000000001": () => new Response(ARTICLE()) })));
+    const e = await run(f, { maxArticles: 3, maxRequests: 10 }); // 8 Naver calls (consensus, one price page, annual table) + FX + 1 article
     expect(f.calls.filter((u) => u.hostname === "n.news.naver.com").length).toBeLessThan(2);
     expect(e.issues.filter((i) => i.code === "request_budget_exceeded")).toHaveLength(2);
     expect(e.providers.naver.status).toBe("ok");

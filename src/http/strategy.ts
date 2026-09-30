@@ -13,8 +13,7 @@ const ReplayRequestSchema = z.object({ screen: ScreenRequestSchema, replay: Repl
 /**
  * earnings-gap-auto/v1 (docs/STRATEGY_SPEC.md). Registered only when a StrategyService is supplied to buildApp, so
  * existing callers/tests of buildApp(service, research, config[, universe]) are unaffected (optional 5th argument).
- * Every route follows the same x-api-key gate as POST /v1/datasets ("Authenticated HTTP API... same as existing
- * mutations"); screening/replay are synchronous (no LLM, no network), so no job queue is needed here.
+ * Every route follows the same x-api-key gate as the public analysis jobs ("Authenticated HTTP API"); screening/replay are synchronous (no LLM, no network), so no job queue is needed here.
  */
 export function registerStrategyRoutes(app: FastifyInstance, strategy: StrategyService, requireKey: (headers: Record<string, unknown>) => void) {
   for (const [route, kind] of Object.entries(KIND_ROUTE)) {

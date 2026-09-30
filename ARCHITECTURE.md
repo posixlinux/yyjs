@@ -1,7 +1,7 @@
 # KOSPI product market analysis server
 
 ## User-confirmed additions
-Public collection is the default: DART quarterly/half-year/annual filings, Naver finance quotes and public news. Runtime extraction uses local Claude CLI plus the Antigravity CLI (agy) with Google login (subject to account quotas; an expired one is skipped). The CLI models structure and cross-check evidence; deterministic TypeScript code calculates money. Missing sources or failed dual review produces a partial report rather than invented prices. Public analysis is asynchronous with bounded jobs and polling. The detailed integration acceptance contract is INTEGRATION_CONTRACT.md; it supersedes the initial manual-default API choice below. Manual and synthetic demo paths remain explicit alternatives for validation and reproducibility.
+Public collection is the default: DART quarterly/half-year/annual filings, Naver finance quotes and public news. Runtime extraction uses local Claude CLI plus the Antigravity CLI (agy) with Google login (subject to account quotas; an expired one is skipped). The CLI models structure and cross-check evidence; deterministic TypeScript code calculates money. Missing sources or failed dual review produces a partial report rather than invented prices. Public analysis is asynchronous with bounded jobs and polling. The detailed integration acceptance contract is INTEGRATION_CONTRACT.md; it supersedes the initial manual-default API choice below. The synthetic demo path remains an explicit alternative for reproducibility; there is no manual dataset input (mode=manual and POST /v1/datasets were removed).
 
 ```mermaid
 flowchart TD

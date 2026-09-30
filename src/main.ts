@@ -1,6 +1,7 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { collectPublicEvidence } from "./collection/index.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, root } from "./config.js";
 import { buildApp } from "./http/app.js";
 import { analyzeEvidence } from "./intelligence/index.js";
 import { LocalStore } from "./providers/local.js";
@@ -11,10 +12,10 @@ import { StrategyService } from "./strategy/service.js";
 const config = loadConfig();
 if (!config.capabilities.dartConfigured)
   console.warn("[config] DART_API_KEY is not set: DART filings/statements will not be collected (0 filings) and no valuation can be produced. Put it in .env and restart.");
-const service = new Service(
-  { manual: new LocalStore(config.dataDir, false), demo: new LocalStore(config.demoDir, true) },
-  config,
-);
+const legacyStrategyDir = path.join(root, "data/manual/strategy");
+if (!process.env.DATA_DIR && existsSync(legacyStrategyDir))
+  console.warn(`[config] Strategy records found in the old default ${legacyStrategyDir}; the default DATA_DIR is now ${config.dataDir}. Move data/manual/strategy to ${path.join(config.dataDir, "strategy")} (or set DATA_DIR=./data/manual) to keep using them.`);
+const service = new Service({ demo: new LocalStore(config.demoDir) }, config);
 const research = new ResearchService(
   {
     collect: (input, { signal }) => collectPublicEvidence(input, { signal, now: config.now, cacheDir: config.cacheDir }),

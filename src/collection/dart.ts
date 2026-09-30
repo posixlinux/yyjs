@@ -15,6 +15,8 @@ import type {
   FilingPeriodType,
   MetricCandidate,
   ProductCandidate,
+  ShareClassCount,
+  ShareCountEvidence,
   StatementRow,
   StatementSet,
   TableEvidence,
@@ -71,6 +73,7 @@ export interface DartResult {
   metricCandidates: MetricCandidate[];
   productCandidates: ProductCandidate[];
   disclosures: ExchangeDisclosure[];
+  shareCounts: ShareCountEvidence[];
   issues: CollectionIssue[];
 }
 
@@ -163,7 +166,7 @@ function periodOf(reportName: string, fyeMonth: number): FilingEvidence["period"
 export async function collectDart(c: DartCtx): Promise<DartResult> {
   const out: DartResult = {
     name: null, corpCode: null, exchangeVerified: false, filings: [], statements: [], derivedQuarters: [],
-    excerpts: [], tables: [], metricCandidates: [], productCandidates: [], disclosures: [], issues: [],
+    excerpts: [], tables: [], metricCandidates: [], productCandidates: [], disclosures: [], shareCounts: [], issues: [],
   };
 
   const corp = (await corpIndex(c)).get(c.ticker);
@@ -291,6 +294,19 @@ export async function collectDart(c: DartCtx): Promise<DartResult> {
 
   // Best-effort: a failure here is a warning and never costs the periodic evidence collected above.
   if (c.competitor) return out;
+  // Share totals of the newest periodic filing that has them (the per-share denominator of the valuation).
+  for (const f of out.filings.slice(0, 2)) {
+    try {
+      const sc = await fetchShareCounts(c, corp.code, f, out.issues);
+      if (sc) {
+        out.shareCounts.push(sc);
+        break;
+      }
+    } catch (e) {
+      out.issues.push(issue("dart", e instanceof CollectionError ? e.code : "share_counts_failed", `Share totals ${f.period.type} ${f.period.fiscalYear}: ${(e as Error).message}`, "warning"));
+      break;
+    }
+  }
   try {
     out.disclosures = await collectDisclosures(c, corp.code, out.issues);
   } catch (e) {
@@ -351,6 +367,45 @@ async function fetchDisclosureText(c: DartCtx, rceptNo: string): Promise<{ text:
 function dedupeProducts(list: ProductCandidate[]): ProductCandidate[] {
   const seen = new Set<string>();
   return list.filter((p) => !seen.has(p.name.toLowerCase()) && !!seen.add(p.name.toLowerCase()));
+}
+
+const shareKind = (label: string): ShareClassCount["kind"] =>
+  /보통/.test(label) ? "common" : /우선|종류/.test(label) ? "preferred" : /합계|총계|^계$/.test(label) ? "total" : "other";
+const shareNumber = (v: unknown): number | null => {
+  const n = parseAmount(str(v));
+  return n !== null && Number.isInteger(n) && n >= 0 && n <= 1e13 ? n : null;
+};
+
+/** DART stockTotqySttus (주식의 총수 현황): issued, treasury and outstanding shares by class for one periodic filing. */
+async function fetchShareCounts(c: DartCtx, corpCode: string, f: FilingEvidence, issues: CollectionIssue[]): Promise<ShareCountEvidence | null> {
+  const reportCode = REPORT_CODE[f.period.type];
+  const label = `Share totals ${f.period.type} ${f.period.fiscalYear}`;
+  const o = await dartJson(c, "stockTotqySttus.json", { corp_code: corpCode, bsns_year: String(f.period.fiscalYear), reprt_code: reportCode }, true, DISK.statement);
+  const list = (Array.isArray(o?.list) ? o.list : []).map(asRecord).filter((r): r is Record<string, unknown> => !!r);
+  if (!list.length) {
+    issues.push(issue("dart", "share_counts_unavailable", `${label}: DART returned no share totals`, "info"));
+    return null;
+  }
+  const receipts = new Set(list.map((r) => str(r.rcept_no)).filter(Boolean));
+  if (list.some((r) => str(r.corp_code) && str(r.corp_code) !== corpCode) || receipts.size !== 1 || ![...receipts].every((x) => /^\d{14}$/.test(x))) {
+    issues.push(issue("dart", "share_counts_mismatch", `${label}: rows belong to another company or several receipts; discarded`, "warning"));
+    return null;
+  }
+  const rcept = [...receipts][0]!;
+  const received = isoDate(rcept.slice(0, 8));
+  if (received > c.asOf.dateKst || (!c.asOf.dateOnly && received === c.asOf.dateKst)) {
+    issues.push(issue("dart", "share_counts_after_asOf", `${label} was (re)filed ${received}, after asOf; excluded`, "warning"));
+    return null;
+  }
+  const classes: ShareClassCount[] = list.map((r) => {
+    const name = clip(str(r.se).trim(), 40);
+    return { kind: shareKind(name.replace(/\s+/g, "")), label: name, issued: shareNumber(r.istc_totqy), treasury: shareNumber(r.tesstk_co), outstanding: shareNumber(r.distb_stock_co) };
+  }).filter((x) => x.label && (x.issued !== null || x.outstanding !== null));
+  if (!classes.some((x) => x.kind === "common" && (x.outstanding !== null || x.issued !== null))) {
+    issues.push(issue("dart", "share_counts_unavailable", `${label}: no common-share row with a count`, "info"));
+    return null;
+  }
+  return { fiscalYear: f.period.fiscalYear, period: f.period.type, periodEnd: f.period.end, rceptNo: rcept, receiptUrl: receiptUrl(rcept), receivedDate: received, classes };
 }
 
 async function fetchStatement(c: DartCtx, corpCode: string, f: FilingEvidence, issues: CollectionIssue[]): Promise<StatementSet | null> {

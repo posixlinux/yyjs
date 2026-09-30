@@ -144,7 +144,7 @@ npm run strategy -- replay examples/strategy/screen-request-no-trade.json exampl
 
 ## 기록 및 API
 
-CLI와 API는 `DATA_DIR/strategy/{forecasts,consensus,catalysts}`의 같은 파일을 사용합니다. ID와 기록 시각은 서버가 부여하며 수정 기록은 새 파일입니다. 예:
+CLI와 API는 `DATA_DIR/strategy/{forecasts,consensus,catalysts}`(기본 `data/records/strategy/…`)의 같은 파일을 사용합니다. ID와 기록 시각은 서버가 부여하며 수정 기록은 새 파일입니다. 예:
 
 ```sh
 npm run strategy -- record-forecast my-forecast.json --mode=forward

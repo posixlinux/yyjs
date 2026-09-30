@@ -7,7 +7,7 @@ import type { Issue } from "../errors.js";
 // Relaxed gate for model-proposed (public) datasets: repair what can be repaired deterministically, then split the
 // remaining validation issues into HARD ones (the price would be wrong by construction or would use data from after
 // asOf) and SOFT ones (quality concerns: the price is still computed, but reported as provisional with every concern).
-// Manually ingested datasets keep the strict gate (service.ts).
+// Bundled demo fixtures keep the strict gate (service.ts).
 
 export type Repair = { code: string; path: string; message: string };
 

@@ -12,7 +12,7 @@ import { computeNextQuarterPrice, type NextQuarterPrice } from "./price-target.j
 
 // Automatic single-candidate strategy path (see docs/STRATEGY.md "Automatic connection"): turns whatever the
 // intelligence module could verify (src/intelligence/strategyVerify.ts) for ONE ticker into the same deterministic
-// earnings-bridge/risk/eligibility calculations the manual /v1/strategy/* API exposes, without ever inventing a
+// earnings-bridge/risk/eligibility calculations the /v1/strategy/* API exposes, without ever inventing a
 // personal portfolio. It never computes or exposes a position weight/budget: that requires real, explicitly
 // configured capital/cost assumptions and stays exclusive to POST /v1/strategy/screen (config.ts DEFAULT_HYPOTHESIS_PARAMS
 // note: "Supply feeBpsPerSide... explicitly"). This path only answers "is this one candidate eligible and what do its
@@ -20,7 +20,7 @@ import { computeNextQuarterPrice, type NextQuarterPrice } from "./price-target.j
 //
 // Short-term horizon: this path estimates exactly ONE quarter on its own -- the quarter that just ended (results
 // still unpublished) or the one in progress -- because it serves trades held for three months at most. It does not
-// need four quarters of forecast or consensus; the four-quarter horizon stays exclusive to the manual
+// need four quarters of forecast or consensus; the four-quarter horizon stays exclusive to the
 // /v1/strategy/* API. The single-quarter estimate is a result in itself ("estimate_only") even when no consensus
 // or catalyst could be verified.
 //

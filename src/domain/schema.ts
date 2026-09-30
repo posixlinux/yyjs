@@ -194,7 +194,7 @@ export const AnalysisRequestSchema = z
   .object({
     ticker: z.string().regex(/^\d{6}$/, "six-digit KOSPI ticker"),
     asOf: date.optional(), // defaults to today's Asia/Seoul calendar date
-    mode: z.enum(["public", "demo", "manual"]).default("public"),
+    mode: z.enum(["public", "demo"]).default("public"),
     competitors: competitorIds.optional(),
   })
   .strict();

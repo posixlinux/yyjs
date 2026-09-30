@@ -1,6 +1,6 @@
 // Public evidence collection types. Everything here is *untrusted evidence*, never instructions.
 
-export type ProviderName = "naver" | "naver-search" | "dart" | "sec" | "edinet";
+export type ProviderName = "naver" | "naver-search" | "dart" | "sec" | "edinet" | "fx";
 export type ProviderStatus = "ok" | "partial" | "failed" | "not_configured";
 
 export interface CollectionIssue {
@@ -106,6 +106,43 @@ export interface QuarterlyActual {
 export interface DailyClose {
   date: string;
   closeKRW: number;
+}
+
+/** One fiscal year from Naver's annual finance table (KRW); `isConsensus` marks provider consensus columns. */
+export interface AnnualFinance {
+  ticker: string;
+  /** Fiscal-year label as printed, e.g. "2026.12". */
+  period: string;
+  isConsensus: boolean;
+  revenueKRW: number | null;
+  operatingProfitKRW: number | null;
+  netIncomeKRW: number | null;
+  epsKRW: number | null;
+  observedAt: string;
+  sourceUrl: string;
+}
+
+/** Trailing PER reference computed from collected daily closes and the latest four reported quarterly EPS values. */
+export interface PerReference {
+  /** Sum of the latest four consecutive reported quarters' EPS (KRW per share, provider basis unspecified). */
+  ttmEpsKRW: number;
+  quarters: string[];
+  latestClose: { date: string; closeKRW: number };
+  /** latestClose / ttmEps. */
+  current: number;
+  /** Closes over the collected window divided by the SAME current TTM EPS (a price range, not a historical PER series). */
+  window: { from: string; to: string; sessions: number; min: number; median: number; max: number };
+  sourceUrls: string[];
+}
+
+/** KRW per one unit of a currency, from a dated reference rate published before asOf. */
+export interface FxRate {
+  currency: string;
+  krwPerUnit: number;
+  /** Reference-rate date (YYYY-MM-DD). */
+  rateDate: string;
+  source: string;
+  sourceUrl: string;
 }
 
 export interface NewsItem {
@@ -300,6 +337,25 @@ export interface CompetitorPeriod {
   concept: string;
 }
 
+/** One share class from DART "주식의 총수 현황" (stockTotqySttus) for a periodic filing. Counts are shares. */
+export interface ShareClassCount {
+  kind: "common" | "preferred" | "total" | "other";
+  label: string;
+  issued: number | null;
+  treasury: number | null;
+  outstanding: number | null;
+}
+
+export interface ShareCountEvidence {
+  fiscalYear: number;
+  period: FilingPeriodType;
+  periodEnd: string;
+  rceptNo: string;
+  receiptUrl: string;
+  receivedDate: string;
+  classes: ShareClassCount[];
+}
+
 export interface CompetitorEvidence {
   market: CompetitorMarket;
   /** Local code: KRX ticker, US ticker or TSE securities code. */
@@ -334,7 +390,7 @@ export interface PublicEvidence {
   modelReady: false;
   untrustedContentNotice: string;
   /** `competitors` is present only when competitors were requested (one report per requested market). */
-  providers: { naver: ProviderReport; naverSearch: ProviderReport; dart: ProviderReport; competitors?: Partial<Record<CompetitorMarket, ProviderReport>> };
+  providers: { naver: ProviderReport; naverSearch: ProviderReport; dart: ProviderReport; fx?: ProviderReport; competitors?: Partial<Record<CompetitorMarket, ProviderReport>> };
   issues: CollectionIssue[];
   company: {
     name: string | null;
@@ -350,6 +406,12 @@ export interface PublicEvidence {
     quarterlyActuals?: QuarterlyActual[];
     /** Daily closes on or before asOf, newest first (live runs only; about 8 months). */
     dailyCloses?: DailyClose[];
+    /** Naver annual actuals and consensus (live snapshot only). */
+    annualFinance?: AnnualFinance[];
+    /** Trailing PER reference derived from dailyCloses and quarterlyActuals (live runs only). */
+    perReference?: PerReference | null;
+    /** KRW reference rates for common market currencies, dated before asOf. */
+    fxRates?: FxRate[];
     news: NewsItem[];
     searchNews: NewsItem[];
   };
@@ -363,6 +425,8 @@ export interface PublicEvidence {
     productCandidates: ProductCandidate[];
     /** Exchange disclosures (IR/earnings schedule, guidance, preliminary results). Absent in older snapshots. */
     disclosures?: ExchangeDisclosure[];
+    /** DART share totals (issued / treasury / outstanding by class) for the latest periodic filing. */
+    shareCounts?: ShareCountEvidence[];
   };
   /** Competitors' filed revenue (KR/US/JP disclosure systems). Absent when none were requested. */
   competitors?: CompetitorEvidence[];

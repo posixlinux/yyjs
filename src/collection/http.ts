@@ -6,7 +6,7 @@ import { CollectionError } from "./types.js";
 /** Only these hosts are ever fetched. Receipt URLs on dart.fss.or.kr are emitted as links, never fetched. */
 export const ALLOWED_HOSTS: ReadonlySet<string> = new Set([
   "m.stock.naver.com", "n.news.naver.com", "openapi.naver.com", "opendart.fss.or.kr",
-  "www.sec.gov", "data.sec.gov", "api.edinet-fsa.go.jp", "disclosure2dl.edinet-fsa.go.jp",
+  "www.sec.gov", "data.sec.gov", "api.edinet-fsa.go.jp", "disclosure2dl.edinet-fsa.go.jp", "api.frankfurter.dev",
 ]);
 
 /** Hosts that are only reachable for an exact path shape; `query: false` also forbids a query/fragment. */
@@ -16,6 +16,7 @@ const PATH_RULES: Record<string, { path: RegExp; query: boolean }> = {
   "data.sec.gov": { path: /^\/api\/xbrl\/companyfacts\/CIK\d{10}\.json$/, query: false },
   "api.edinet-fsa.go.jp": { path: /^\/api\/v2\/documents(?:\.json|\/[A-Z0-9]{8})$/, query: true },
   "disclosure2dl.edinet-fsa.go.jp": { path: /^\/searchdocument\/codelist\/Edinetcode\.zip$/, query: false },
+  "api.frankfurter.dev": { path: /^\/v1\/\d{4}-\d{2}-\d{2}$/, query: true },
 };
 
 export interface HttpConfig {

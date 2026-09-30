@@ -86,7 +86,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     port: int(env, "PORT", 3000, 0, 65535),
     host,
-    dataDir: path.resolve(env.DATA_DIR || path.join(root, "data/manual")),
+    dataDir: path.resolve(env.DATA_DIR || path.join(root, "data/records")),
     cacheDir: path.resolve(env.EVIDENCE_CACHE_DIR || path.join(root, "data/cache")),
     demoDir: path.join(root, "data/demo"),
     apiKey,

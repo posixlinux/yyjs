@@ -178,7 +178,9 @@ describe("POST /v1/analyses (public default)", () => {
     expect(stmt).toMatchObject({ url: RECEIPT("20251114000001"), publishedAt: "2025-11-14" });
     docs.forEach((d) => expect(EvidenceDocumentSchema.safeParse(d).success).toBe(true));
 
-    // extracted datasets are never auto-persisted as manual data
+    // the draft dataset is returned with the result, but never persisted
+    expect(r.research.draftDataset).toMatchObject({ status: "reviewed", serverRepaired: false, dataset: { company: { ticker: "111110" } } });
+    expect(r.research.draftDataset.dataset).toEqual(makeDataset());
     expect((await app.inject({ url: "/v1/companies/111110" })).statusCode).toBe(404);
     expect(await readFile(path.join(dataDir, "111110.json"), "utf8").catch(() => null)).toBeNull();
     // finite numbers only
@@ -208,7 +210,7 @@ describe("POST /v1/analyses (public default)", () => {
     expect(collect).not.toHaveBeenCalled();
   });
 
-  it("keeps explicit demo/manual synchronous while public is the default", async () => {
+  it("keeps explicit demo synchronous while public is the default; there is no manual mode", async () => {
     const demoNow = new Date("2026-09-28T12:00:00Z");
     const { app } = await setup({}, demoNow, { collect: async () => evidence(), intelligence: async () => accepted(null) });
     const demo = await submit(app, { ticker: "005930", asOf: "2026-09-28", mode: "demo" });
@@ -217,7 +219,8 @@ describe("POST /v1/analyses (public default)", () => {
     const dflt = await submit(app, { ticker: "005930", asOf: "2026-09-28" });
     expect(dflt.statusCode).toBe(202); // default is the async public job, never demo data
     const manual = await submit(app, { ticker: "005930", asOf: "2026-09-28", mode: "manual" });
-    expect(manual.statusCode).toBe(404); // and manual never falls back to demo
+    expect(manual.statusCode).toBe(400);
+    expect(manual.json().error.code).toBe("VALIDATION_ERROR");
   });
 
   it("returns 404 for unknown or wrong-kind job ids and 400 for malformed ids", async () => {
@@ -478,6 +481,21 @@ describe("partial results never carry a valuation", () => {
     expect(body.result.valuation).toMatchObject({ status: "available", grade: "provisional" });
     const reason = body.result.partialReasons.find((r: any) => r.code === "RESEARCH_PROVISIONAL");
     expect(reason).toMatchObject({ severity: "warning", details: [{ code: "AUDIT_UNCONFIRMED", path: "quote.priceKRW" }] });
+    expect(body.result.research.draftDataset).toMatchObject({ status: "provisional", dataset: { company: { ticker: "111110" } } });
+  });
+
+  it("returns the raw draft dataset as rejected when the review produced no usable dataset", async () => {
+    const raw = { ...makeDataset(), quote: { priceKRW: -1 } };
+    const draft = accepted(null, { status: "rejected", draftDataset: raw });
+    const { body } = await partialCase(evidence(), draft);
+    noPrices(body);
+    expect(body.result.partialReasons.map((r: any) => r.code)).toContain("RESEARCH_NOT_ACCEPTED");
+    expect(body.result.research.draftDataset).toEqual({ status: "rejected", serverRepaired: false, dataset: raw });
+  });
+
+  it("reports no draft dataset when the models produced none", async () => {
+    const { body } = await partialCase(evidence(), accepted(null, { status: "unavailable" }));
+    expect(body.result.research.draftDataset).toBeNull();
   });
 
   it("a provider error next to a provisional dataset is a warning, not a block", async () => {
@@ -580,7 +598,7 @@ describe("POST /v1/research (evidence only)", () => {
 // ---- auth --------------------------------------------------------------------------------------------------------
 
 describe("API_KEY protects costly jobs and mutations", () => {
-  it("requires x-api-key for public analyses, research and job results; demo/manual stay open", async () => {
+  it("requires x-api-key for public analyses, research and job results; demo stays open", async () => {
     const t = await setup({ apiKey: "s3cret-key" }, new Date("2026-09-28T12:00:00Z"), { collect: async () => evidence(), intelligence: async () => accepted(null) });
     const key = { "x-api-key": "s3cret-key" };
     expect((await submit(t.app, { ticker: "111110", asOf: "2026-09-28" })).statusCode).toBe(401);
@@ -773,6 +791,31 @@ describe("evidence documents", () => {
     expect(doc).toMatchObject({ url: "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260105900001", publishedAt: "2026-01-05", title: "DART 거래소 공시 - 기업설명회(IR)개최(안내공시)" });
     expect(doc.text).toContain("애널리스트 컨센서스가 아님");
     expect(doc.text).toContain("1. 개최일자 | 2026-01-30 / 2. 개최목적 | 2025년 4분기 경영실적 발표");
+  });
+
+  it("turns share totals, FX rates, the PER band and annual consensus into attributable documents", () => {
+    const ev = evidence();
+    ev.filings.shareCounts = [{ fiscalYear: 2025, period: "Q3", periodEnd: "2025-09-30", rceptNo: "20251114000001", receiptUrl: RECEIPT("20251114000001"), receivedDate: "2025-11-14",
+      classes: [{ kind: "common", label: "보통주", issued: 1_000_000, treasury: 10_000, outstanding: 990_000 }, { kind: "preferred", label: "우선주", issued: 50_000, treasury: 0, outstanding: 50_000 }] }];
+    ev.market.fxRates = [{ currency: "USD", krwPerUnit: 1380.1234, rateDate: "2026-01-09", source: "ECB", sourceUrl: "https://api.frankfurter.dev/v1/2026-01-09?base=EUR&symbols=KRW,USD" }];
+    ev.market.perReference = { ttmEpsKRW: 5000, quarters: ["2025Q1", "2025Q2", "2025Q3", "2025Q4"], latestClose: { date: "2026-01-09", closeKRW: 50000 }, current: 10, window: { from: "2025-07-01", to: "2026-01-09", sessions: 120, min: 8, median: 9.5, max: 12 }, sourceUrls: ["https://m.stock.naver.com/api/stock/111110/price"] };
+    ev.market.annualFinance = [
+      { ticker: "111110", period: "2024.12", isConsensus: false, revenueKRW: 1e12, operatingProfitKRW: 1e11, netIncomeKRW: null, epsKRW: null, observedAt: NOW.toISOString(), sourceUrl: "https://m.stock.naver.com/api/stock/111110/finance/annual" },
+      { ticker: "111110", period: "2025.12", isConsensus: true, revenueKRW: 1.1e12, operatingProfitKRW: null, netIncomeKRW: null, epsKRW: 5000, observedAt: NOW.toISOString(), sourceUrl: "https://m.stock.naver.com/api/stock/111110/finance/annual" },
+    ];
+    const built = buildDocuments(ev);
+    const doc = (id: string) => built.documents.find((d) => d.id === id)!;
+    expect(doc("shr-20251114000001")).toMatchObject({ url: RECEIPT("20251114000001"), publishedAt: "2025-11-14" });
+    expect(doc("shr-20251114000001").text).toContain("보통주 [보통주] | 발행주식총수 1,000,000주 | 자기주식수 10,000주 | 유통주식수 990,000주");
+    expect(doc("fx-ecb-2026-01-09")).toMatchObject({ publishedAt: "2026-01-09" });
+    expect(doc("fx-ecb-2026-01-09").text).toContain("1 USD = 1,380.1234 KRW");
+    expect(doc("naver-per-band").text).toContain("후행 PER 10배");
+    expect(doc("naver-per-band").text).toContain("최저 8배, 중앙 9.5배, 최고 12배");
+    expect(doc("naver-annual").text).toContain("2025.12 [컨센서스] 매출액 1,100,000,000,000 원");
+    expect(doc("naver-annual").text).toContain("(매출 전년 대비 10%)");
+    // share totals and FX ride with the quote, ahead of statements
+    const ids = built.documents.map((d) => d.id);
+    expect(ids.indexOf("fx-ecb-2026-01-09")).toBeLessThan(ids.findIndex((i) => i.startsWith("stmt-")));
   });
 
   it("dates the quote by its KST trade date, not by slicing a UTC string", () => {
@@ -1072,17 +1115,6 @@ describe("common stock only", () => {
     const { body } = await poll(t.app, (await submit(t.app)).json().statusUrl);
     expect(body).toMatchObject({ status: "failed", error: { code: "NOT_COMMON_STOCK" } });
     expect(intelligence).not.toHaveBeenCalled();
-  });
-
-  it("refuses to ingest a manual dataset for a preferred share, REIT or ETF name", async () => {
-    const { app } = await setup({}, NOW, { collect: vi.fn(), intelligence: vi.fn() });
-    for (const name of ["테스트우선주", "테스트리츠", "KODEX 테스트 ETF"]) {
-      const ds = makeDataset();
-      ds.company.name = name;
-      const res = await app.inject({ method: "POST", url: "/v1/datasets", payload: ds });
-      expect(res.statusCode, name).toBe(422);
-      expect(JSON.stringify(res.json())).toContain("NOT_COMMON_STOCK");
-    }
   });
 });
 

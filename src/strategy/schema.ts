@@ -145,7 +145,7 @@ const forecastSnapshot = (quarterCount: number) => z
 export const EarningsForecastSnapshotSchema = forecastSnapshot(4);
 // Automatic short-term path (strategy/auto.ts): ONE quarter, estimated on its own, for a holding period that never
 // exceeds about three months. Same fields and the same inferred type as the four-quarter snapshot; only the horizon
-// length differs. The manual /v1/strategy/* API and its journal keep the four-quarter schema above.
+// length differs. The /v1/strategy/* API and its journal keep the four-quarter schema above.
 export const SingleQuarterForecastSchema = forecastSnapshot(1);
 export type EarningsForecastSnapshot = z.infer<typeof EarningsForecastSnapshotSchema>;
 

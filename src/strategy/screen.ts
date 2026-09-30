@@ -66,7 +66,7 @@ const reason = (code: string, message: string): EligibilityReason => ({ code, me
 
 /** Exported for the automatic single-candidate path (strategy/auto.ts): eligibility/gap/revision/risk only, never
  * portfolio weight (that is computed later in screen() below, which needs real, explicitly configured capital).
- * `horizon` is "next_four" for the manual API; the automatic short-term path passes "single_quarter" (one quarter,
+ * `horizon` is "next_four" for the /v1/strategy/* API; the automatic short-term path passes "single_quarter" (one quarter,
  * either the one just ended or the one in progress -- see singleQuarterHorizon). */
 export function evaluateOne(c: CandidateInput, config: StrategyConfig, decisionAt: string, horizon: "next_four" | "single_quarter" = "next_four"): CandidateEvaluation {
   const reasons: EligibilityReason[] = [];
