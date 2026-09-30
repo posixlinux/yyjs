@@ -76,7 +76,9 @@ const epsAndHorizonCitations = (field: "currentConsensus" | "priorConsensus" = "
 ];
 const catalystCitations = () => [cite("catalyst.eventAt", "실적발표 예정일 2026-08-10", "2026-08-10")];
 
-const run = (raw: unknown, citations: Citation[] = []) => verifyStrategyDraft(ASOF, [DOC, OTHER_DOC], citations, raw);
+// `strategy` is required with all four keys; tests name only the key under test and default the rest to null.
+const full = (raw: Record<string, unknown>) => ({ forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null, ...raw });
+const run = (raw: Record<string, unknown>, citations: Citation[] = []) => verifyStrategyDraft(ASOF, [DOC, OTHER_DOC], citations, full(raw));
 
 describe("verifyStrategyDraft: forecast", () => {
   it("accepts forward segments explicitly labelled as assumptions and grounded in a real source", () => {
@@ -198,7 +200,7 @@ describe("verifyStrategyDraft: consensus (must never be fabricated)", () => {
     const staleDoc: EvidenceDocument = { ...DOC, id: "stale", publishedAt: "2025-12-06" };
     const src = { title: "d", url: staleDoc.url, kind: "filing" as const, knownAt: "2025-12-06T00:00:00+09:00" };
     const citations = [cite("currentConsensus.epsPerShare", HORIZON_QUOTE, "7", staleDoc), cite("currentConsensus.horizonQuarters", HORIZON_QUOTE, "7", staleDoc)];
-    const r = verifyStrategyDraft(ASOF, [staleDoc], citations, { currentConsensus: consensus({ source: src, knownAt: "2026-01-05T00:00:00+09:00" }) });
+    const r = verifyStrategyDraft(ASOF, [staleDoc], citations, full({ currentConsensus: consensus({ source: src, knownAt: "2026-01-05T00:00:00+09:00" }) }));
     expect(r.currentConsensus).toBeNull();
     expect(r.unavailable).toContainEqual(expect.objectContaining({ field: "currentConsensus", code: "KNOWN_AT_NOT_GROUNDED" }));
   });
@@ -215,7 +217,7 @@ describe("verifyStrategyDraft: consensus (must never be fabricated)", () => {
       cite("currentConsensus.epsPerShare", "2026 annual EPS consensus is 7 KRW.", "7", annualDoc),
       cite("currentConsensus.horizonQuarters", "2026 annual EPS consensus is 7 KRW.", "7", annualDoc),
     ];
-    const r = verifyStrategyDraft(ASOF, [annualDoc], citations, { currentConsensus: consensus({ source: { title: "d", url: annualDoc.url, kind: "filing", knownAt: `${annualDoc.publishedAt}T00:00:00+09:00` } }) });
+    const r = verifyStrategyDraft(ASOF, [annualDoc], citations, full({ currentConsensus: consensus({ source: { title: "d", url: annualDoc.url, kind: "filing", knownAt: `${annualDoc.publishedAt}T00:00:00+09:00` } }) }));
     expect(r.currentConsensus).toBeNull();
     expect(r.unavailable).toContainEqual(expect.objectContaining({ field: "currentConsensus", code: "HORIZON_NOT_ANCHORED" }));
   });
@@ -225,7 +227,7 @@ describe("verifyStrategyDraft: consensus (must never be fabricated)", () => {
     const wrongDoc: EvidenceDocument = { ...DOC, id: "wrong-range", text: wrongRange };
     const citations = [cite("currentConsensus.epsPerShare", wrongRange, "7", wrongDoc), cite("currentConsensus.horizonQuarters", wrongRange, "7", wrongDoc)];
     const src = { title: "d", url: wrongDoc.url, kind: "filing" as const, knownAt: `${wrongDoc.publishedAt}T00:00:00+09:00` };
-    const r = verifyStrategyDraft(ASOF, [wrongDoc], citations, { currentConsensus: consensus({ source: src }) });
+    const r = verifyStrategyDraft(ASOF, [wrongDoc], citations, full({ currentConsensus: consensus({ source: src }) }));
     expect(r.currentConsensus).toBeNull();
     expect(r.unavailable).toContainEqual(expect.objectContaining({ field: "currentConsensus", code: "HORIZON_NOT_ANCHORED" }));
   });
@@ -235,7 +237,7 @@ describe("verifyStrategyDraft: consensus (must never be fabricated)", () => {
     const noBasisDoc: EvidenceDocument = { ...DOC, id: "no-basis", text: noBasis };
     const citations = [cite("currentConsensus.epsPerShare", noBasis, "7", noBasisDoc), cite("currentConsensus.horizonQuarters", noBasis, "7", noBasisDoc)];
     const src = { title: "d", url: noBasisDoc.url, kind: "filing" as const, knownAt: `${noBasisDoc.publishedAt}T00:00:00+09:00` };
-    const r = verifyStrategyDraft(ASOF, [noBasisDoc], citations, { currentConsensus: consensus({ source: src }) });
+    const r = verifyStrategyDraft(ASOF, [noBasisDoc], citations, full({ currentConsensus: consensus({ source: src }) }));
     expect(r.currentConsensus).toBeNull();
     expect(r.unavailable).toContainEqual(expect.objectContaining({ field: "currentConsensus", code: "HORIZON_NOT_ANCHORED" }));
   });
@@ -245,7 +247,7 @@ describe("verifyStrategyDraft: consensus (must never be fabricated)", () => {
     const basicDoc: EvidenceDocument = { ...DOC, id: "basic-eps", text: basicText };
     const citations = [cite("currentConsensus.epsPerShare", basicText, "7", basicDoc), cite("currentConsensus.horizonQuarters", basicText, "7", basicDoc)];
     const src = { title: "d", url: basicDoc.url, kind: "filing" as const, knownAt: `${basicDoc.publishedAt}T00:00:00+09:00` };
-    const r = verifyStrategyDraft(ASOF, [basicDoc], citations, { currentConsensus: consensus({ source: src, knownAt: `${basicDoc.publishedAt}T00:00:00+09:00` }) });
+    const r = verifyStrategyDraft(ASOF, [basicDoc], citations, full({ currentConsensus: consensus({ source: src, knownAt: `${basicDoc.publishedAt}T00:00:00+09:00` }) }));
     expect(r.currentConsensus).toBeNull();
     expect(r.unavailable).toContainEqual(expect.objectContaining({ field: "currentConsensus", code: "HORIZON_NOT_ANCHORED" }));
   });
@@ -255,7 +257,7 @@ describe("verifyStrategyDraft: consensus (must never be fabricated)", () => {
     const commonOnlyDoc: EvidenceDocument = { ...DOC, id: "common-only", text: commonOnly };
     const citations = [cite("currentConsensus.epsPerShare", commonOnly, "7", commonOnlyDoc), cite("currentConsensus.horizonQuarters", commonOnly, "7", commonOnlyDoc)];
     const src = { title: "d", url: commonOnlyDoc.url, kind: "filing" as const, knownAt: `${commonOnlyDoc.publishedAt}T00:00:00+09:00` };
-    const r = verifyStrategyDraft(ASOF, [commonOnlyDoc], citations, { currentConsensus: consensus({ source: src, knownAt: `${commonOnlyDoc.publishedAt}T00:00:00+09:00` }) });
+    const r = verifyStrategyDraft(ASOF, [commonOnlyDoc], citations, full({ currentConsensus: consensus({ source: src, knownAt: `${commonOnlyDoc.publishedAt}T00:00:00+09:00` }) }));
     expect(r.currentConsensus).toBeNull();
     expect(r.unavailable).toContainEqual(expect.objectContaining({ field: "currentConsensus", code: "HORIZON_NOT_ANCHORED" }));
   });
@@ -265,7 +267,7 @@ describe("verifyStrategyDraft: consensus (must never be fabricated)", () => {
     const enDoc: EvidenceDocument = { ...DOC, id: "en-diluted", text: enText };
     const citations = [cite("currentConsensus.epsPerShare", enText, "7", enDoc), cite("currentConsensus.horizonQuarters", enText, "7", enDoc)];
     const src = { title: "d", url: enDoc.url, kind: "filing" as const, knownAt: `${enDoc.publishedAt}T00:00:00+09:00` };
-    const r = verifyStrategyDraft(ASOF, [enDoc], citations, { currentConsensus: consensus({ source: src, knownAt: `${enDoc.publishedAt}T00:00:00+09:00` }) });
+    const r = verifyStrategyDraft(ASOF, [enDoc], citations, full({ currentConsensus: consensus({ source: src, knownAt: `${enDoc.publishedAt}T00:00:00+09:00` }) }));
     expect(r.currentConsensus).not.toBeNull();
   });
 
@@ -313,7 +315,7 @@ describe("verifyStrategyDraft: catalyst (must never be fabricated)", () => {
     const staleDoc: EvidenceDocument = { ...DOC, id: "stale-cat", publishedAt: "2025-12-06" };
     const src = { title: "d", url: staleDoc.url, kind: "filing" as const, knownAt: "2025-12-06T00:00:00+09:00" };
     const citations = [cite("catalyst.eventAt", "실적발표 예정일 2026-08-10", "2026-08-10", staleDoc)];
-    const r = verifyStrategyDraft(ASOF, [staleDoc], citations, { catalyst: catalyst({ source: src, knownAt: "2026-01-05T00:00:00+09:00" }) });
+    const r = verifyStrategyDraft(ASOF, [staleDoc], citations, full({ catalyst: catalyst({ source: src, knownAt: "2026-01-05T00:00:00+09:00" }) }));
     expect(r.catalyst).toBeNull();
     expect(r.unavailable).toContainEqual(expect.objectContaining({ field: "catalyst", code: "KNOWN_AT_NOT_GROUNDED" }));
   });
@@ -326,10 +328,25 @@ describe("verifyStrategyDraft: catalyst (must never be fabricated)", () => {
   });
 });
 
-describe("verifyStrategyDraft: no strategy object at all", () => {
-  it("reports NOT_PROVIDED instead of guessing anything", () => {
-    const r = verifyStrategyDraft(ASOF, [DOC], [], null);
+describe("verifyStrategyDraft: the strategy object is required", () => {
+  it("reports NOT_PROVIDED instead of guessing anything when strategy is missing/null", () => {
+    for (const raw of [null, undefined]) {
+      const r = verifyStrategyDraft(ASOF, [DOC], [], raw);
+      expect(r).toMatchObject({ forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null });
+      expect(r.unavailable).toEqual([{ field: "all", code: "NOT_PROVIDED", message: "the model did not provide the required strategy object" }]);
+    }
+  });
+
+  it("names each required key the model left out (null is allowed, omission is not)", () => {
+    const r = verifyStrategyDraft(ASOF, [DOC], [], { forecast: null, catalyst: null });
     expect(r).toMatchObject({ forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null });
-    expect(r.unavailable).toEqual([{ field: "all", code: "NOT_PROVIDED", message: "the model did not provide a strategy object" }]);
+    expect(r.unavailable).toEqual([
+      { field: "currentConsensus", code: "NOT_PROVIDED", message: "the model did not provide the required strategy.currentConsensus field" },
+      { field: "priorConsensus", code: "NOT_PROVIDED", message: "the model did not provide the required strategy.priorConsensus field" },
+    ]);
+  });
+
+  it("accepts all four keys explicitly null with no drop reasons", () => {
+    expect(run({}).unavailable).toEqual([]);
   });
 });

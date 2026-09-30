@@ -77,7 +77,8 @@ const citations = () => [
 ];
 const proposal = (over: Record<string, unknown> = {}) => ({
   dataset: dataset(), missingFields: [], narrative: { product: "HBM 제품", industry: "메모리 산업" },
-  citations: citations(), assumptions: [{ fieldPath: "valuation.peMultiple", statement: "PER 10배", rationale: "역사적 평균" }], limitations: [], ...over,
+  citations: citations(), assumptions: [{ fieldPath: "valuation.peMultiple", statement: "PER 10배", rationale: "역사적 평균" }], limitations: [],
+  strategy: { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null }, ...over,
 });
 const audit = (over: Record<string, unknown> = {}) => ({
   approved: true, claims: citations().map((c) => ({ fieldPath: c.fieldPath, verdict: "confirmed" })), disagreements: [], missingFields: [], summary: "일치", ...over,

@@ -239,7 +239,7 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
   // when the product-market dataset is rejected (and vice versa), since they are verified against separate rules.
   // Uses the model's RAW citation list (not verified.citations, which now excludes strategy-prefixed fieldPaths
   // entirely -- see verify.ts): strategyVerify.ts re-validates every strategy citation itself via checkCitation.
-  result.strategy = verifyStrategyDraft(input.asOf, input.documents, draft.citations, draft.strategy ?? null);
+  result.strategy = verifyStrategyDraft(input.asOf, input.documents, draft.citations, draft.strategy);
   // generatedAt is server-owned, never the model's own claim: the model cannot backdate/postdate when its forecast
   // was produced (docs/STRATEGY.md "no backdating new LLM forecasts into old decisions").
   if (result.strategy.forecast) result.strategy.forecast = { ...result.strategy.forecast, generatedAt };

@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Dataset } from "../domain/schema.js";
 import type { Issue } from "../errors.js";
 import type { Catalyst, ConsensusSnapshot, EarningsForecastSnapshot } from "../strategy/schema.js";
+import { StrategyDraftSchema } from "./strategyVerify.js";
 
 // ---- input ----------------------------------------------------------------
 
@@ -83,12 +84,13 @@ export const ProposalSchema = z.object({
     .array(z.object({ fieldPath: z.string().max(200), statement: z.string().max(500), rationale: z.string().max(500) }))
     .max(60),
   limitations: shortList,
-  // Optional earnings-gap-auto/v1 strategy extraction (docs/STRATEGY_SPEC.md), additive to the product-market
-  // dataset above. Deliberately unvalidated at this outer level (z.unknown): the strategy sub-schemas
-  // (EarningsForecastSnapshotSchema etc.) are strict and exacting, and a malformed strategy object must never fail
-  // the whole draft/reject the unrelated Dataset. verifyStrategyDraft (strategyVerify.ts) parses each piece
-  // independently and drops (with a reason) whatever does not validate or cite real evidence.
-  strategy: z.unknown().nullable().optional(),
+  // Required earnings-gap-auto/v1 strategy extraction (docs/STRATEGY_SPEC.md), additive to the product-market
+  // dataset above. Only the outer shape is enforced here (an object with all four keys, each possibly null; see
+  // StrategyDraftSchema): the strategy sub-schemas (EarningsForecastSnapshotSchema etc.) are strict and exacting,
+  // and a malformed sub-object must never fail the whole draft/reject the unrelated Dataset. verifyStrategyDraft
+  // (strategyVerify.ts) parses each piece independently and drops (with a reason) whatever does not validate or
+  // cite real evidence.
+  strategy: StrategyDraftSchema,
 });
 export type Proposal = z.infer<typeof ProposalSchema>;
 

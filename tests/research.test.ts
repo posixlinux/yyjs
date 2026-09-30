@@ -102,7 +102,7 @@ function accepted(dataset: Dataset | null = makeDataset(), over: Partial<Analysi
     crossChecked: true,
     estimates: [],
     unavailable: [],
-    strategy: { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null, unavailable: [{ field: "all", code: "NOT_PROVIDED", message: "the model did not provide a strategy object" }] },
+    strategy: { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null, unavailable: [{ field: "all", code: "NOT_PROVIDED", message: "the model did not provide the required strategy object" }] },
     audit: { issues: [], excludedDocuments: [], auditSummary: "ok", auditedBy: "agy", independentAudit: true, limitations: [] },
     generatedAt: NOW.toISOString(),
     ...over,

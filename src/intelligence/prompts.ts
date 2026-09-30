@@ -52,7 +52,7 @@ const DATASET_RULES = `DatasetSchema 작성 규칙:
 
 const strategyRules = (input: EvidenceInput): string => {
   const horizon = nextFourQuarters(input.asOf);
-  return `추가 과제(선택, "strategy" 필드): earnings-gap-auto/v1 전략용 4개 분기 실적 전망·컨센서스·이벤트를 아래 형식으로 함께 제출하세요. 근거가 없으면 해당 필드를 null로 두세요(추측 금지). 이 필드는 완전히 별도로 검증되며, 여기서 실패해도 위 Dataset/제품시장 분석에는 전혀 영향이 없습니다.
+  return `추가 과제(필수, "strategy" 필드): earnings-gap-auto/v1 전략용 4개 분기 실적 전망·컨센서스·이벤트를 아래 형식으로 반드시 함께 제출하세요. "strategy" 는 항상 forecast/currentConsensus/priorConsensus/catalyst 네 키를 모두 가진 객체여야 하며, strategy 자체를 생략하거나 null 로 두면 응답 전체가 거부됩니다. 개별 키는 근거가 없을 때만 null 로 두세요(추측 금지). 이 필드는 완전히 별도로 검증되며, 여기서 실패해도 위 Dataset/제품시장 분석에는 전혀 영향이 없습니다.
 
 정확한 스키마(JSON Schema, 모든 필수 필드 포함 -- 아래에 없는 필드명을 지어내지 마세요):
 EarningsForecastSnapshot: ${forecastJsonSchema}
@@ -87,8 +87,8 @@ ${strategyRules(input)}
 DatasetSchema(JSON Schema): ${datasetJsonSchema}
 
 출력 JSON 형식:
-{"dataset": <Dataset 또는 null>, "missingFields": ["경로", ...], "narrative": {"product": "제품 서술(한국어)", "industry": "산업 서술(한국어)", "marketSizing": "시장 규모 산출/추정 방법(한국어)", "competition": "경쟁 구도와 합계 정합성(한국어)"}, "citations": [{"fieldPath","documentId","url","publishedAt","evidenceQuote","quotedNumber","multiplier"}], "assumptions": [{"fieldPath","statement","rationale"}], "limitations": ["..."], "strategy": {"forecast": <EarningsForecastSnapshot 또는 null>, "currentConsensus": <ConsensusSnapshot 또는 null>, "priorConsensus": <ConsensusSnapshot 또는 null>, "catalyst": <Catalyst 또는 null>} 또는 전체가 null}
-dataset 이 null 이면 missingFields 는 비어 있으면 안 됩니다. 필수 숫자 사실이 하나라도 없으면 dataset 은 null 입니다. strategy 는 완전히 선택사항이며, 근거가 부족한 하위 필드는 개별적으로 null 로 둘 수 있습니다.
+{"dataset": <Dataset 또는 null>, "missingFields": ["경로", ...], "narrative": {"product": "제품 서술(한국어)", "industry": "산업 서술(한국어)", "marketSizing": "시장 규모 산출/추정 방법(한국어)", "competition": "경쟁 구도와 합계 정합성(한국어)"}, "citations": [{"fieldPath","documentId","url","publishedAt","evidenceQuote","quotedNumber","multiplier"}], "assumptions": [{"fieldPath","statement","rationale"}], "limitations": ["..."], "strategy": {"forecast": <EarningsForecastSnapshot 또는 null>, "currentConsensus": <ConsensusSnapshot 또는 null>, "priorConsensus": <ConsensusSnapshot 또는 null>, "catalyst": <Catalyst 또는 null>}}
+dataset 이 null 이면 missingFields 는 비어 있으면 안 됩니다. 필수 숫자 사실이 하나라도 없으면 dataset 은 null 입니다. strategy 는 필수입니다: 네 키(forecast, currentConsensus, priorConsensus, catalyst)를 모두 포함해야 하며, 근거가 부족한 하위 필드만 개별적으로 null 로 둘 수 있습니다.
 
 ${evidenceBlock(input)}`;
 

@@ -1,11 +1,12 @@
+import { z } from "zod";
 import { formatQuarter, parseQuarter } from "../domain/time.js";
 import { CatalystSchema, ConsensusSnapshotSchema, EarningsForecastSnapshotSchema, type StrategySource } from "../strategy/schema.js";
 import { seoulDateOf } from "../strategy/time.js";
 import { checkCitation, numericSupport } from "./verify.js";
 import type { Citation, EvidenceDocument, StrategyDropReason, StrategyExtraction } from "./types.js";
 
-// Deterministic verification of the optional earnings-gap-auto/v1 fields a draft may attach under `strategy`
-// (see ProposalSchema.strategy). This never widens what the model is trusted to assert: every source must resolve
+// Deterministic verification of the earnings-gap-auto/v1 fields every draft must attach under `strategy`
+// (see ProposalSchema.strategy / StrategyDraftSchema below). This never widens what the model is trusted to assert: every source must resolve
 // to a real supplied document (url + matching date), and every consensus/liquidity/catalyst fact must carry a
 // citation whose quoted text actually anchors it -- not just a bare number or a resolvable URL, but text that
 // deterministically expands to the SAME four quarters being claimed, affirmatively states consolidated/diluted
@@ -20,6 +21,17 @@ import type { Citation, EvidenceDocument, StrategyDropReason, StrategyExtraction
 // claims beyond that. Residual risk (and this module's precise anchoring rules) are documented in docs/STRATEGY.md.
 
 const drop = (field: string, code: string, message: string): StrategyDropReason => ({ field, code, message });
+
+const STRATEGY_FIELDS = ["forecast", "currentConsensus", "priorConsensus", "catalyst"] as const;
+
+// A key that must be present; its value may be null (explicitly "no evidence") but never simply omitted.
+const requiredKey = z.unknown().refine((v) => v !== undefined, { message: "required (use null when there is no supporting evidence)" });
+
+/** Outer shape of the draft's REQUIRED `strategy` field: an object carrying all four keys. Each value stays unknown
+ * here (null = explicitly unavailable) and is parsed/verified piece by piece in verifyStrategyDraft, so a malformed
+ * sub-object is still dropped with a reason instead of failing the whole draft. Omitting `strategy`, sending null,
+ * or leaving out any of the four keys fails ProposalSchema validation. */
+export const StrategyDraftSchema = z.object(Object.fromEntries(STRATEGY_FIELDS.map((k) => [k, requiredKey])) as Record<(typeof STRATEGY_FIELDS)[number], typeof requiredKey>);
 
 type SourceOk = { doc: EvidenceDocument };
 type SourceBad = { error: string };
@@ -289,11 +301,21 @@ function verifyCatalyst(raw: unknown, docs: EvidenceDocument[], docsById: Map<st
 /** `asOf` is a YYYY-MM-DD KST date (same cutoff the Dataset draft is verified against). `citations` is the model's
  * raw citation list (unfiltered): strategy fieldPaths are verified independently of the Dataset's own citation pool
  * (see verifyProposal in verify.ts, which now skips strategy-prefixed fieldPaths entirely so a bad strategy citation
- * never nulls out the unrelated Dataset). `raw` is the unknown `strategy` field of the model's draft. */
+ * never nulls out the unrelated Dataset). `raw` is the required `strategy` field of the model's draft
+ * (validated against StrategyDraftSchema here too). */
 export function verifyStrategyDraft(asOf: string, docs: EvidenceDocument[], citations: Citation[], raw: unknown): StrategyExtraction {
   const docsById = new Map(docs.map((d) => [d.id, d]));
-  const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
-  if (!obj) return { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null, unavailable: [drop("all", "NOT_PROVIDED", "the model did not provide a strategy object")] };
+  // `strategy` is required (StrategyDraftSchema). ProposalSchema already rejects a draft without it; this re-check
+  // keeps direct callers honest and reports exactly which required key is missing instead of guessing.
+  const shape = StrategyDraftSchema.safeParse(raw);
+  if (!shape.success) {
+    const missing = shape.error.issues.map((i) => i.path.join(".")).filter(Boolean);
+    const unavailable = missing.length
+      ? missing.map((f) => drop(f, "NOT_PROVIDED", `the model did not provide the required strategy.${f} field`))
+      : [drop("all", "NOT_PROVIDED", "the model did not provide the required strategy object")];
+    return { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null, unavailable };
+  }
+  const obj = shape.data;
   const f = verifyForecast(obj.forecast, docs, docsById, citations, asOf);
   const cc = verifyConsensus("currentConsensus", obj.currentConsensus, docs, docsById, citations, asOf);
   const pc = verifyConsensus("priorConsensus", obj.priorConsensus, docs, docsById, citations, asOf);
