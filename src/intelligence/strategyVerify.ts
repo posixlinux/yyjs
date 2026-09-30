@@ -5,8 +5,8 @@ import { seoulDateOf } from "../strategy/time.js";
 import { checkCitation, numericSupport } from "./verify.js";
 import type { Citation, EvidenceDocument, StrategyDropReason, StrategyExtraction } from "./types.js";
 
-// Deterministic verification of the earnings-gap-auto/v1 fields every draft must attach under `strategy`
-// (see ProposalSchema.strategy / StrategyDraftSchema below). This never widens what the model is trusted to assert: every source must resolve
+// Deterministic verification of the earnings-gap-auto/v1 fields returned under the required `strategy` key
+// by the SEPARATE strategy call (see StrategyProposalSchema / StrategyDraftSchema below). This never widens what the model is trusted to assert: every source must resolve
 // to a real supplied document (url + matching date), and every consensus/liquidity/catalyst fact must carry a
 // citation whose quoted text actually anchors it -- not just a bare number or a resolvable URL, but text that
 // deterministically expands to the SAME four quarters being claimed, affirmatively states consolidated/diluted

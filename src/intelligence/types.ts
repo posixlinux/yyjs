@@ -84,15 +84,21 @@ export const ProposalSchema = z.object({
     .array(z.object({ fieldPath: z.string().max(200), statement: z.string().max(500), rationale: z.string().max(500) }))
     .max(60),
   limitations: shortList,
-  // Required earnings-gap-auto/v1 strategy extraction (docs/STRATEGY_SPEC.md), additive to the product-market
-  // dataset above. Only the outer shape is enforced here (an object with all four keys, each possibly null; see
-  // StrategyDraftSchema): the strategy sub-schemas (EarningsForecastSnapshotSchema etc.) are strict and exacting,
-  // and a malformed sub-object must never fail the whole draft/reject the unrelated Dataset. verifyStrategyDraft
-  // (strategyVerify.ts) parses each piece independently and drops (with a reason) whatever does not validate or
-  // cite real evidence.
-  strategy: StrategyDraftSchema,
 });
 export type Proposal = z.infer<typeof ProposalSchema>;
+
+/** Reply of the SEPARATE strategy call (strategyPrompt), made independently of the Dataset draft so the
+ * earnings-gap-auto/v1 extraction (docs/STRATEGY_SPEC.md) gets the model's full attention instead of being an
+ * afterthought appended to a long Dataset generation. `strategy` is required: only its outer shape is enforced here
+ * (an object with all four keys, each possibly null; see StrategyDraftSchema), because the strategy sub-schemas
+ * (EarningsForecastSnapshotSchema etc.) are strict and exacting -- verifyStrategyDraft (strategyVerify.ts) parses
+ * each piece independently and drops (with a reason) whatever does not validate or cite real evidence. `citations`
+ * are this call's own strategy citations (fieldPaths like "currentConsensus.epsPerShare"). */
+export const StrategyProposalSchema = z.object({
+  strategy: StrategyDraftSchema,
+  citations: z.array(CitationSchema).max(300),
+});
+export type StrategyProposal = z.infer<typeof StrategyProposalSchema>;
 
 export const AuditSchema = z.object({
   approved: z.boolean(),

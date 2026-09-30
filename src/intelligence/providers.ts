@@ -186,7 +186,7 @@ const agyEnvelope = (raw: string): Envelope => {
 // ---- one guarded CLI call -----------------------------------------------------------------------------------
 
 /** Which half of an analysis a call belongs to; used only for safe diagnostics (never affects behavior). */
-export type CallStage = "draft" | "audit";
+export type CallStage = "draft" | "audit" | "strategy";
 
 /** One provider call, with safe diagnostics: stage, prompt size, configured timeout, duration and failure reason are
  * logged to stderr (never the prompt/source text or any secret). Distinguishes a provider-level TIMEOUT (this call's
