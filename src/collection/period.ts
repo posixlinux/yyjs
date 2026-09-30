@@ -2,14 +2,20 @@ import type { CompetitorPeriod } from "./types.js";
 
 const DAY = 86_400_000;
 const utc = (d: string) => Date.parse(`${d}T00:00:00Z`);
+const quarterOf = (t: number) => {
+  const d = new Date(t);
+  return { label: `${d.getUTCFullYear()}Q${Math.floor(d.getUTCMonth() / 3) + 1}`, end: Date.UTC(d.getUTCFullYear(), (Math.floor(d.getUTCMonth() / 3) + 1) * 3, 0) };
+};
 
-/** Calendar quarter / half / year that holds most of the period (its midpoint), and whether the ends line up. */
+/**
+ * Calendar label of a fiscal period. A quarter is the calendar quarter holding most of it ("2025Q2"); a half-year or
+ * year is the range of calendar quarters it covers ("2025Q2~2025Q3" for an Apr-Sep half), since fiscal halves and
+ * years often do not line up with calendar ones. "exact" when periodEnd is within 7 days of a calendar quarter end.
+ */
 export function calendarPeriodOf(periodEnd: string, months: 3 | 6 | 12): Pick<CompetitorPeriod, "calendarPeriod" | "calendarAlignment"> {
   const end = utc(periodEnd);
-  const mid = new Date(end - months * 15.2 * DAY);
-  const y = mid.getUTCFullYear();
-  const slot = Math.floor(mid.getUTCMonth() / months); // index of the calendar quarter/half/year
-  const label = months === 3 ? `${y}Q${slot + 1}` : months === 6 ? `${y}H${slot + 1}` : `${y}`;
-  const calEnd = Date.UTC(y, (slot + 1) * months, 0);
-  return { calendarPeriod: label, calendarAlignment: Math.abs(end - calEnd) <= 7 * DAY ? "exact" : "approximate" };
+  const last = quarterOf(end - 45 * DAY); // the quarter holding most of the final three months
+  const first = quarterOf(end - (months * 30.44 - 45) * DAY);
+  const calendarPeriod = months === 3 ? last.label : `${first.label}~${last.label}`;
+  return { calendarPeriod, calendarAlignment: Math.abs(end - last.end) <= 7 * DAY ? "exact" : "approximate" };
 }

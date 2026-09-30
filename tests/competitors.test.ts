@@ -80,7 +80,7 @@ const MU_FACTS = {
             fact("2025-08-29", "2026-02-26", 37_503_000_000, "10-Q", "2026-03-19", 2026, "Q2"), // 6-month YTD: ignored
             fact("2025-11-28", "2026-02-26", 23_860_000_000, "10-Q", "2026-03-19", 2026, "Q2"),
             fact("2026-02-27", "2026-05-28", 41_456_000_000, "10-Q", "2026-06-25", 2026, "Q3"),
-            fact("2026-05-29", "2026-08-27", 45_000_000_000, "10-Q", "2026-09-30", 2026, "Q4"), // filed after asOf (public 10-01 12:00 KST +1 day)
+            fact("2026-05-29", "2026-08-27", 45_000_000_000, "10-Q", "2026-10-01", 2026, "Q4"), // filed 10-01 ET: public only on 10-02 KST, after asOf
           ],
         },
       },
@@ -150,9 +150,10 @@ describe("competitor ids", () => {
   it("maps fiscal periods to the calendar period holding most of them", () => {
     expect(calendarPeriodOf("2025-05-29", 3)).toEqual({ calendarPeriod: "2025Q2", calendarAlignment: "approximate" });
     expect(calendarPeriodOf("2026-03-31", 3)).toEqual({ calendarPeriod: "2026Q1", calendarAlignment: "exact" });
-    expect(calendarPeriodOf("2025-09-30", 6)).toEqual({ calendarPeriod: "2025H2", calendarAlignment: "exact" });
-    expect(calendarPeriodOf("2026-03-31", 12)).toEqual({ calendarPeriod: "2025", calendarAlignment: "approximate" });
-    expect(calendarPeriodOf("2025-12-31", 12)).toEqual({ calendarPeriod: "2025", calendarAlignment: "exact" });
+    expect(calendarPeriodOf("2025-09-30", 6)).toEqual({ calendarPeriod: "2025Q2~2025Q3", calendarAlignment: "exact" }); // Apr-Sep half
+    expect(calendarPeriodOf("2026-03-31", 12)).toEqual({ calendarPeriod: "2025Q2~2026Q1", calendarAlignment: "exact" });
+    expect(calendarPeriodOf("2025-12-31", 12)).toEqual({ calendarPeriod: "2025Q1~2025Q4", calendarAlignment: "exact" });
+    expect(calendarPeriodOf("2025-08-28", 12)).toEqual({ calendarPeriod: "2024Q4~2025Q3", calendarAlignment: "approximate" });
   });
 });
 
@@ -165,7 +166,7 @@ describe("SEC EDGAR (US)", () => {
     const q = mu!.periods.filter((p) => p.months === 3);
     expect(q.map((p) => `${p.periodEnd}:${p.revenue}`)).toEqual([
       "2026-05-28:41456000000", "2026-02-26:23860000000", "2025-11-27:13643000000",
-      "2025-08-28:10315000000", // derived Q4 = 37,378 - (8,709 + 8,053 + 9,301)
+      "2025-08-28:11315000000", // derived Q4 = 37,378 - (8,709 + 8,053 + 9,301)
       "2025-05-29:9301000000", "2025-02-27:8053000000", "2024-11-28:8709000000",
     ]);
     expect(q.find((p) => p.periodEnd === "2025-08-28")).toMatchObject({ basis: "derived", calendarPeriod: "2025Q3", filedDate: "2025-10-04" });
@@ -217,9 +218,9 @@ describe("EDINET (Japan)", () => {
     const tel = e.competitors?.[0];
     expect(tel).toMatchObject({ market: "JP", code: "8035", name: "Tokyo Electron Limited", system: "EDINET" });
     expect(tel!.periods.map((p) => `${p.calendarPeriod}:${p.months}:${p.basis}:${p.revenue}`)).toEqual([
-      "2026H1:6:derived:1300000000000", // H2 of FY2025 = 2.4T - 1.1T (Oct-Mar -> calendar 2026H1, approximate)
-      "2025:12:reported:2400000000000",
-      "2025H2:6:reported:1100000000000",
+      "2025Q4~2026Q1:6:derived:1300000000000", // second half (Oct-Mar) = FY 2.4T - first half 1.1T
+      "2025Q2~2026Q1:12:reported:2400000000000",
+      "2025Q2~2025Q3:6:reported:1100000000000",
     ]);
     expect(tel!.periods[0]).toMatchObject({ periodStart: "2025-10-01", periodEnd: "2026-03-31", filedDate: "2026-06-19", currency: "JPY", consolidated: true });
     expect(tel!.periods[2]).toMatchObject({ periodStart: "2025-04-01", sourceUrl: "https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?S100BBBB" });
