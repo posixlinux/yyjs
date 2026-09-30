@@ -6,16 +6,18 @@ import { isValidDate } from "../domain/time.js";
 import { AppError, type Issue } from "../errors.js";
 import { Availability, isExpiredCode } from "./availability.js";
 import { abortedStatus, AGY_DEFAULT_MODEL, callProvider, skipped, validateClaudeEffort, type ProviderConfig, type ProviderOutcome } from "./providers.js";
-import { auditPrompt, draftPrompt } from "./prompts.js";
+import { auditPrompt, draftPrompt, strategyPrompt } from "./prompts.js";
 import { buildEnv, sanitize, Semaphore, spawnRunner } from "./runner.js";
 import {
   AuditSchema,
   DEFAULT_CALL_TIMEOUT_MS,
+  DEFAULT_MAX_CONCURRENT,
   EvidenceInputSchema,
   JOB_MAX_SEQUENTIAL_CALLS,
   JOB_OVERHEAD_MS,
   LIMITS,
   ProposalSchema,
+  StrategyProposalSchema,
   type AnalysisResult,
   type EvidenceInput,
   type IntelligenceOptions,
@@ -116,7 +118,7 @@ const resolveOptions = (o: IntelligenceOptions) => {
     model: o.agyModel || AGY_DEFAULT_MODEL,
     effort: undefined, // agy does not support --effort
   };
-  return { claude, agy, maxConcurrent: Number.isFinite(o.maxConcurrent) && o.maxConcurrent! >= 1 ? Math.floor(o.maxConcurrent!) : 2 };
+  return { claude, agy, maxConcurrent: Number.isFinite(o.maxConcurrent) && o.maxConcurrent! >= 1 ? Math.floor(o.maxConcurrent!) : DEFAULT_MAX_CONCURRENT };
 };
 
 const invalid = (message: string, details?: unknown) => new AppError(400, "INTELLIGENCE_INPUT_INVALID", message, details);
@@ -168,7 +170,7 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
     crossChecked: false,
     estimates: [],
     unavailable,
-    strategy: { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null, unavailable: [{ field: "all", code: "NOT_DRAFTED", message: "no draft was produced" }] },
+    strategy: { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null, unavailable: [{ field: "all", code: "NOT_DRAFTED", message: "no draft was produced, so the separate strategy call was not made" }] },
     audit: { issues, excludedDocuments: excluded, auditSummary: null, auditedBy: null, independentAudit: false, limitations: [...LIMITATIONS] },
     generatedAt,
   };
@@ -200,6 +202,7 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
 
   const roles = ([{ provider: "claude", cfg: cfg.claude }, { provider: "agy", cfg: cfg.agy }] as Role[]).filter((r) => usable(r.provider));
   const other = (p: ProviderName): ProviderName => (p === "claude" ? "agy" : "claude");
+  const cfgOf = (p: ProviderName) => (p === "claude" ? cfg.claude : cfg.agy);
 
   // 1. Draft: Claude first, agy when Claude is expired OR when Claude's draft call TIMEOUT (bounded: at most one
   //    fallback, since `roles` has at most 2 entries). Any other non-expiry failure (bad JSON, schema, ...) is not
@@ -235,89 +238,118 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
   const verified = verifyProposal(input.asOf, input.ticker, input.documents, draft);
   issues.push(...verified.issues);
   result.citations = verified.citations;
-  // Additive and independent of the Dataset's own accept/reject path above: a strategy field can be usable even
-  // when the product-market dataset is rejected (and vice versa), since they are verified against separate rules.
-  // Uses the model's RAW citation list (not verified.citations, which now excludes strategy-prefixed fieldPaths
-  // entirely -- see verify.ts): strategyVerify.ts re-validates every strategy citation itself via checkCitation.
-  result.strategy = verifyStrategyDraft(input.asOf, input.documents, draft.citations, draft.strategy ?? null);
-  // generatedAt is server-owned, never the model's own claim: the model cannot backdate/postdate when its forecast
-  // was produced (docs/STRATEGY.md "no backdating new LLM forecasts into old decisions").
-  if (result.strategy.forecast) result.strategy.forecast = { ...result.strategy.forecast, generatedAt };
+
+  // 1b. Strategy: a SEPARATE call (strategyPrompt / StrategyProposalSchema), started now and run alongside the audit
+  //     below, so the earnings-gap-auto/v1 extraction is never an optional afterthought of the long Dataset draft.
+  //     It is additive and independent of the Dataset's accept/reject path: a failed strategy call only fills
+  //     result.strategy.unavailable (never issues/providers/status), and a strategy field can be usable even when
+  //     the product-market dataset is rejected (and vice versa). Tried on the drafter first (known to work in this
+  //     run); the other provider is tried only when the drafter expires or times out on this call.
+  //     Parallelism needs 2 free semaphore slots per analysis (DEFAULT_MAX_CONCURRENT); with
+  //     INTELLIGENCE_MAX_CONCURRENT=1 the semaphore serializes it after the audit (one extra call's time).
   result.narrative = draft.narrative;
   result.assumptions = draft.assumptions;
   result.missingFields = [...draft.missingFields];
   result.audit.limitations.push(...draft.limitations);
   result.status = "partial";
 
+  await Promise.all([auditAndAccept(drafter, draft), extractStrategy(drafter)]);
+  return result;
+
+  async function extractStrategy(first: ProviderName): Promise<void> {
+    const order = [first, ...roles.map((r) => r.provider).filter((p) => p !== first)];
+    const failures: string[] = [];
+    for (const provider of order) {
+      if (provider !== first && unavailable.some((u) => u.provider === provider)) continue;
+      const out = await limited(provider, () => callProvider(provider, cfgOf(provider), strategyPrompt(input), StrategyProposalSchema, "strategy"));
+      if (out.value) {
+        // Strategy citations are this call's own; strategyVerify.ts re-validates every one via checkCitation.
+        result.strategy = verifyStrategyDraft(input.asOf, input.documents, out.value.citations, out.value.strategy);
+        // generatedAt is server-owned, never the model's own claim: the model cannot backdate/postdate when its
+        // forecast was produced (docs/STRATEGY.md "no backdating new LLM forecasts into old decisions").
+        if (result.strategy.forecast) result.strategy.forecast = { ...result.strategy.forecast, generatedAt };
+        return;
+      }
+      failures.push(`${provider} ${out.status.code}: ${out.status.message}`);
+      if (out.status.status === "error" && isExpiredCode(out.status.code)) {
+        expire(provider, out.status.code, out.status.message, out.cooldownMs, false);
+        continue;
+      }
+      if (out.status.status === "error" && out.status.code === "TIMEOUT") continue;
+      break; // bad JSON/schema etc.: not retried elsewhere (same rule as the draft)
+    }
+    result.strategy = { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null, unavailable: [{ field: "all", code: "STRATEGY_CALL_FAILED", message: `the separate strategy call failed: ${failures.join("; ") || "no provider is available"}` }] };
+  }
+
   // 2. Audit. Preferred: the OTHER provider (independent). If it is expired, the drafting provider audits its own draft in a
   //    fresh call with an adversarial prompt, so every check still runs (weaker: not independent, status single_model).
   //    Only when no provider can audit at all does the draft rest on the deterministic checks alone.
-  const cfgOf = (p: ProviderName) => (p === "claude" ? cfg.claude : cfg.agy);
-  const otherProvider = other(drafter);
-  const candidates: { provider: ProviderName; independent: boolean }[] = [];
-  if (roles.some((r) => r.provider === otherProvider) && !unavailable.some((u) => u.provider === otherProvider)) candidates.push({ provider: otherProvider, independent: true });
-  candidates.push({ provider: drafter, independent: false });
+  async function auditAndAccept(drafter: ProviderName, draft: import("./types.js").Proposal): Promise<void> {
+    const otherProvider = other(drafter);
+    const candidates: { provider: ProviderName; independent: boolean }[] = [];
+    if (roles.some((r) => r.provider === otherProvider) && !unavailable.some((u) => u.provider === otherProvider)) candidates.push({ provider: otherProvider, independent: true });
+    candidates.push({ provider: drafter, independent: false });
 
-  let audit: import("./types.js").Audit | null = null;
-  let auditor: { provider: ProviderName; independent: boolean } | null = null;
-  for (const cand of candidates) {
-    const out = await limited(cand.provider, () => callProvider(cand.provider, cfgOf(cand.provider), auditPrompt(input, draft!, { selfAudit: !cand.independent }), AuditSchema, "audit"));
-    if (cand.independent || out.status.status === "error") result.providers[cand.provider] = out.status; // a successful self-audit keeps the draft's status
-    if (out.value) {
-      audit = out.value;
-      auditor = cand;
-      break;
+    let audit: import("./types.js").Audit | null = null;
+    let auditor: { provider: ProviderName; independent: boolean } | null = null;
+    for (const cand of candidates) {
+      const out = await limited(cand.provider, () => callProvider(cand.provider, cfgOf(cand.provider), auditPrompt(input, draft, { selfAudit: !cand.independent }), AuditSchema, "audit"));
+      if (cand.independent || out.status.status === "error") result.providers[cand.provider] = out.status; // a successful self-audit keeps the draft's status
+      if (out.value) {
+        audit = out.value;
+        auditor = cand;
+        break;
+      }
+      if (out.status.status === "error" && isExpiredCode(out.status.code)) {
+        expire(cand.provider, out.status.code, out.status.message, out.cooldownMs, false);
+        continue;
+      }
+      issues.push({ code: "PROVIDER_UNAVAILABLE", path: cand.provider, message: `${out.status.message} (the audit failed for a reason other than an expired login/quota, so the draft is not accepted)` });
+      return;
     }
-    if (out.status.status === "error" && isExpiredCode(out.status.code)) {
-      expire(cand.provider, out.status.code, out.status.message, out.cooldownMs, false);
-      continue;
+
+    const finalDataset = (kind: "accepted" | "single_model") => {
+      result.dataset = verified.dataset;
+      result.status = kind;
+      result.estimates = verified.dataset ? listEstimates(verified.dataset).map((e) => ({ path: e.path, kind: e.kind, quarter: e.quarter, value: e.value, currency: e.currency, method: e.estimate.method, basedOn: e.estimate.basedOn, rationale: e.estimate.rationale })) : [];
+    };
+
+    if (!audit || !auditor) {
+      // Nobody could audit. Every deterministic check (citations, units, dates, schema, estimate rules) still applies.
+      result.audit.limitations.push(`Not audited by a model: ${unavailable.map((u) => `${u.provider} ${u.code}`).join(", ") || "no auditor available"}; the draft by ${drafter} rests on the deterministic citation/number/estimate checks only.`);
+      if (verified.dataset && !issues.length) finalDataset("single_model");
+      return;
     }
-    issues.push({ code: "PROVIDER_UNAVAILABLE", path: cand.provider, message: `${out.status.message} (the audit failed for a reason other than an expired login/quota, so the draft is not accepted)` });
-    return result;
+
+    result.audit.auditedBy = auditor.provider;
+    result.audit.independentAudit = auditor.independent;
+    result.crossChecked = auditor.independent;
+    if (!auditor.independent) result.audit.limitations.push(`Not cross-checked: ${otherProvider} was unavailable, so ${drafter} audited its own draft in a separate call (not independent).`);
+    result.audit.auditSummary = audit.summary;
+    result.missingFields = [...new Set([...result.missingFields, ...audit.missingFields])];
+    result.disagreements = [
+      ...audit.disagreements,
+      ...audit.claims.filter((c) => c.verdict !== "confirmed").map((c) => `${c.fieldPath}: ${c.verdict}${c.note ? ` - ${sanitize(c.note, undefined, 200)}` : ""}`),
+    ];
+    if (verified.dataset) {
+      const confirmed = new Set(audit.claims.filter((c) => c.verdict === "confirmed").map((c) => c.fieldPath));
+      if (!audit.approved) issues.push({ code: "AUDIT_NOT_APPROVED", path: auditor.provider, message: `${auditor.provider} did not approve the draft` });
+      if (result.disagreements.length) issues.push({ code: "PROVIDER_DISAGREEMENT", path: auditor.provider, message: `${result.disagreements.length} disagreement(s) between providers` });
+      if (audit.missingFields.length) issues.push({ code: "AUDIT_MISSING_FIELDS", path: auditor.provider, message: `${auditor.provider} reports missing required data` });
+      for (const p of verified.observedPaths)
+        if (!confirmed.has(p)) issues.push({ code: "AUDIT_UNCONFIRMED", path: p, message: `${auditor.provider} did not confirm this observed number` });
+      // Estimates are judged for plausibility: an explicitly unreasonable one blocks the dataset.
+      const verdicts = new Map(audit.estimateReviews.map((r) => [r.fieldPath, r]));
+      for (const p of verified.estimatedPaths) {
+        const v = verdicts.get(p);
+        if (v?.verdict === "unreasonable") issues.push({ code: "AUDIT_ESTIMATE_REJECTED", path: p, message: `${auditor.provider} judged this estimate unreasonable${v.note ? `: ${sanitize(v.note, undefined, 200)}` : ""}` });
+      }
+      if (!issues.length) {
+        finalDataset(auditor.independent ? "accepted" : "single_model");
+        result.estimates = result.estimates.map((e) => ({ ...e, review: verdicts.get(e.path)?.verdict ?? "not_reviewed" }));
+      }
+    }
   }
-
-  const finalDataset = (kind: "accepted" | "single_model") => {
-    result.dataset = verified.dataset;
-    result.status = kind;
-    result.estimates = verified.dataset ? listEstimates(verified.dataset).map((e) => ({ path: e.path, kind: e.kind, quarter: e.quarter, value: e.value, currency: e.currency, method: e.estimate.method, basedOn: e.estimate.basedOn, rationale: e.estimate.rationale })) : [];
-  };
-
-  if (!audit || !auditor) {
-    // Nobody could audit. Every deterministic check (citations, units, dates, schema, estimate rules) still applies.
-    result.audit.limitations.push(`Not audited by a model: ${unavailable.map((u) => `${u.provider} ${u.code}`).join(", ") || "no auditor available"}; the draft by ${drafter} rests on the deterministic citation/number/estimate checks only.`);
-    if (verified.dataset && !issues.length) finalDataset("single_model");
-    return result;
-  }
-
-  result.audit.auditedBy = auditor.provider;
-  result.audit.independentAudit = auditor.independent;
-  result.crossChecked = auditor.independent;
-  if (!auditor.independent) result.audit.limitations.push(`Not cross-checked: ${otherProvider} was unavailable, so ${drafter} audited its own draft in a separate call (not independent).`);
-  result.audit.auditSummary = audit.summary;
-  result.missingFields = [...new Set([...result.missingFields, ...audit.missingFields])];
-  result.disagreements = [
-    ...audit.disagreements,
-    ...audit.claims.filter((c) => c.verdict !== "confirmed").map((c) => `${c.fieldPath}: ${c.verdict}${c.note ? ` - ${sanitize(c.note, undefined, 200)}` : ""}`),
-  ];
-  if (verified.dataset) {
-    const confirmed = new Set(audit.claims.filter((c) => c.verdict === "confirmed").map((c) => c.fieldPath));
-    if (!audit.approved) issues.push({ code: "AUDIT_NOT_APPROVED", path: auditor.provider, message: `${auditor.provider} did not approve the draft` });
-    if (result.disagreements.length) issues.push({ code: "PROVIDER_DISAGREEMENT", path: auditor.provider, message: `${result.disagreements.length} disagreement(s) between providers` });
-    if (audit.missingFields.length) issues.push({ code: "AUDIT_MISSING_FIELDS", path: auditor.provider, message: `${auditor.provider} reports missing required data` });
-    for (const p of verified.observedPaths)
-      if (!confirmed.has(p)) issues.push({ code: "AUDIT_UNCONFIRMED", path: p, message: `${auditor.provider} did not confirm this observed number` });
-    // Estimates are judged for plausibility: an explicitly unreasonable one blocks the dataset.
-    const verdicts = new Map(audit.estimateReviews.map((r) => [r.fieldPath, r]));
-    for (const p of verified.estimatedPaths) {
-      const v = verdicts.get(p);
-      if (v?.verdict === "unreasonable") issues.push({ code: "AUDIT_ESTIMATE_REJECTED", path: p, message: `${auditor.provider} judged this estimate unreasonable${v.note ? `: ${sanitize(v.note, undefined, 200)}` : ""}` });
-    }
-    if (!issues.length) {
-      finalDataset(auditor.independent ? "accepted" : "single_model");
-      result.estimates = result.estimates.map((e) => ({ ...e, review: verdicts.get(e.path)?.verdict ?? "not_reviewed" }));
-    }
-  }
-  return result;
 }
 
 /**
@@ -349,7 +381,7 @@ export async function analyzeEvidence(raw: unknown, options: IntelligenceOptions
       refs: 0,
       promise: run(input, excluded, o, controller.signal).then((result) => {
         // Provider failures (timeout, quota, missing CLI, abort) and skipped-because-expired providers are transient: never cached.
-        if (ttl > 0 && !result.unavailable.length && !Object.values(result.providers).some((s) => s.status === "error")) {
+        if (ttl > 0 && !result.unavailable.length && !Object.values(result.providers).some((s) => s.status === "error") && !result.strategy.unavailable.some((u) => u.code === "STRATEGY_CALL_FAILED")) {
           if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value!);
           cache.set(key, { at: Date.now(), result });
         }

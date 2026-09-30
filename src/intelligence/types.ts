@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Dataset } from "../domain/schema.js";
 import type { Issue } from "../errors.js";
 import type { Catalyst, ConsensusSnapshot, EarningsForecastSnapshot } from "../strategy/schema.js";
+import { StrategyDraftSchema } from "./strategyVerify.js";
 
 // ---- input ----------------------------------------------------------------
 
@@ -21,6 +22,9 @@ export const LIMITS = {
 export const DEFAULT_CALL_TIMEOUT_MS = 600_000;
 /** Worst-case sequential CLI calls in one analysis: claude-draft, then (on a claude draft TIMEOUT) agy-draft, then an audit call. */
 export const JOB_MAX_SEQUENTIAL_CALLS = 3;
+/** Default process-wide CLI concurrency: the audit and the separate strategy call of one analysis run in parallel
+ * (2 calls), times the default number of concurrently running research jobs (RESEARCH_MAX_RUNNING=2). */
+export const DEFAULT_MAX_CONCURRENT = 4;
 /** Non-LLM headroom reserved in the outer job budget: evidence collection, queue wait, cleanup. */
 export const JOB_OVERHEAD_MS = 300_000;
 
@@ -83,14 +87,21 @@ export const ProposalSchema = z.object({
     .array(z.object({ fieldPath: z.string().max(200), statement: z.string().max(500), rationale: z.string().max(500) }))
     .max(60),
   limitations: shortList,
-  // Optional earnings-gap-auto/v1 strategy extraction (docs/STRATEGY_SPEC.md), additive to the product-market
-  // dataset above. Deliberately unvalidated at this outer level (z.unknown): the strategy sub-schemas
-  // (EarningsForecastSnapshotSchema etc.) are strict and exacting, and a malformed strategy object must never fail
-  // the whole draft/reject the unrelated Dataset. verifyStrategyDraft (strategyVerify.ts) parses each piece
-  // independently and drops (with a reason) whatever does not validate or cite real evidence.
-  strategy: z.unknown().nullable().optional(),
 });
 export type Proposal = z.infer<typeof ProposalSchema>;
+
+/** Reply of the SEPARATE strategy call (strategyPrompt), made independently of the Dataset draft so the
+ * earnings-gap-auto/v1 extraction (docs/STRATEGY_SPEC.md) gets the model's full attention instead of being an
+ * afterthought appended to a long Dataset generation. `strategy` is required: only its outer shape is enforced here
+ * (an object with all four keys, each possibly null; see StrategyDraftSchema), because the strategy sub-schemas
+ * (EarningsForecastSnapshotSchema etc.) are strict and exacting -- verifyStrategyDraft (strategyVerify.ts) parses
+ * each piece independently and drops (with a reason) whatever does not validate or cite real evidence. `citations`
+ * are this call's own strategy citations (fieldPaths like "currentConsensus.epsPerShare"). */
+export const StrategyProposalSchema = z.object({
+  strategy: StrategyDraftSchema,
+  citations: z.array(CitationSchema).max(300),
+});
+export type StrategyProposal = z.infer<typeof StrategyProposalSchema>;
 
 export const AuditSchema = z.object({
   approved: z.boolean(),
@@ -148,7 +159,7 @@ export type IntelligenceOptions = {
    *  an unrecognised value is diagnosed (logged) and falls back to the default. Override with INTELLIGENCE_CLAUDE_EFFORT env. */
   claudeEffort?: string;
   timeoutMs?: number; // per CLI call, default DEFAULT_CALL_TIMEOUT_MS (300_000)
-  maxConcurrent?: number; // simultaneous CLI processes across all analyses, default 2
+  maxConcurrent?: number; // simultaneous CLI processes across all analyses, default DEFAULT_MAX_CONCURRENT (4)
   cacheTtlMs?: number; // default 900_000; 0 disables
   cache?: boolean; // default true
   runner?: Runner; // injectable for tests

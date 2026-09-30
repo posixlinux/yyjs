@@ -97,8 +97,15 @@ const agyBoth = (p: unknown = proposal(), a: unknown = audit()) => (r: RunReques
 const CLAUDE = "/opt/bin/claude";
 const AGY = "/opt/bin/agy";
 const opts = (runner: Runner, extra: Record<string, unknown> = {}) => ({ claudePath: CLAUDE, agyPath: AGY, runner, cache: false, env: { PATH: "/usr/bin", HOME }, ...extra });
-const route = (c: (r: RunRequest) => RunResult | Promise<RunResult>, g: (r: RunRequest) => RunResult | Promise<RunResult>): Runner =>
-  async (r) => (r.command === CLAUDE ? c(r) : g(r));
+// The strategy extraction is a SEPARATE call (strategyPrompt). Unless a test passes its own strategy handler `s`,
+// route answers it with an all-null strategy (in the calling provider's envelope) WITHOUT reaching c/g, so the
+// draft/audit call counts and orders the tests below assert on are unaffected by it.
+const isStrategyPrompt = (r: RunRequest) => [r.stdin, ...r.args].some((a) => a.includes("예정 이벤트(촉매)를 제공된 문서에서 추출"));
+const EMPTY_STRATEGY = { strategy: { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null }, citations: [] };
+const replyAs = (r: RunRequest, body: unknown) => (r.command === CLAUDE ? claudeOut(body) : agyOut(body));
+type Handler = (r: RunRequest) => RunResult | Promise<RunResult>;
+const route = (c: Handler, g: Handler, s: Handler = (r) => replyAs(r, EMPTY_STRATEGY)): Runner =>
+  async (r) => (isStrategyPrompt(r) ? s(r) : r.command === CLAUDE ? c(r) : g(r));
 const happy = () => route(() => claudeOut(proposal()), () => agyOut(audit()));
 const issueCodes = (r: Awaited<ReturnType<typeof analyzeEvidence>>) => r.audit.issues.map((i) => i.code);
 
@@ -219,15 +226,23 @@ const strategyCitations = () => [
   cite("priorConsensus.horizonQuarters", D4, D4.text, "6"),
   cite("catalyst.eventAt", D3, "다음 실적발표 예정일은 2026-08-10이다.", "2026-08-10"),
 ];
-const strategyProposal = (over: Record<string, unknown> = {}) => proposal({
-  citations: [...citations(), ...strategyCitations()],
+// Reply of the separate strategy call (StrategyProposalSchema).
+const strategyReply = (over: Record<string, unknown> = {}) => ({
+  citations: strategyCitations(),
   strategy: { forecast: strategyForecast(), currentConsensus: strategyConsensus(D3, 7), priorConsensus: strategyConsensus(D4, 6), catalyst: strategyCatalyst() },
   ...over,
 });
+const withStrategy = (reply: unknown) => route(() => claudeOut(proposal()), () => agyOut(audit()), (r) => replyAs(r, reply));
 
 describe("earnings-gap-auto/v1 automatic strategy extraction (real analyzeEvidence, fake CLI runner)", () => {
-  it("extracts and verifies forecast/consensus/catalyst end-to-end from the model's draft.strategy field", async () => {
-    const r = await analyzeEvidence(input([D3, D4]), opts(route(() => claudeOut(strategyProposal()), () => agyOut(audit()))));
+  it("extracts and verifies forecast/consensus/catalyst end-to-end from the separate strategy call", async () => {
+    const seen: RunRequest[] = [];
+    const runner = route((q) => (seen.push(q), claudeOut(proposal())), () => agyOut(audit()), (q) => (seen.push(q), claudeOut(strategyReply())));
+    const r = await analyzeEvidence(input([D3, D4]), opts(runner));
+    // Two separate claude calls: the Dataset draft (no strategy task in it) and the strategy extraction.
+    expect(seen.map(isStrategyPrompt)).toEqual([false, true]);
+    expect(seen[0]!.stdin).not.toContain("EarningsForecastSnapshot");
+    expect(seen[1]!.stdin).toContain("EarningsForecastSnapshot");
     expect(r.status).toBe("accepted"); // the unrelated product-market Dataset is unaffected
     expect(r.strategy.unavailable).toEqual([]);
     expect(r.strategy.forecast?.ticker).toBe("005930");
@@ -239,8 +254,8 @@ describe("earnings-gap-auto/v1 automatic strategy extraction (real analyzeEviden
   });
 
   it("isolates strategy citation failures from the Dataset: a broken strategy citation never nulls out an otherwise-accepted dataset", async () => {
-    const broken = strategyProposal({ citations: [...citations(), ...strategyCitations().map((c, i) => (i === 0 ? { ...c, evidenceQuote: "이 문장은 문서에 없습니다" } : c))] });
-    const r = await analyzeEvidence(input([D3, D4]), opts(route(() => claudeOut(broken), () => agyOut(audit()))));
+    const broken = strategyReply({ citations: strategyCitations().map((c, i) => (i === 0 ? { ...c, evidenceQuote: "이 문장은 문서에 없습니다" } : c)) });
+    const r = await analyzeEvidence(input([D3, D4]), opts(withStrategy(broken)));
     expect(r.status).toBe("accepted");
     expect(r.dataset).not.toBeNull(); // dataset unaffected by the broken strategy citation
     expect(r.strategy.currentConsensus).toBeNull(); // the strategy field itself is correctly dropped
@@ -257,8 +272,8 @@ describe("earnings-gap-auto/v1 automatic strategy extraction (real analyzeEviden
       cite("priorConsensus.horizonQuarters", D4, D4.text, "6"),
       cite("catalyst.eventAt", D3, "다음 실적발표 예정일은 2026-08-10이다.", "2026-08-10"),
     ];
-    const bad = strategyProposal({ citations: [...citations(), ...badCitations], strategy: { forecast: strategyForecast(), currentConsensus: badConsensus, priorConsensus: strategyConsensus(D4, 6), catalyst: strategyCatalyst() } });
-    const r = await analyzeEvidence(input([D3, D4, annualDoc]), opts(route(() => claudeOut(bad), () => agyOut(audit()))));
+    const bad = strategyReply({ citations: badCitations, strategy: { forecast: strategyForecast(), currentConsensus: badConsensus, priorConsensus: strategyConsensus(D4, 6), catalyst: strategyCatalyst() } });
+    const r = await analyzeEvidence(input([D3, D4, annualDoc]), opts(withStrategy(bad)));
     expect(r.status).toBe("accepted"); // dataset still unaffected
     expect(r.strategy.currentConsensus).toBeNull();
     expect(r.strategy.unavailable).toContainEqual(expect.objectContaining({ field: "currentConsensus", code: "HORIZON_NOT_ANCHORED" }));
@@ -269,6 +284,63 @@ describe("earnings-gap-auto/v1 automatic strategy extraction (real analyzeEviden
     expect(r.status).toBe("unavailable");
     expect(r.strategy).toMatchObject({ forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null });
     expect(r.strategy.unavailable[0]!.code).toBe("NOT_DRAFTED");
+  });
+
+  it("the strategy field is required: a strategy reply without it fails only the strategy, never the accepted dataset", async () => {
+    const r = await analyzeEvidence(input([D3, D4]), opts(withStrategy({ citations: [] })));
+    expect(r.status).toBe("accepted");
+    expect(r.dataset).not.toBeNull();
+    expect(r.strategy).toMatchObject({ forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null });
+    expect(r.strategy.unavailable).toEqual([expect.objectContaining({ field: "all", code: "STRATEGY_CALL_FAILED" })]);
+    expect(r.strategy.unavailable[0]!.message).toContain("SCHEMA_INVALID");
+  });
+
+  it("a strategy reply that omits one of the four keys is rejected too (null is allowed, omission is not)", async () => {
+    const partial = strategyReply({ strategy: { forecast: null, currentConsensus: null, catalyst: null } });
+    const r = await analyzeEvidence(input([D3, D4]), opts(withStrategy(partial)));
+    expect(r.status).toBe("accepted");
+    expect(r.strategy.unavailable[0]).toMatchObject({ code: "STRATEGY_CALL_FAILED" });
+    expect(r.strategy.unavailable[0]!.message).toContain("priorConsensus");
+  });
+
+  it("a strategy call that hits an expired login on the drafter falls back to the other provider", async () => {
+    const seen: string[] = [];
+    const runner = route(() => claudeOut(proposal()), () => agyOut(audit()), (q) => {
+      seen.push(q.command);
+      return q.command === CLAUDE ? { ...ok(""), exitCode: 1, stderr: "Please log in" } : agyOut(strategyReply());
+    });
+    const r = await analyzeEvidence(input([D3, D4]), opts(runner));
+    expect(seen).toEqual([CLAUDE, AGY]);
+    expect(r.strategy.unavailable).toEqual([]);
+    expect(r.strategy.currentConsensus?.epsPerShare).toBe(7);
+    expect(r.unavailable).toMatchObject([{ provider: "claude", code: "AUTH_REQUIRED" }]);
+  });
+
+  it("with the default concurrency the audit and the strategy call run in parallel", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const track = async (reply: RunResult) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight--;
+      return reply;
+    };
+    const runner = route(() => claudeOut(proposal()), () => track(agyOut(audit())), () => track(claudeOut(EMPTY_STRATEGY)));
+    const r = await analyzeEvidence(input([D3, D4]), opts(runner));
+    expect(r.status).toBe("accepted");
+    expect(peak).toBe(2);
+  });
+
+  it("a failed strategy call is transient: the result is not cached", async () => {
+    let strategyCalls = 0;
+    const runner = route(() => claudeOut(proposal()), () => agyOut(audit()), () => (strategyCalls++, { ...ok(""), timedOut: true, exitCode: null }));
+    const o = { ...opts(runner), cache: true };
+    const a = await analyzeEvidence(input([D3, D4]), o);
+    expect(a.status).toBe("accepted");
+    expect(a.strategy.unavailable[0]).toMatchObject({ code: "STRATEGY_CALL_FAILED" });
+    await analyzeEvidence(input([D3, D4]), o);
+    expect(strategyCalls).toBe(4); // claude then agy (TIMEOUT fallback), twice: nothing served from the cache
   });
 });
 

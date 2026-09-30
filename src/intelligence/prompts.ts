@@ -50,9 +50,13 @@ const DATASET_RULES = `DatasetSchema 작성 규칙:
 - 합계 일관성: 각 분기에서 회사 + 경쟁사들의 매출 합 ≤ 시장 매출이어야 하고, 시장 매출 − (회사 + 경쟁사) = 기타 업체 매출입니다. 시장 매출을 추정할 때는 이 합이 시장 규모에 근접하도록(파악된 업체의 합이 시장의 대략 30~90%) 경쟁사·시장 추정치를 함께 맞추세요.
 - 추정에 쓴 논리와 한계는 narrative.marketSizing(시장 규모를 어떻게 구했는지)과 narrative.competition(경쟁 구도, 경쟁사 합이 시장에 어떻게 맞는지)에 한국어로 적으세요.`;
 
+const CITATION_FORMAT = `- documentId/url/publishedAt: 제공된 문서와 정확히 일치
+- evidenceQuote: 문서 text 에서 글자 그대로 복사한 구절(변형 금지)
+- quotedNumber: evidenceQuote 안에 적힌 숫자 그대로(예 "1,234"), multiplier: 값 = quotedNumber × multiplier. multiplier 는 evidenceQuote 안에서 quotedNumber 바로 뒤에 적힌 단위와 정확히 같아야 합니다(단위가 없으면 1; 천=1000, 만=10000, 백만=1000000, 억=100000000, 십억=1000000000, 조=1000000000000, thousand/million/billion/trillion). "백만"을 "만"(10000)으로 쓰면 안 되며, "천만"·"백억"·"1조 2,345억" 같은 복합 표기는 지원되지 않으므로 숫자 하나와 단위 하나만 있는 구절을 인용하세요.`;
+
 const strategyRules = (input: EvidenceInput): string => {
   const horizon = nextFourQuarters(input.asOf);
-  return `추가 과제(선택, "strategy" 필드): earnings-gap-auto/v1 전략용 4개 분기 실적 전망·컨센서스·이벤트를 아래 형식으로 함께 제출하세요. 근거가 없으면 해당 필드를 null로 두세요(추측 금지). 이 필드는 완전히 별도로 검증되며, 여기서 실패해도 위 Dataset/제품시장 분석에는 전혀 영향이 없습니다.
+  return `"strategy" 작성 규칙: earnings-gap-auto/v1 전략용 4개 분기 실적 전망·컨센서스·이벤트를 아래 형식으로 제출하세요. "strategy" 는 필수이며 항상 forecast/currentConsensus/priorConsensus/catalyst 네 키를 모두 가진 객체여야 합니다(strategy 자체를 생략하거나 null 로 두면 응답 전체가 거부됩니다). 개별 키는 근거가 없을 때만 null 로 두세요(추측 금지). 이 결과는 별도로 검증되며 제품·시장 Dataset 분석에는 영향이 없습니다.
 
 정확한 스키마(JSON Schema, 모든 필수 필드 포함 -- 아래에 없는 필드명을 지어내지 마세요):
 EarningsForecastSnapshot: ${forecastJsonSchema}
@@ -67,7 +71,7 @@ Catalyst: ${catalystJsonSchema}
   검증 규칙(반드시 지키세요): source, epsPerShare 인용, horizonQuarters 인용은 모두 **같은 문서**(같은 documentId)를 가리켜야 합니다. epsPerShare 의 evidenceQuote 와 horizonQuarters 의 evidenceQuote 는 (1) 청구한 4개 분기가 "2026Q4"/"2026년 4분기" 형식으로 명시되거나 시작~끝 범위(예 "2026Q4~2027Q3")로 명시적으로 드러나야 하고, (2) "연결"(consolidated) 과 "희석" 또는 "보통주" 라는 단어가 실제로 포함되어야 합니다(그냥 모순이 없다는 것만으로는 부족합니다 -- 명시적으로 그렇게 적혀 있어야 합니다). 이 조건 중 하나라도 문서 원문에 없으면 절대 채우지 말고 null 로 두세요.
 - catalyst (Catalyst): schemaVersion=1, ticker="${input.ticker}". eventAt 은 문서가 실제로 공시/보도한 예정 일정(실적발표/가이던스 수정/이사회·공시 예정)일 때만 채우세요. source 와 eventAt 을 뒷받침하는 citation 은 같은 문서를 가리켜야 하고, 그 evidenceQuote 에는 (1) eventAt 날짜가 실제로 적혀 있어야 하고 (2) "실적발표"/"잠정실적"/"가이던스"/"공시 예정"/"이사회" 등 그 일정이 어떤 종류의 예정 이벤트인지 설명하는 단어가 있어야 합니다. 단순히 날짜만 있는 문장(계약 만료일, 상환일 등)은 촉매가 아닙니다. 근거가 없으면 null.
 - forecast/currentConsensus/priorConsensus/catalyst 의 모든 날짜(knownAt, generatedAt, asOf, eventAt 등)는 UTC 오프셋을 포함한 ISO 8601 형식이어야 합니다(예: "${input.asOf}T00:00:00+09:00"). quarter 태그는 "2026Q4" 형식.
-- citations 배열에 strategy 관련 인용도 함께 추가하세요(fieldPath 예: "forecast.quarters[0].segments[0].volume", "currentConsensus.epsPerShare", "currentConsensus.horizonQuarters", "catalyst.eventAt"). 근거 문서 없이 배경지식만으로 만든 숫자·날짜·기간은 절대 채우지 마세요; 그런 경우 해당 필드를 null 로 하고 missingFields 에 이유를 적으세요.`;
+- citations 배열에 strategy 관련 인용을 넣으세요(fieldPath 예: "forecast.quarters[0].segments[0].volume", "currentConsensus.epsPerShare", "currentConsensus.horizonQuarters", "catalyst.eventAt"). 근거 문서 없이 배경지식만으로 만든 숫자·날짜·기간은 절대 채우지 마세요; 그런 경우 해당 필드를 null 로 두세요.`;
 };
 
 export const draftPrompt = (input: EvidenceInput): string => `당신은 한국 상장사 공시/뉴스 분석가입니다. 한국어로 분석하세요.
@@ -76,19 +80,32 @@ ${UNTRUSTED}
 과제: ${input.ticker} 종목(기준일 ${input.asOf})의 제품·산업 서술과 밸류에이션용 Dataset 초안을 작성하세요.
 ${DATASET_RULES}
 
-${strategyRules(input)}
-
 인용(citations) 규칙: 관찰된 모든 숫자 필드마다 citation 하나를 제공합니다.
 - fieldPath: 예 "quote.priceKRW", "shares.dilutedCommon", "fx[0].krwPerUnit", "financials.totalRevenueKRW", "markets[0].observations[1].revenue", "products[0].revenue[0].revenue"
-- documentId/url/publishedAt: 제공된 문서와 정확히 일치
-- evidenceQuote: 문서 text 에서 글자 그대로 복사한 구절(변형 금지)
-- quotedNumber: evidenceQuote 안에 적힌 숫자 그대로(예 "1,234"), multiplier: 값 = quotedNumber × multiplier. multiplier 는 evidenceQuote 안에서 quotedNumber 바로 뒤에 적힌 단위와 정확히 같아야 합니다(단위가 없으면 1; 천=1000, 만=10000, 백만=1000000, 억=100000000, 십억=1000000000, 조=1000000000000, thousand/million/billion/trillion). "백만"을 "만"(10000)으로 쓰면 안 되며, "천만"·"백억"·"1조 2,345억" 같은 복합 표기는 지원되지 않으므로 숫자 하나와 단위 하나만 있는 구절을 인용하세요.
+${CITATION_FORMAT}
 
 DatasetSchema(JSON Schema): ${datasetJsonSchema}
 
 출력 JSON 형식:
-{"dataset": <Dataset 또는 null>, "missingFields": ["경로", ...], "narrative": {"product": "제품 서술(한국어)", "industry": "산업 서술(한국어)", "marketSizing": "시장 규모 산출/추정 방법(한국어)", "competition": "경쟁 구도와 합계 정합성(한국어)"}, "citations": [{"fieldPath","documentId","url","publishedAt","evidenceQuote","quotedNumber","multiplier"}], "assumptions": [{"fieldPath","statement","rationale"}], "limitations": ["..."], "strategy": {"forecast": <EarningsForecastSnapshot 또는 null>, "currentConsensus": <ConsensusSnapshot 또는 null>, "priorConsensus": <ConsensusSnapshot 또는 null>, "catalyst": <Catalyst 또는 null>} 또는 전체가 null}
-dataset 이 null 이면 missingFields 는 비어 있으면 안 됩니다. 필수 숫자 사실이 하나라도 없으면 dataset 은 null 입니다. strategy 는 완전히 선택사항이며, 근거가 부족한 하위 필드는 개별적으로 null 로 둘 수 있습니다.
+{"dataset": <Dataset 또는 null>, "missingFields": ["경로", ...], "narrative": {"product": "제품 서술(한국어)", "industry": "산업 서술(한국어)", "marketSizing": "시장 규모 산출/추정 방법(한국어)", "competition": "경쟁 구도와 합계 정합성(한국어)"}, "citations": [{"fieldPath","documentId","url","publishedAt","evidenceQuote","quotedNumber","multiplier"}], "assumptions": [{"fieldPath","statement","rationale"}], "limitations": ["..."]}
+dataset 이 null 이면 missingFields 는 비어 있으면 안 됩니다. 필수 숫자 사실이 하나라도 없으면 dataset 은 null 입니다.
+
+${evidenceBlock(input)}`;
+
+/** Separate call for the earnings-gap-auto/v1 strategy extraction (StrategyProposalSchema), made independently of
+ * the Dataset draft so it is never skipped as an optional afterthought of a long Dataset generation. */
+export const strategyPrompt = (input: EvidenceInput): string => `당신은 한국 상장사 공시/뉴스 분석가입니다. 한국어로 분석하세요.
+${UNTRUSTED}
+
+과제: ${input.ticker} 종목(기준일 ${input.asOf})의 다음 4개 분기 실적 전망, 컨센서스(현재·이전), 예정 이벤트(촉매)를 제공된 문서에서 추출/작성하세요.
+${strategyRules(input)}
+
+인용(citations) 규칙: strategy 의 관찰 숫자·기간·날짜마다 citation 하나를 제공합니다.
+${CITATION_FORMAT}
+
+출력 JSON 형식:
+{"strategy": {"forecast": <EarningsForecastSnapshot 또는 null>, "currentConsensus": <ConsensusSnapshot 또는 null>, "priorConsensus": <ConsensusSnapshot 또는 null>, "catalyst": <Catalyst 또는 null>}, "citations": [{"fieldPath","documentId","url","publishedAt","evidenceQuote","quotedNumber","multiplier"}]}
+strategy 는 필수입니다: 네 키(forecast, currentConsensus, priorConsensus, catalyst)를 모두 포함해야 하며, 근거가 부족한 하위 필드만 개별적으로 null 로 둘 수 있습니다.
 
 ${evidenceBlock(input)}`;
 

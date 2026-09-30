@@ -48,7 +48,7 @@ const cite = (fieldPath: string, quote: string, quotedNumber: string, doc = DOC)
 const HORIZON_QUOTE = "2026Q3~2027Q2 연결 기준 보통주 희석 컨센서스 EPS 7원";
 
 function runPipeline(rawStrategy: unknown, citations: Citation[], docs: EvidenceDocument[] = [DOC]) {
-  const extraction = verifyStrategyDraft(ASOF, docs, citations, rawStrategy);
+  const extraction = verifyStrategyDraft(ASOF, docs, citations, { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null, ...(rawStrategy as Record<string, unknown>) });
   const result = evaluateAutoStrategy({
     ticker: TICKER,
     decisionAt: DECISION_AT,

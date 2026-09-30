@@ -239,6 +239,7 @@ function renderStrategyAuto(sa) {
   const parts = [];
   parts.push(el("p", {}, "상태: ", badge(STRATEGY_STATUS, sa.status), " · ", badge(STRATEGY_MODE, sa.mode)));
   parts.push(el("p", { class: "small", text: `생성 시각(전망 추출): ${sa.generatedAt || "없음 — 검증된 전망을 추출하지 못했습니다"} · 판단 시각: ${sa.decisionAt}` }));
+  parts.push(el("p", { class: "small", text: `독립 감사: ${sa.independentlyAudited ? "받음" : "받지 않음"}` }));
   if (sa.mode === "retrospective_research")
     parts.push(el("div", { class: "box warn", text: "과거 특정 시점 기준의 재현 분석입니다. 오늘의 실시간 판단이 아니며, 매매 지시나 주문이 아닙니다." }));
   parts.push(el("div", { class: "box warn", text: "모델 추정 · 별도 모델 검토 없음 — 이 자동 신호는 모델이 산출한 추정치이며, 두 번째 모델의 재검증을 받지 않았습니다. 분석 참고용이며 매매 주문이나 지시가 아닙니다." }));
