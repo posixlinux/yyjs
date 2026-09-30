@@ -103,6 +103,32 @@ function parseTable(inner: string): string[][] {
 
 const renderRows = (rows: string[][]): string => rows.map((r) => r.join(" | ")).join("\n");
 
+/**
+ * Plain text of a short exchange disclosure (거래소 공시). Each table becomes ONE line ("cell | cell / next row") so a
+ * single verbatim quote can span e.g. the event purpose ("경영실적 발표") and its date row together. Inert text only.
+ */
+export function extractDisclosureText(xml: string, maxChars: number): { text: string; truncated: boolean } {
+  const tables: string[] = [];
+  const s = decodeEntities(
+    xml
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, "")
+      .replace(/<TABLE\b[^>]*>([\s\S]*?)<\/TABLE>/gi, (_m, inner: string) => `\n\u0001${tables.push(parseTable(inner).map((r) => r.filter(Boolean).join(" | ")).filter(Boolean).join(" / ")) - 1}\u0001\n`)
+      .replace(/<\/?(?:P|BR|DIV|TITLE|SECTION-\d|LIBRARY|TR)\b[^>]*>/gi, "\n")
+      .replace(/<[^>]*>/g, " "),
+  );
+  const lines: string[] = [];
+  for (const line of s.split("\n")) {
+    const l = collapse(line);
+    const tok = /^\u0001(\d+)\u0001$/.exec(l);
+    const out = tok ? (tables[Number(tok[1])] ?? "") : l.replace(/\u0001\d+\u0001/g, " ");
+    if (out) lines.push(out);
+  }
+  const text = lines.join("\n");
+  return text.length > maxChars ? { text: text.slice(0, maxChars), truncated: true } : { text, truncated: false };
+}
+
 function unitNear(...texts: string[]): string | null {
   for (const t of texts) {
     const m = /단위\s*[:：]\s*([^)\]\n|]{1,30})/.exec(t);

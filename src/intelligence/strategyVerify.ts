@@ -93,7 +93,7 @@ const dateVariants = (iso: string): string[] => {
 // (the concrete fabrication this closes: any random future date -- a contract expiry, a maturity date -- being
 // accepted as an "earnings release schedule" merely because a matching date string appears somewhere).
 const EVENT_KEYWORDS: Record<string, RegExp> = {
-  earnings_release: /실적\s*발표|잠정\s*실적|경영\s*실적|영업\s*\(?잠정\)?\s*실적|결산\s*발표|earnings\s*(release|call)/i,
+  earnings_release: /실적\s*발표|잠정\s*실적|경영\s*실적|영업\s*\(?잠정\)?\s*실적|결산\s*발표|결산\s*실적\s*공시\s*예고|earnings\s*(release|call)/i,
   guidance_update: /가이던스|실적\s*전망\s*(수정|변경)|전망치\s*(수정|변경)|guidance/i,
   other_scheduled_disclosure: /공시\s*예정|이사회\s*(결의|개최)|주주총회|정기\s*보고서\s*제출|발표\s*예정|scheduled\s*disclosure/i,
 };

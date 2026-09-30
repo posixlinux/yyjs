@@ -293,6 +293,14 @@ describe("verifyStrategyDraft: catalyst (must never be fabricated)", () => {
     expect(r.unavailable).toContainEqual(expect.objectContaining({ field: "catalyst", code: "SOURCE_INVALID" }));
   });
 
+  it("accepts DART exchange-disclosure wording (IR 경영실적 발표 / 결산실적공시 예고) as a scheduled earnings event", () => {
+    for (const quote of ["1. 개최일자 | 2026-08-10 / 2. 개최목적 | 2026년 2분기 경영실적 발표", "결산실적공시 예고 | 예정일 2026-08-10"]) {
+      const doc = { ...DOC, text: `${DOC.text}\n${quote}` };
+      const r = verifyStrategyDraft(ASOF, [doc], [cite("catalyst.eventAt", quote, "2026-08-10", doc)], full({ catalyst: catalyst() }));
+      expect(r.catalyst, quote).not.toBeNull();
+    }
+  });
+
   it("accepts a catalyst with a real source and a date citation describing the scheduled event", () => {
     const r = run({ catalyst: catalyst() }, catalystCitations());
     expect(r.catalyst).not.toBeNull();

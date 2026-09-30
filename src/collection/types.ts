@@ -99,6 +99,25 @@ export interface FilingEvidence {
   isCorrection: boolean;
 }
 
+/**
+ * Exchange (거래소) disclosures that matter for the earnings-gap strategy: a scheduled earnings release/IR event
+ * (catalyst), the company's own earnings guidance, and preliminary (잠정) results. Collected from DART
+ * pblntf_ty "I"; received on or before asOf only. Company statements, NOT analyst consensus.
+ */
+export type DisclosureKind = "earnings_schedule" | "earnings_guidance" | "preliminary_earnings";
+
+export interface ExchangeDisclosure {
+  rceptNo: string;
+  receiptUrl: string;
+  reportName: string;
+  receivedDate: string; // YYYY-MM-DD
+  kind: DisclosureKind;
+  isCorrection: boolean;
+  /** Plain text of the disclosure document; each table is flattened onto ONE line ("cell | cell / next row"). */
+  text: string;
+  truncated: boolean;
+}
+
 export interface SourceLocator {
   rceptNo: string;
   receiptUrl: string;
@@ -262,6 +281,8 @@ export interface PublicEvidence {
     tables: TableEvidence[];
     metricCandidates: MetricCandidate[];
     productCandidates: ProductCandidate[];
+    /** Exchange disclosures (IR/earnings schedule, guidance, preliminary results). Absent in older snapshots. */
+    disclosures?: ExchangeDisclosure[];
   };
   requiredInputs: RequiredInput[];
 }

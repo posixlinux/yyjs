@@ -1,6 +1,6 @@
 # 공개 근거 자료 자동 수집 (`src/collection`)
 
-KOSPI 종목 1개에 대해 **Naver 금융(시세·참고지표·종목 뉴스)**, **DART(정기공시 원문·재무제표)**, 선택적으로 **Naver Open API 뉴스 검색**에서 근거 자료를 모은다. 이 모듈은 근거를 수집할 뿐이며 **모델 실행 가능 여부를 주장하지 않는다**(`modelReady`는 항상 `false`). 제품별 글로벌 시장 규모·매출 점유율은 공개 API로 얻을 수 없으므로 후보(candidate)와 부족 입력(`requiredInputs`)으로만 반환한다.
+KOSPI 종목 1개에 대해 **Naver 금융(시세·참고지표·종목 뉴스)**, **DART(정기공시 원문·재무제표, 실적 관련 거래소공시)**, 선택적으로 **Naver Open API 뉴스 검색**에서 근거 자료를 모은다. 이 모듈은 근거를 수집할 뿐이며 **모델 실행 가능 여부를 주장하지 않는다**(`modelReady`는 항상 `false`). 제품별 글로벌 시장 규모·매출 점유율은 공개 API로 얻을 수 없으므로 후보(candidate)와 부족 입력(`requiredInputs`)으로만 반환한다.
 
 ## 사용법
 
@@ -40,6 +40,7 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 | DART | `list.json` (`pblntf_ty=A`, `last_reprt_at=N`, `page_count=100`, 최대 3페이지) | 사업/반기/분기보고서만 사용. `rcept_dt`가 asOf 이후인 공시는 제외. |
 | DART | `fnlttSinglAcntAll.json` (`11013/11012/11014/11011`) | `CFS` 우선, 자료가 없을 때만 `OFS`. |
 | DART | `document.xml?rcept_no` (ZIP XML) | 최근 `maxDocuments`건만 다운로드. |
+| DART | `list.json` (`pblntf_ty=I` 거래소공시, `last_reprt_at=N`, asOf 이전 200일, 1페이지) | 실적 관련 공시만 선별(최신순): 기업설명회(IR) 개최·결산실적공시 예고(최대 2건), 영업실적 등에 대한 전망(1건), (잠정)실적(1건). `rcept_dt`가 asOf 이후·첨부 공시는 제외. 각 원문(`document.xml`)을 평문으로 `filings.disclosures`에 담고, 표 하나는 한 줄로 펼친다. 실패해도 경고(warning)일 뿐 정기공시 근거에는 영향 없음. 회사 자체 공시이며 애널리스트 컨센서스가 아니다. |
 
 호스트는 `m.stock.naver.com`, `n.news.naver.com`, `openapi.naver.com`, `opendart.fss.or.kr` 화이트리스트만 허용(https, 포트·계정정보 불가). `n.news.naver.com`은 정확히 `/mnews/article/<숫자>/<숫자>` 또는 `/article/<숫자>/<숫자>` 경로만 허용하며 쿼리·프래그먼트는 붙이지 않는다(목록의 URL에서 쿼리를 제거해 재구성). 사용자 URL은 받지 않는다. 리다이렉트는 따라가지 않고 `redirect_rejected`로 처리한다. `dart.fss.or.kr/dsaf001/main.do?rcpNo=…`는 출처 링크로만 출력한다.
 

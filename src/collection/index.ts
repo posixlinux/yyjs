@@ -131,6 +131,7 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
     filings: {
       list: dv?.filings ?? [], statements: dv?.statements ?? [], derivedQuarters: dv?.derivedQuarters ?? [],
       excerpts: dv?.excerpts ?? [], tables: dv?.tables ?? [], metricCandidates: dv?.metricCandidates ?? [], productCandidates: dv?.productCandidates ?? [],
+      disclosures: dv?.disclosures ?? [],
     },
     requiredInputs: [],
   };

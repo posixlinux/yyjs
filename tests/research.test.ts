@@ -688,6 +688,15 @@ describe("evidence documents", () => {
     expect(kstDate("garbage")).toBe("");
   });
 
+  it("turns exchange disclosures into model documents dated/linked by their own DART receipt", () => {
+    const ev = evidence();
+    ev.filings.disclosures = [{ rceptNo: "20260105900001", receiptUrl: "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260105900001", reportName: "기업설명회(IR)개최(안내공시)", receivedDate: "2026-01-05", kind: "earnings_schedule", isCorrection: false, text: "1. 개최일자 | 2026-01-30 / 2. 개최목적 | 2025년 4분기 경영실적 발표", truncated: false }];
+    const doc = buildDocuments(ev).documents.find((d) => d.id === "dsc-20260105900001")!;
+    expect(doc).toMatchObject({ url: "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260105900001", publishedAt: "2026-01-05", title: "DART 거래소 공시 - 기업설명회(IR)개최(안내공시)" });
+    expect(doc.text).toContain("애널리스트 컨센서스가 아님");
+    expect(doc.text).toContain("1. 개최일자 | 2026-01-30 / 2. 개최목적 | 2025년 4분기 경영실적 발표");
+  });
+
   it("dates the quote by its KST trade date, not by slicing a UTC string", () => {
     const ev = evidence();
     ev.market.quote!.tradedAt = "2026-01-14T16:00:00Z";
