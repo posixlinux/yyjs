@@ -692,6 +692,60 @@ describe("asOf relative to now", () => {
   });
 });
 
+describe("DART exchange disclosures (pblntf_ty I)", () => {
+  const IR_XML = `<DOCUMENT><TITLE>기업설명회(IR) 개최(안내공시)</TITLE><TABLE><TR><TD>1. 개최일자</TD><TD>2026-10-30</TD></TR><TR><TD>2. 개최목적</TD><TD>2026년 3분기 경영실적 발표</TD></TR></TABLE><P>기타 &amp; 참고</P></DOCUMENT>`;
+  const DISCLOSURES = [
+    { report_nm: "기업설명회(IR)개최(안내공시)", rcept_no: "20261001900001", rcept_dt: "20261001" }, // after asOf: excluded
+    { report_nm: "[기재정정]기업설명회(IR)개최(안내공시)", rcept_no: "20260920900002", rcept_dt: "20260920" },
+    { report_nm: "주요사항보고서(자기주식취득결정)", rcept_no: "20260915900003", rcept_dt: "20260915" }, // unrelated
+    { report_nm: "결산실적공시 예고(안내공시)", rcept_no: "20260910900004", rcept_dt: "20260910" },
+    { report_nm: "기업설명회(IR)개최(안내공시)", rcept_no: "20260801900005", rcept_dt: "20260801" }, // 3rd schedule: over the per-kind cap
+    { report_nm: "연결재무제표기준영업실적등에대한전망(공정공시)", rcept_no: "20260725900006", rcept_dt: "20260725" },
+    { report_nm: "[첨부추가]연결재무제표기준영업(잠정)실적(공정공시)", rcept_no: "20260708900007", rcept_dt: "20260708" }, // attachment
+    { report_nm: "연결재무제표기준영업(잠정)실적(공정공시)", rcept_no: "20260707900008", rcept_dt: "20260707" },
+    { report_nm: "영업(잠정)실적(공정공시)", rcept_no: "20260407900009", rcept_dt: "20260407" }, // 2nd preliminary: over the cap
+  ];
+  const handler = () =>
+    either(
+      naverHandler,
+      (u) => (u.pathname === "/api/list.json" && u.searchParams.get("pblntf_ty") === "I" ? json({ status: "000", total_page: 1, list: DISCLOSURES }) : undefined),
+      (u) => (u.pathname === "/api/document.xml" && u.searchParams.get("rcept_no")!.includes("9000") ? new Response(zip({ "d.xml": IR_XML })) : undefined),
+      dartHandler(),
+    );
+
+  it("collects only earnings-related disclosures received by asOf, newest first, within per-kind caps", async () => {
+    const f = fake(handler());
+    const e = await run(f, withKey);
+    const list = f.calls.find((u) => u.pathname === "/api/list.json" && u.searchParams.get("pblntf_ty") === "I");
+    expect(list?.searchParams.get("end_de")).toBe("20260928");
+    expect(list?.searchParams.get("bgn_de")).toBe("20260312"); // 200 days before asOf
+    expect(e.filings.disclosures!.map((d) => [d.rceptNo, d.kind])).toEqual([
+      ["20260920900002", "earnings_schedule"],
+      ["20260910900004", "earnings_schedule"],
+      ["20260725900006", "earnings_guidance"],
+      ["20260707900008", "preliminary_earnings"],
+    ]);
+    const ir = e.filings.disclosures![0]!;
+    expect(ir).toMatchObject({ receivedDate: "2026-09-20", isCorrection: true, receiptUrl: "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260920900002", truncated: false });
+    // one table = one line, so a single quote can hold both the event purpose and its date
+    expect(ir.text).toContain("1. 개최일자 | 2026-10-30 / 2. 개최목적 | 2026년 3분기 경영실적 발표");
+    expect(ir.text).toContain("기타 & 참고");
+    // periodic documents are unaffected; disclosure documents are fetched in addition
+    const docs = f.calls.filter((u) => u.pathname === "/api/document.xml").map((u) => u.searchParams.get("rcept_no")!);
+    expect(docs.filter((r) => !r.includes("9000"))).toHaveLength(4);
+    expect(docs.filter((r) => r.includes("9000")).sort()).toEqual(["20260707900008", "20260725900006", "20260910900004", "20260920900002"]);
+    expect(e.providers.dart.status).toBe("ok");
+  });
+
+  it("a failed disclosure list is only a warning and keeps the periodic evidence", async () => {
+    const f = fake(either(naverHandler, (u) => (u.pathname === "/api/list.json" && u.searchParams.get("pblntf_ty") === "I" ? json({ status: "800", message: "점검 중" }) : undefined), dartHandler()));
+    const e = await run(f, withKey);
+    expect(e.filings.disclosures).toEqual([]);
+    expect(e.filings.statements.length).toBeGreaterThan(0);
+    expect(e.providers.dart.issues).toContainEqual(expect.objectContaining({ code: "upstream_error", severity: "warning" }));
+  });
+});
+
 describe("DART share / EPS extraction budget", () => {
   const business = (n: number) => Array.from({ length: n }, (_, i) => `<TITLE>${i}. 시장 규모 ${i}</TITLE><P>내용 ${i}</P>`).join("");
   it("reserves its own budget so many business headings cannot starve share notes", () => {

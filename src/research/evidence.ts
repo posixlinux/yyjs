@@ -23,7 +23,7 @@ const MAX_NEWS_DOCS = 10;
 // whole budget with financial statements alone before the loop ever reaches filing_text (business/product narrative)
 // or reference (shares/foreign-ownership context), which is exactly the starvation observed on a real large-cap
 // snapshot (quote + statements only, no business narrative, no shares proof beyond the statements). Must sum to 1.
-const KIND_BUDGET_SHARE: Record<DocumentKind, number> = { quote: 0.05, statement: 0.3, derived: 0.1, filing_text: 0.25, filing_tables: 0.1, reference: 0.05, news: 0.15 };
+const KIND_BUDGET_SHARE: Record<DocumentKind, number> = { quote: 0.05, statement: 0.27, derived: 0.08, disclosure: 0.05, filing_text: 0.25, filing_tables: 0.1, reference: 0.05, news: 0.15 };
 const MAX_STATEMENT_ROWS = 150;
 // Per-category row budget within MAX_STATEMENT_ROWS: a large income statement must never crowd out the balance
 // sheet or cash flow statement (financing/investing/CAPEX rows), which the automatic strategy path (strategy/auto.ts)
@@ -32,7 +32,7 @@ const MAX_STATEMENT_ROWS = 150;
 const STATEMENT_ROW_BUDGET: Record<number, number> = { 0: 80, 1: 40, 2: 30 };
 const MAX_CANDIDATES_PER_FILING = 15;
 
-export type DocumentKind = "quote" | "statement" | "derived" | "filing_text" | "filing_tables" | "reference" | "news";
+export type DocumentKind = "quote" | "statement" | "derived" | "disclosure" | "filing_text" | "filing_tables" | "reference" | "news";
 
 export type DocumentRef = { id: string; kind: DocumentKind; title: string; url: string; publishedAt: string; chars: number; truncated: boolean };
 
@@ -266,6 +266,20 @@ export function buildDocuments(ev: PublicEvidence): BuiltDocuments {
         `3분기보고서: 접수번호 ${q3.rceptNo}, 접수일 ${q3.receivedDate}, ${q3.receiptUrl}`,
         ...lines,
       ].join("\n"),
+    );
+  }
+
+  // Exchange disclosures (short; the strategy call's catalyst / guidance / preliminary-results evidence). The DART
+  // receipt URL and receipt date are the document's own, so a catalyst citing one resolves to a real source.
+  const DISCLOSURE_LABEL = { earnings_schedule: "실적발표·IR 일정", earnings_guidance: "회사 실적 전망(가이던스)", preliminary_earnings: "잠정 실적" } as const;
+  for (const d of ev.filings.disclosures ?? []) {
+    add(
+      "disclosure",
+      `dsc-${d.rceptNo}`,
+      `DART 거래소 공시 - ${d.reportName}`,
+      d.receiptUrl,
+      d.receivedDate,
+      `[거래소 공시 · ${DISCLOSURE_LABEL[d.kind]} · 회사 자체 공시이며 애널리스트 컨센서스가 아님] ${d.reportName} (접수일 ${d.receivedDate}, 접수번호 ${d.rceptNo})${d.truncated ? " [일부 잘림]" : ""}\n${d.text}`,
     );
   }
 

@@ -2,11 +2,13 @@ import type { HttpClient } from "./http.js";
 import { isZip, unzip } from "./zip.js";
 import type { ZipLimits } from "./zip.js";
 import { classifySecurity, describeRejections } from "../domain/security.js";
-import { extractDocument, extractMetrics, extractProducts } from "./extract.js";
+import { extractDisclosureText, extractDocument, extractMetrics, extractProducts } from "./extract.js";
 import { CollectionError, issue } from "./types.js";
 import type {
   CollectionIssue,
   DerivedQuarter,
+  DisclosureKind,
+  ExchangeDisclosure,
   FilingEvidence,
   FilingPeriodType,
   MetricCandidate,
@@ -26,6 +28,17 @@ const MAX_LIST_PAGES = 3;
 const MAX_STATEMENT_ROWS = 400;
 const MAX_METRICS = 200;
 const MAX_PRODUCTS = 60;
+// Exchange disclosures (pblntf_ty "I"): one newest-first list page over this window, then at most this many
+// documents, fetched after the periodic filings so a tight request budget drops these first.
+const DISCLOSURE_WINDOW_DAYS = 200;
+const MAX_DISCLOSURE_DOCS = 4;
+const DISCLOSURE_CHARS = 4000;
+// report_nm (whitespace removed) -> kind, with a per-kind cap (newest first).
+const DISCLOSURE_KINDS: { kind: DisclosureKind; re: RegExp; max: number }[] = [
+  { kind: "earnings_schedule", re: /기업설명회|\(IR\)개최|IR개최|결산실적공시예고/, max: 2 },
+  { kind: "earnings_guidance", re: /실적등에대한전망|영업실적전망/, max: 1 },
+  { kind: "preliminary_earnings", re: /\(잠정\)실적|잠정실적/, max: 1 },
+];
 
 export interface DartCtx {
   ticker: string;
@@ -52,6 +65,7 @@ export interface DartResult {
   tables: TableEvidence[];
   metricCandidates: MetricCandidate[];
   productCandidates: ProductCandidate[];
+  disclosures: ExchangeDisclosure[];
   issues: CollectionIssue[];
 }
 
@@ -126,7 +140,7 @@ function periodOf(reportName: string, fyeMonth: number): FilingEvidence["period"
 export async function collectDart(c: DartCtx): Promise<DartResult> {
   const out: DartResult = {
     name: null, corpCode: null, exchangeVerified: false, filings: [], statements: [], derivedQuarters: [],
-    excerpts: [], tables: [], metricCandidates: [], productCandidates: [], issues: [],
+    excerpts: [], tables: [], metricCandidates: [], productCandidates: [], disclosures: [], issues: [],
   };
 
   const corp = (await corpIndex(c)).get(c.ticker);
@@ -218,7 +232,62 @@ export async function collectDart(c: DartCtx): Promise<DartResult> {
     })
     .slice(0, MAX_METRICS);
   out.productCandidates = dedupeProducts(out.productCandidates).slice(0, MAX_PRODUCTS);
+
+  // Best-effort: a failure here is a warning and never costs the periodic evidence collected above.
+  try {
+    out.disclosures = await collectDisclosures(c, corp.code, out.issues);
+  } catch (e) {
+    out.issues.push(issue("dart", e instanceof CollectionError ? e.code : "disclosures_failed", `Exchange disclosures: ${(e as Error).message}`, "warning"));
+  }
   return out;
+}
+
+/** Earnings-related exchange disclosures (IR/earnings schedule, guidance, preliminary results) received by asOf. */
+async function collectDisclosures(c: DartCtx, corpCode: string, issues: CollectionIssue[]): Promise<ExchangeDisclosure[]> {
+  const bgn = new Date(c.asOf.cutoffMs - DISCLOSURE_WINDOW_DAYS * 86400_000).toISOString().slice(0, 10).replace(/-/g, "");
+  const r = await dartJson(c, "list.json", {
+    corp_code: corpCode, bgn_de: bgn, end_de: c.asOf.dateKst.replace(/-/g, ""), pblntf_ty: "I",
+    last_reprt_at: "N", page_no: "1", page_count: "100", sort: "date", sort_mth: "desc",
+  }, true);
+  const picked: Omit<ExchangeDisclosure, "text" | "truncated">[] = [];
+  const perKind = new Map<DisclosureKind, number>();
+  const rows = (Array.isArray(r?.list) ? r.list : []).map(asRecord).filter((o): o is Record<string, unknown> => !!o);
+  rows.sort((a, b) => str(b.rcept_no).localeCompare(str(a.rcept_no))); // newest first, whatever the upstream order
+  for (const o of rows) {
+    if (picked.length >= MAX_DISCLOSURE_DOCS) break;
+    const rcept = str(o.rcept_no);
+    const dt = str(o.rcept_dt);
+    const name = str(o.report_nm);
+    if (!/^\d{14}$/.test(rcept) || !/^\d{8}$/.test(dt) || name.includes("첨부")) continue;
+    // same lookahead rule as the periodic filings above
+    if (isoDate(dt) > c.asOf.dateKst || (!c.asOf.dateOnly && isoDate(dt) === c.asOf.dateKst)) continue;
+    const compact = name.replace(/\s+/g, "");
+    const k = DISCLOSURE_KINDS.find((x) => x.re.test(compact));
+    if (!k || (perKind.get(k.kind) ?? 0) >= k.max) continue;
+    perKind.set(k.kind, (perKind.get(k.kind) ?? 0) + 1);
+    picked.push({ rceptNo: rcept, receiptUrl: receiptUrl(rcept), reportName: clip(name, 200), receivedDate: isoDate(dt), kind: k.kind, isCorrection: /정정/.test(name) });
+  }
+  const results = await mapLimit(picked, 2, (d) => fetchDisclosureText(c, d.rceptNo).then((t) => ({ d, t }), (e: unknown) => ({ d, e })));
+  const out: ExchangeDisclosure[] = [];
+  for (const x of results) {
+    if ("e" in x) {
+      issues.push(issue("dart", x.e instanceof CollectionError ? x.e.code : "disclosure_failed", `Disclosure ${x.d.rceptNo}: ${(x.e as Error).message}`, "warning"));
+      continue;
+    }
+    if (x.t.text.trim()) out.push({ ...x.d, ...x.t });
+  }
+  return out;
+}
+
+async function fetchDisclosureText(c: DartCtx, rceptNo: string): Promise<{ text: string; truncated: boolean }> {
+  const buf = await c.http.bytes(`${API}/document.xml?${new URLSearchParams({ crtfc_key: c.key, rcept_no: rceptNo })}`, {
+    maxBytes: c.maxBytes,
+    ttlMs: c.documentTtlMs,
+  });
+  if (!isZip(buf)) throw dartError(buf, "document.xml");
+  const file = unzip(buf, c.zip, (n) => /\.(xml|html?)$/i.test(n)).sort((a, b) => a.name.localeCompare(b.name))[0];
+  if (!file) throw new CollectionError("invalid_response", "disclosure ZIP has no XML/HTML file");
+  return extractDisclosureText(decode(file.data), DISCLOSURE_CHARS);
 }
 
 function dedupeProducts(list: ProductCandidate[]): ProductCandidate[] {
