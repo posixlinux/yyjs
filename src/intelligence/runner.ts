@@ -9,6 +9,8 @@ const ENV_ALLOWLIST = [
   "SystemRoot", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "COMSPEC", "PATHEXT",
   "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "no_proxy", "all_proxy",
   "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
+  // Claude Code's output-token cap for one reply; a large draft dataset can exceed the default.
+  "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
 ];
 
 export const buildEnv = (source: NodeJS.ProcessEnv, extra: Record<string, string> = {}): Record<string, string> => {
