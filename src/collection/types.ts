@@ -281,7 +281,7 @@ export interface CompetitorPeriod {
   periodEnd: string;
   /** Filer's own label, e.g. "FY2026 Q3", "2026 반기", "2025年度 中間". */
   fiscalLabel: string;
-  /** Calendar period holding most of it: "2026Q2", "2026H1" or "2026". */
+  /** Calendar quarter holding most of a quarter ("2026Q2"), or the calendar quarters a half/year covers ("2025Q2~2025Q3"). */
   calendarPeriod: string;
   /** "exact" when periodEnd is within 7 days of that calendar period's end. */
   calendarAlignment: "exact" | "approximate";
