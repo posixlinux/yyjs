@@ -2,7 +2,8 @@ import { mkdir, mkdtemp } from "node:fs/promises";
 import path from "node:path";
 import type { Dataset } from "../src/domain/schema.js";
 
-// Round-number dataset: asOf 2026-01-15 -> target 2026Q2, latest observations 2025Q4 (2 quarters, crosses a year boundary).
+// Round-number dataset: asOf 2026-01-15, results reported through 2025Q4 -> target 2026Q1 (first unreported quarter;
+// one quarter after the latest observations, across a year boundary).
 export const AS_OF = "2026-01-15";
 export const NOW = new Date("2026-01-15T12:00:00Z");
 
