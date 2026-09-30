@@ -41,6 +41,8 @@ export interface CollectionOptions {
   corpCodeTtlMs?: number; // default 24h
   documentTtlMs?: number; // default 1h
   competitorTtlMs?: number; // competitor filings/facts, default 6h
+  /** Persistent cache directory for filing content (DART/SEC/EDINET). Unset = memory cache only. */
+  cacheDir?: string;
   /** Replaces the default Naver Open API search queries (outlook/growth/share + product markets; max 6). */
   productQueries?: string[];
 }

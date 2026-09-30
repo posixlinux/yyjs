@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { CollectionError } from "./types.js";
 
 /** Only these hosts are ever fetched. Receipt URLs on dart.fss.or.kr are emitted as links, never fetched. */
@@ -22,6 +25,18 @@ export interface HttpConfig {
   maxRequests: number;
   secrets: string[];
   signal?: AbortSignal | undefined;
+  /** Directory for the persistent filing cache (RequestOptions.disk). Unset = no disk cache. */
+  cacheDir?: string | undefined;
+}
+
+/** Persistent cache entry for filing content that does not change once published. */
+export interface DiskCacheOptions {
+  /** Stable key WITHOUT secrets (e.g. "dart:document:20260814000123"); hashed into the file name. */
+  key: string;
+  /** Max age; Infinity for immutable content (a filing by receipt number / document id). */
+  ttlMs: number;
+  /** Only responses that pass are stored (e.g. a real ZIP, a JSON status 000), so upstream errors are never cached. */
+  validate?: (body: Buffer) => boolean;
 }
 
 export interface RequestOptions {
@@ -29,6 +44,8 @@ export interface RequestOptions {
   maxBytes?: number;
   /** >0 caches (and de-duplicates concurrent calls for) this URL for that many ms. */
   ttlMs?: number;
+  /** Also keep the body on disk (HttpConfig.cacheDir); a disk hit costs no upstream request. */
+  disk?: DiskCacheOptions;
 }
 
 export interface HttpClient {
@@ -132,8 +149,33 @@ export function createHttp(cfg: HttpConfig): HttpClient {
     return Buffer.concat(chunks);
   }
 
+  // Disk layer: <cacheDir>/<sha256(key)>.bin, freshness by mtime. Any cache I/O failure silently falls back to the network.
+  async function viaDisk(url: string, opts: RequestOptions): Promise<Buffer> {
+    const d = opts.disk;
+    if (!cfg.cacheDir || !d) return fetchBytes(url, opts);
+    const file = path.join(cfg.cacheDir, `${createHash("sha256").update(d.key).digest("hex")}.bin`);
+    try {
+      const st = await stat(file);
+      if (Date.now() - st.mtimeMs <= d.ttlMs) return await readFile(file);
+    } catch {
+      /* miss */
+    }
+    const body = await fetchBytes(url, opts);
+    if (!d.validate || d.validate(body)) {
+      try {
+        await mkdir(cfg.cacheDir, { recursive: true });
+        const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+        await writeFile(tmp, body);
+        await rename(tmp, file);
+      } catch {
+        /* best effort */
+      }
+    }
+    return body;
+  }
+
   const bytes = (url: string, opts: RequestOptions = {}) =>
-    opts.ttlMs && opts.ttlMs > 0 ? memo(`GET ${url}`, opts.ttlMs, () => fetchBytes(url, opts)) : fetchBytes(url, opts);
+    opts.ttlMs && opts.ttlMs > 0 ? memo(`GET ${url}`, opts.ttlMs, () => viaDisk(url, opts)) : viaDisk(url, opts);
 
   return {
     bytes,

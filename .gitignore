@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 data/manual/*
+data/cache/
 !data/manual/.gitkeep
 *.tmp
 *.log

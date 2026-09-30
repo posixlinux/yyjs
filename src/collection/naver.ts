@@ -301,6 +301,9 @@ export async function collectNaverSearch(
   http: HttpClient,
   creds: { id: string; secret: string },
   ttlMs: number,
+  /** Per query: normalized names an item's title/description must contain (null = keep all). */
+  mustMention: (query: string) => string[] | null = () => null,
+  normalize: (s: string) => string = (s) => s,
 ): Promise<{ items: NewsItem[]; issues: CollectionIssue[] }> {
   const items: NewsItem[] = [];
   const issues: CollectionIssue[] = [];
@@ -311,7 +314,10 @@ export async function collectNaverSearch(
     const query = q.replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 100);
     if (!query) continue;
     try {
-      const url = `https://openapi.naver.com/v1/search/news.json?${new URLSearchParams({ query, display: "20", sort: "date" })}`;
+      // Relevance order finds outlook/analyst pieces; date order returns only the last day or two of loose matches.
+      const url = `https://openapi.naver.com/v1/search/news.json?${new URLSearchParams({ query, display: "20", sort: "sim" })}`;
+      const names = mustMention(query);
+      let unrelated = 0;
       const body = asRecord(await http.json(url, { headers, ttlMs }));
       const list = body?.items;
       if (!Array.isArray(list)) throw new CollectionError("invalid_response", "Naver search response has no items");
@@ -321,6 +327,11 @@ export async function collectNaverSearch(
         const link = str(o?.link);
         const title = plainText(str(o?.title));
         if (!o || Number.isNaN(ms) || ms > asOf.cutoffMs || !link.startsWith("https://") || !title) continue;
+        if (ms < asOf.cutoffMs - 365 * 86_400_000) continue; // relevance order can surface stale pieces
+        if (names && !names.some((n) => normalize(`${title} ${plainText(str(o.description))}`).includes(n))) {
+          unrelated++;
+          continue;
+        }
         const key = str(o.originallink) || link;
         const nt = normalizeTitle(title);
         if (seen.has(key) || seenTitles.has(nt)) continue;
@@ -338,6 +349,7 @@ export async function collectNaverSearch(
           origin: "naver-search",
         });
       }
+      if (unrelated) issues.push(issue("naver-search", "search_unrelated_excluded", `Query "${query}": ${unrelated} result(s) do not name the company; excluded`, "info"));
     } catch (e) {
       issues.push(issue("naver-search", e instanceof CollectionError ? e.code : "search_failed", `Query "${query}": ${(e as Error).message}`));
     }

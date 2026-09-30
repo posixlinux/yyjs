@@ -20,7 +20,7 @@ import type {
   TableEvidence,
   TextExcerpt,
 } from "./types.js";
-import { asRecord, clip, mapLimit, parseAmount, str } from "./text.js";
+import { asRecord, clip, kstDate, mapLimit, parseAmount, str } from "./text.js";
 import { calendarPeriodOf } from "./period.js";
 import type { AsOf } from "./text.js";
 
@@ -79,9 +79,24 @@ interface Corp {
   name: string;
 }
 
-async function dartJson(c: DartCtx, path: string, params: Record<string, string>, noDataOk = false): Promise<Record<string, unknown> | null> {
+// Disk-cache ages (HttpConfig.cacheDir). A filing's document never changes once received; statements are re-read
+// weekly (a correction replaces them); a list whose window ends before today can only change through late
+// corrections, one that includes today changes as filings arrive.
+const DISK = { forever: Infinity, statement: 7 * 86_400_000, company: 7 * 86_400_000, corpCode: 86_400_000, pastList: 30 * 86_400_000, liveList: 3_600_000 };
+const okJson = (buf: Buffer) => {
+  try {
+    return ["000", "013"].includes(str(asRecord(JSON.parse(buf.toString("utf8")))?.status));
+  } catch {
+    return false;
+  }
+};
+/** List queries whose end date is before today (KST) are effectively immutable. */
+const listTtl = (endDe: string) => (endDe < kstDate(Date.now()).replace(/-/g, "") ? DISK.pastList : DISK.liveList);
+
+async function dartJson(c: DartCtx, path: string, params: Record<string, string>, noDataOk = false, diskTtlMs?: number): Promise<Record<string, unknown> | null> {
   const url = `${API}/${path}?${new URLSearchParams({ crtfc_key: c.key, ...params })}`;
-  const o = asRecord(await c.http.json(url, { ttlMs: c.ttlMs }));
+  const key = `dart:${path}:${new URLSearchParams(Object.entries(params).sort(([a], [b]) => a.localeCompare(b)))}`;
+  const o = asRecord(await c.http.json(url, { ttlMs: c.ttlMs, ...(diskTtlMs !== undefined && { disk: { key, ttlMs: diskTtlMs, validate: okJson } }) }));
   if (!o) throw new CollectionError("invalid_response", `DART ${path} returned a non-object`);
   const status = str(o.status);
   if (status === "000") return o;
@@ -110,7 +125,7 @@ function dartError(buf: Buffer, what: string): CollectionError {
 
 async function corpIndex(c: DartCtx): Promise<Map<string, Corp>> {
   return c.http.memo("dart:corpIndex", c.corpCodeTtlMs, async () => {
-    const buf = await c.http.bytes(`${API}/corpCode.xml?${new URLSearchParams({ crtfc_key: c.key })}`, { maxBytes: c.maxBytes });
+    const buf = await c.http.bytes(`${API}/corpCode.xml?${new URLSearchParams({ crtfc_key: c.key })}`, { maxBytes: c.maxBytes, disk: { key: "dart:corpCode.xml", ttlMs: DISK.corpCode, validate: isZip } });
     if (!isZip(buf)) throw dartError(buf, "corpCode.xml");
     const file = unzip(buf, c.zip, (n) => /\.xml$/i.test(n))[0];
     if (!file) throw new CollectionError("invalid_response", "corpCode ZIP has no XML file");
@@ -153,7 +168,7 @@ export async function collectDart(c: DartCtx): Promise<DartResult> {
     out.issues.push(issue("dart", "corp_code_not_found", `No DART corp_code for listed ticker ${c.ticker}`));
     return out;
   }
-  const company = await dartJson(c, "company.json", { corp_code: corp.code });
+  const company = await dartJson(c, "company.json", { corp_code: corp.code }, false, DISK.company);
   if (str(company?.stock_code) !== c.ticker) throw new CollectionError("invalid_response", "DART company stock_code does not match the ticker");
   if (!(c.competitor ? ["Y", "K"] : ["Y"]).includes(str(company?.corp_cls))) {
     out.issues.push(issue("dart", "not_kospi", `DART corp_cls is "${str(company?.corp_cls)}", not Y (KOSPI)`));
@@ -178,7 +193,7 @@ export async function collectDart(c: DartCtx): Promise<DartResult> {
     const r = await dartJson(c, "list.json", {
       corp_code: corp.code, bgn_de: bgn, end_de: c.asOf.dateKst.replace(/-/g, ""), pblntf_ty: "A",
       last_reprt_at: "N", page_no: String(page), page_count: "100", sort: "date", sort_mth: "desc",
-    }, true);
+    }, true, listTtl(c.asOf.dateKst.replace(/-/g, "")));
     if (!r) break;
     for (const x of Array.isArray(r.list) ? r.list : []) {
       const o = asRecord(x);
@@ -254,7 +269,7 @@ async function collectDisclosures(c: DartCtx, corpCode: string, issues: Collecti
   const r = await dartJson(c, "list.json", {
     corp_code: corpCode, bgn_de: bgn, end_de: c.asOf.dateKst.replace(/-/g, ""), pblntf_ty: "I",
     last_reprt_at: "N", page_no: "1", page_count: "100", sort: "date", sort_mth: "desc",
-  }, true);
+  }, true, listTtl(c.asOf.dateKst.replace(/-/g, "")));
   const picked: Omit<ExchangeDisclosure, "text" | "truncated">[] = [];
   const perKind = new Map<DisclosureKind, number>();
   const rows = (Array.isArray(r?.list) ? r.list : []).map(asRecord).filter((o): o is Record<string, unknown> => !!o);
@@ -289,6 +304,7 @@ async function fetchDisclosureText(c: DartCtx, rceptNo: string): Promise<{ text:
   const buf = await c.http.bytes(`${API}/document.xml?${new URLSearchParams({ crtfc_key: c.key, rcept_no: rceptNo })}`, {
     maxBytes: c.maxBytes,
     ttlMs: c.documentTtlMs,
+    disk: { key: `dart:document:${rceptNo}`, ttlMs: DISK.forever, validate: isZip },
   });
   if (!isZip(buf)) throw dartError(buf, "document.xml");
   const file = unzip(buf, c.zip, (n) => /\.(xml|html?)$/i.test(n)).sort((a, b) => a.name.localeCompare(b.name))[0];
@@ -306,7 +322,7 @@ async function fetchStatement(c: DartCtx, corpCode: string, f: FilingEvidence, i
   for (const fsDiv of ["CFS", "OFS"] as const) {
     let o: Record<string, unknown> | null;
     try {
-      o = await dartJson(c, "fnlttSinglAcntAll.json", { corp_code: corpCode, bsns_year: String(f.period.fiscalYear), reprt_code: reportCode, fs_div: fsDiv }, true);
+      o = await dartJson(c, "fnlttSinglAcntAll.json", { corp_code: corpCode, bsns_year: String(f.period.fiscalYear), reprt_code: reportCode, fs_div: fsDiv }, true, DISK.statement);
     } catch (e) {
       issues.push(issue("dart", e instanceof CollectionError ? e.code : "statement_failed", `Statement ${f.period.type} ${f.period.fiscalYear} (${fsDiv}): ${(e as Error).message}`));
       return null;
@@ -429,6 +445,7 @@ async function fetchDocument(c: DartCtx, f: FilingEvidence) {
   const buf = await c.http.bytes(`${API}/document.xml?${new URLSearchParams({ crtfc_key: c.key, rcept_no: f.rceptNo })}`, {
     maxBytes: c.maxBytes,
     ttlMs: c.documentTtlMs,
+    disk: { key: `dart:document:${f.rceptNo}`, ttlMs: DISK.forever, validate: isZip },
   });
   if (!isZip(buf)) throw dartError(buf, "document.xml");
   const files = unzip(buf, c.zip, (n) => /\.(xml|html?)$/i.test(n)).sort((a, b) => a.name.localeCompare(b.name)).slice(0, 3);

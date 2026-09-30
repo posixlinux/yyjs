@@ -21,10 +21,26 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 |---|---|
 | `DART_API_KEY` | OpenDART 인증키. 없으면 DART 제공자만 `not_configured`. |
 | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | 선택. 있을 때만 공식 뉴스 검색 실행(헤더로 전송). 없어도 종목 뉴스는 동작. |
+| `SEC_USER_AGENT` | 선택. 미국 경쟁사(SEC EDGAR)용. SEC가 요구하는 이름·연락처 문자열(예 `yyjs research you@example.com`). 모든 SEC 요청의 `User-Agent`로 전송. |
+| `EDINET_API_KEY` | 선택. 일본 경쟁사(EDINET API v2 구독 키, 무료 등록). 쿼리 `Subscription-Key`로 전송하며 결과·로그에서 가림. |
 
 키는 `options.env`(기본 `process.env`)에서만 읽으며 로그·오류·결과에 넣지 않는다(URL의 `crtfc_key`와 키 값은 `***`로 치환).
 
-주요 옵션(`CollectionOptions`): `fetch`(테스트 주입), `now`, `signal`, `timeoutMs`(15s), `maxResponseBytes`(20MiB), `maxDecompressedBytes`(64MiB), `maxRequests`(48), `maxNewsPages`(3), `maxArticles`(5, 0~5; 0이면 기사 본문을 가져오지 않음), `maxFilings`(8, 1~8), `maxDocuments`(4, 0~8), `cacheTtlMs`(60s), `corpCodeTtlMs`(24h), `documentTtlMs`(1h), `productQueries`(기본 검색 질의를 대체, 최대 6개).
+주요 옵션(`CollectionOptions`): `fetch`(테스트 주입), `now`, `signal`, `timeoutMs`(15s), `maxResponseBytes`(20MiB), `maxDecompressedBytes`(64MiB), `maxRequests`(48), `maxNewsPages`(3), `maxArticles`(5, 0~5; 0이면 기사 본문을 가져오지 않음), `maxFilings`(8, 1~8), `maxDocuments`(4, 0~8), `cacheTtlMs`(60s), `corpCodeTtlMs`(24h), `documentTtlMs`(1h), `competitorTtlMs`(6h), `productQueries`(기본 검색 질의를 대체, 최대 6개).
+
+입력 `competitors`(선택, 최대 6개)는 **한국·미국·일본만** 받는다: `KR:000660`(KRX 종목코드), `US:MU`(SEC 티커), `JP:8035`(도쿄증권거래소 코드). 다른 형식·국가는 `CollectionInputError`. 분석 대상 종목 자신은 빠진다.
+
+## 경쟁사 공시 매출 (`competitors[]`)
+
+글로벌 비교는 한국·미국·일본 기업만 한다. 각 나라 전자공시에서 보고서를 찾아 **회사 전체 매출**을 공시 원문 수치 그대로(통화·원 단위, 환산 없음) 가져온다. 기간은 `calendarPeriod`로 달력 분기(`2026Q2`) 또는 반기·연간이 덮는 달력 분기 범위(`2025Q2~2025Q3`)를 표시하고, 기말이 달력 분기말과 7일 넘게 다르면 `approximate`. 회사별 요청 예산은 본 수집과 따로 쓴다(KR 16, US 2, JP 70).
+
+| 국가 | 시스템 | 방법 |
+|---|---|---|
+| 한국 | DART (`DART_API_KEY`) | 본 수집기와 같은 목록·재무제표 API(문서·거래소 공시 생략, 코스닥도 허용). 분기·반기·3분기 보고서의 3개월 매출(`ifrs-full_Revenue` 또는 매출액·영업수익), 사업보고서 연간, 4분기 = 연간 − 3분기 누적. |
+| 미국 | SEC EDGAR (`SEC_USER_AGENT`) | `www.sec.gov/files/company_tickers.json`(티커→CIK) → `data.sec.gov/api/xbrl/companyfacts/CIK##########.json`. 10-Q/10-K의 us-gaap 매출 태그 중 가장 최근까지 보고된 것. 같은 기간은 **가장 이른 공시일** 값(나중 공시의 비교 수치로 룩어헤드하지 않음). 공시일 D(미 동부)는 D+1일 12:00 KST에 공개된 것으로 본다. 4분기 = 연간 − 1~3분기. 20-F/40-F 제출 외국 기업은 거부(`not_us_domestic`/`no_us_gaap`). 부문(세그먼트) 매출은 companyfacts에 없어 수집하지 않는다. |
+| 일본 | EDINET (`EDINET_API_KEY`) | 코드 목록 ZIP(키 불필요, Shift_JIS CSV)으로 증권코드→EDINET 코드·결산월·내국법인 여부 확인. EDINET은 회사 검색이 없어 **제출일별 서류 목록**을 법정 기한(유가증권보고서: 결산 후 3개월, 반기보고서: 45일)부터 거꾸로 평일만 훑어 최근 연간 2건·반기 2건을 찾는다(회사당 최대 60일). 서류의 XBRL→CSV(type=5, UTF-16)에서 주요 경영지표(`...SummaryOfBusinessResults`) 매출을 연결 우선으로 읽고, 하반기 = 연간 − 상반기. **2024년 4월 이후 일본 상장사는 분기보고서가 없어 반기·연간 매출만 있다.** 외국 법인은 거부(`not_jp_domestic`). 출처 URL은 공개 열람 화면(`disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?<docID>`). |
+
+모델 문서에는 경쟁사마다 한 건(`cmp-<국가>-<코드>`)으로 들어가며, 문서 URL·날짜는 가장 최근 공시의 것이다. 모델은 한국·미국·일본 기업만 `competitors[]`에 넣고 나머지 국가는 "기타"에 포함한다. 반기·연간 값은 `period_allocation` 추정으로 분기에 배분한다.
 
 ## 호출하는 엔드포인트
 
@@ -35,7 +51,7 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 | Naver | `.../stock/{ticker}/finance/quarter` | `market.quarterlyConsensus`: `isConsensus=Y` 분기만 수집. 매출·영업이익·순이익은 억원→원, EPS는 원/주. 한 분기만 있어도 제공하며 연결/별도·희석 기준은 미확인으로 보존. 조회 시각이 `asOf`보다 늦으면 요청하지 않음. 실패는 경고로 처리. |
 | Naver | `.../stock/{ticker}/finance/quarter` (같은 응답) | `market.quarterlyActuals`: `isConsensus=N`(실적) 분기의 EPS(원/주). 다음 분기 적정 주가(PER 유지)의 최근 4분기 EPS에 쓰인다. 컨센서스와 같은 조건(현재 기준일만)으로 수집. |
 | Naver | `.../stock/{ticker}/price?pageSize=60&page=1..3` | `market.dailyCloses`: asOf 이하 일별 종가(최신순). asOf 200일 전까지 덮으면 중단. 현재 기준일에만 수집(과거 asOf는 오늘부터의 페이지로 닿지 않음). 실패는 경고. |
-| Naver | `.../news/stock/{ticker}?pageSize=20&page=1..3` | 최대 3페이지. 구 `finance.naver.com` 뉴스 URL은 사용하지 않는다(410). |
+| Naver | `.../news/stock/{ticker}?pageSize=20&page=1..3` | 최대 3페이지. 네이버가 종목에 연결한 기사 목록이라 시황·다른 회사 기사가 섞이므로, 제목이나 요약에 회사명(네이버 종목명·DART 법인명, `(주)`·공백 무시)이 없는 기사는 제외한다(`news_unrelated_excluded`, info). 구 `finance.naver.com` 뉴스 URL은 사용하지 않는다(410). |
 | Naver 기사 | `https://n.news.naver.com/mnews/article/<숫자>/<숫자>` 또는 `/article/<숫자>/<숫자>` | 상위 `maxArticles`건의 본문(`dic_area`)만. 아래 "기사 본문" 참조. |
 | Naver Open API | `https://openapi.naver.com/v1/search/news.json?query=…&display=20&sort=date` | 키가 있을 때만. 질의는 `productQueries`(명시하면 그대로) 또는 기본값: `"{종목명} 전망"`, `"{종목명} 성장률"`, `"{종목명} 시장 점유율"` + DART 제품 후보 상위 3개에 대한 `"{제품} 세계 시장 규모 점유율 성장률"`(총 6개 이내). 전망·성장률 기사는 모델이 성장률을 **보수적으로** 판단하는 근거(여러 수치 중 낮은 쪽, 상단 표현 할인)로 쓰이며, 기사 본문 선택에서도 `전망`·`성장률`·`가이던스` 키워드를 우선한다. |
 | DART | `corpCode.xml` (ZIP→`CORPCODE.xml`) | 상장 종목코드→`corp_code` 색인을 TTL 24h 캐시. 특정 회사 하드코딩 없음. |
@@ -45,7 +61,7 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 | DART | `document.xml?rcept_no` (ZIP XML) | 최근 `maxDocuments`건만 다운로드. |
 | DART | `list.json` (`pblntf_ty=I` 거래소공시, `last_reprt_at=N`, asOf 이전 200일, 1페이지) | 실적 관련 공시만 선별(최신순): 기업설명회(IR) 개최·결산실적공시 예고(최대 2건), 영업실적 등에 대한 전망(1건), (잠정)실적(1건). `rcept_dt`가 asOf 이후·첨부 공시는 제외. 각 원문(`document.xml`)을 평문으로 `filings.disclosures`에 담고, 표 하나는 한 줄로 펼친다. 실패해도 경고(warning)일 뿐 정기공시 근거에는 영향 없음. 회사 자체 공시이며 애널리스트 컨센서스가 아니다. |
 
-호스트는 `m.stock.naver.com`, `n.news.naver.com`, `openapi.naver.com`, `opendart.fss.or.kr` 화이트리스트만 허용(https, 포트·계정정보 불가). `n.news.naver.com`은 정확히 `/mnews/article/<숫자>/<숫자>` 또는 `/article/<숫자>/<숫자>` 경로만 허용하며 쿼리·프래그먼트는 붙이지 않는다(목록의 URL에서 쿼리를 제거해 재구성). 사용자 URL은 받지 않는다. 리다이렉트는 따라가지 않고 `redirect_rejected`로 처리한다. `dart.fss.or.kr/dsaf001/main.do?rcpNo=…`는 출처 링크로만 출력한다.
+호스트는 `m.stock.naver.com`, `n.news.naver.com`, `openapi.naver.com`, `opendart.fss.or.kr`, `www.sec.gov`(`/files/company_tickers.json`만), `data.sec.gov`(`/api/xbrl/companyfacts/CIK##########.json`만), `api.edinet-fsa.go.jp`(`/api/v2/documents.json`, `/api/v2/documents/<docID>`만), `disclosure2dl.edinet-fsa.go.jp`(코드 목록 ZIP만) 화이트리스트만 허용(https, 포트·계정정보 불가). `n.news.naver.com`은 정확히 `/mnews/article/<숫자>/<숫자>` 또는 `/article/<숫자>/<숫자>` 경로만 허용하며 쿼리·프래그먼트는 붙이지 않는다(목록의 URL에서 쿼리를 제거해 재구성). 사용자 URL은 받지 않는다. 리다이렉트는 따라가지 않고 `redirect_rejected`로 처리한다. `dart.fss.or.kr/dsaf001/main.do?rcpNo=…`는 출처 링크로만 출력한다.
 
 ## 접근 제한·안전장치
 
@@ -70,7 +86,7 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 
 ## 부족 입력 (`requiredInputs`)
 
-`quarterlyGlobalMarketRevenue`, `comparableRevenueShare`, `growthAssumptions`, `productCoverage`, `companyQuarterlyFinancials`, `fxToKrw`, `dilutedCommonShares`, `noncontrollingInterestAndNetInterestAndTax`, `valuationMultiple`, `currentQuote` 각각에 `missing | candidate_only | reference_only | available_unverified`와 설명을 붙인다. `fxToKrw`, `dilutedCommonShares`는 이 모듈이 절대 채우지 않는다. 핵심 모델은 이 목록을 사용자에게 그대로 전달하거나 수동 데이터셋(`POST /v1/datasets`)으로 채워야 한다.
+`quarterlyGlobalMarketRevenue`, `competitorRevenue`(경쟁사를 요청한 경우만), `comparableRevenueShare`, `growthAssumptions`, `productCoverage`, `companyQuarterlyFinancials`, `fxToKrw`, `dilutedCommonShares`, `noncontrollingInterestAndNetInterestAndTax`, `valuationMultiple`, `currentQuote` 각각에 `missing | candidate_only | reference_only | available_unverified`와 설명을 붙인다. `fxToKrw`, `dilutedCommonShares`는 이 모듈이 절대 채우지 않는다. 핵심 모델은 이 목록을 사용자에게 그대로 전달하거나 수동 데이터셋(`POST /v1/datasets`)으로 채워야 한다.
 
 ## 이슈 코드 (일부)
 

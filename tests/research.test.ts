@@ -230,6 +230,39 @@ describe("POST /v1/analyses (public default)", () => {
   });
 });
 
+describe("competitors (Korea/US/Japan)", () => {
+  it("normalizes ids, passes them to the collector, keys de-duplication on them and rejects other countries", async () => {
+    const seen: unknown[] = [];
+    const { app } = await setup({}, NOW, { collect: async (input) => (seen.push(input), evidence()) });
+    const a = (await submit(app, { ticker: "111110", asOf: AS_OF, competitors: ["us:mu", "US:MU", "jp:8035", "KR:000270"] }, {}, "/v1/research")).json();
+    await poll(app, `/v1/research/${a.id}`);
+    expect(seen[0]).toEqual({ ticker: "111110", asOf: AS_OF, competitors: ["US:MU", "JP:8035", "KR:000270"] });
+    const b = (await submit(app, { ticker: "111110", asOf: AS_OF }, {}, "/v1/research")).json();
+    expect(b.id).not.toBe(a.id);
+    for (const bad of [["TW:2330"], ["CN:600519"], ["MU"], ["US:A", "US:B", "US:C", "US:D", "US:E", "US:F", "US:G"]])
+      expect((await submit(app, { ticker: "111110", asOf: AS_OF, competitors: bad })).statusCode).toBe(400);
+    expect((await submit(app, { ticker: "111110", asOf: AS_OF, mode: "demo", competitors: ["US:MU"] })).statusCode).toBe(400);
+  });
+});
+
+describe("long-poll status", () => {
+  it("?wait holds a running job's status until it finishes, returns at once for wait=0, and caps wait at 60s", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { app } = await setup({}, NOW, { collect: async () => (await gate, evidence()) });
+    const job = (await submit(app, { ticker: "111110", asOf: AS_OF }, {}, "/v1/research")).json();
+    const now = await app.inject({ url: `${job.statusUrl}?wait=0` });
+    expect(["queued", "running"]).toContain(now.json().status);
+    const t0 = Date.now();
+    const held = app.inject({ url: `${job.statusUrl}?wait=30` });
+    setTimeout(release, 50);
+    const done = await held;
+    expect(done.json().status).not.toMatch(/queued|running/);
+    expect(Date.now() - t0).toBeLessThan(5000); // woke on completion, not after 30s
+    expect((await app.inject({ url: `${job.statusUrl}?wait=61` })).statusCode).toBe(400);
+  });
+});
+
 // ---- partial outcomes -------------------------------------------------------------------------------------------
 
 describe("partial results never carry a valuation", () => {

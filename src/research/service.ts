@@ -71,6 +71,13 @@ export class ResearchService {
     return this.view(job);
   }
 
+  /** Long-poll: waits up to `waitMs` for a queued/running job to finish, then returns its current view. */
+  async waitJob(id: string, kind: JobKind, waitMs: number): Promise<ReturnType<ResearchService["view"]>> {
+    const job = this.jobs.get(id, kind);
+    if (job && (job.status === "queued" || job.status === "running")) await this.jobs.waitFor(id, waitMs);
+    return this.getJob(id, kind);
+  }
+
   close(): Promise<void> {
     return this.jobs.close();
   }

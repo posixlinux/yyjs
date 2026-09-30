@@ -17,7 +17,7 @@ const service = new Service(
 );
 const research = new ResearchService(
   {
-    collect: (input, { signal }) => collectPublicEvidence(input, { signal, now: config.now }),
+    collect: (input, { signal }) => collectPublicEvidence(input, { signal, now: config.now, cacheDir: config.cacheDir }),
     // jobTimeoutMs is the SAME effective outer deadline JobManager enforces (config.jobs.jobTimeoutMs): passing it
     // through lets resolveOptions log a diagnostic when the per-call CLI timeout does not fit that budget. It never
     // shortens the configured per-call timeout -- the job's own AbortController (JOB_TIMEOUT) is the real backstop.
