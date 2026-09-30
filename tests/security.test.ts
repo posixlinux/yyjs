@@ -33,6 +33,19 @@ describe("common-stock eligibility", () => {
     expect(codes({ ticker: "100000", names: ["삼성머스트스팩1호"] })).toContain("SPAC");
     expect(codes({ ticker: "078420", names: ["동북아1호선박투자회사"] })).toContain("SHIP_FUND");
   });
+
+  it("matches English words whole: operating companies whose English names contain the letters are not rejected", () => {
+    // DART also supplies corp_name_eng; "Aerospace" contains "spac" and was rejected as a SPAC.
+    expect(codes({ ticker: "012450", names: ["한화에어로스페이스", "한화에어로스페이스(주)", "Hanwha Aerospace Co.,Ltd."], checkTickerSuffix: false })).toEqual([]);
+    expect(codes({ ticker: "047810", names: ["한국항공우주", "KOREA AEROSPACE INDUSTRIES,LTD."] })).toEqual([]);
+    expect(codes({ ticker: "100000", names: ["예시인프라", "Example Infra Co., Ltd."] })).toEqual([]); // operating company named ...인프라
+    expect(codes({ ticker: "100000", names: ["Pureit Holdings"] })).toEqual([]);
+    // the real vehicles are still caught by their English names
+    expect(codes({ ticker: "100000", names: ["Hana Financial SPAC No.25"] })).toContain("SPAC");
+    expect(codes({ ticker: "100000", names: ["ABC Special Purpose Acquisition Co."] })).toContain("SPAC");
+    expect(codes({ ticker: "330590", names: ["LOTTE REIT Co., Ltd."] })).toContain("REIT");
+    expect(codes({ ticker: "088980", names: ["맥쿼리인프라"] })).toContain("INFRA_FUND");
+  });
 });
 
 // ---- collector integration (fake fetch) -------------------------------------------------------------------------

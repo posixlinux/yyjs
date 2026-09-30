@@ -97,8 +97,17 @@ export function numericSupport(c: Citation, value: number): string | null {
   return null;
 }
 
+/**
+ * Verifier issues that make a proposed dataset unusable even provisionally: no parsable dataset, the wrong company,
+ * synthetic data, data dated after asOf, or annual figures. Every other issue (citations, labels, rationale) is a
+ * quality concern: the dataset is then offered as `provisionalDataset` and valued with that concern reported.
+ */
+export const HARD_VERIFY_CODES = new Set(["NO_DATASET_NO_REASON", "DATASET_SCHEMA", "SYNTHETIC_DATASET", "TICKER_MISMATCH", "FUTURE_DATE", "FUTURE_SOURCE", "NOT_QUARTERLY"]);
+
 export type Verified = {
   dataset: Dataset | null;
+  /** The parsed dataset whenever no HARD_VERIFY_CODES issue was found (may still carry soft issues). */
+  provisionalDataset: Dataset | null;
   citations: Citation[]; // structurally valid ones only
   issues: Issue[];
   observedPaths: string[];
@@ -118,6 +127,7 @@ export function verifyProposal(asOf: string, ticker: string, docs: EvidenceDocum
 
   const finish = (dataset: Dataset | null, observedPaths: string[] = [], estPaths: string[] = []): Verified => ({
     dataset: issues.length ? null : dataset,
+    provisionalDataset: issues.some((i) => HARD_VERIFY_CODES.has(i.code)) ? null : dataset,
     citations,
     issues,
     observedPaths,

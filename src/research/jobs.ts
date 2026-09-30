@@ -104,7 +104,11 @@ export class JobManager {
       const controller = new AbortController();
       job.status = "running";
       job.startedAt = this.now();
-      const done = this.execute(job, work, controller).finally(() => {
+      // The job is reported as soon as it finishes or is abandoned (timeout), but its slot is released only once the
+      // work itself has settled: work that ignores the abort signal can never push concurrency past maxRunning.
+      const settled = Promise.resolve().then(() => work({ signal: controller.signal }));
+      const done = this.execute(job, settled, controller);
+      Promise.allSettled([done, settled]).then(() => {
         this.running.delete(job.id);
         this.pump();
       });
@@ -113,7 +117,7 @@ export class JobManager {
   }
 
   /** Never rejects: every failure becomes a `failed` outcome. */
-  private async execute(job: Job, work: Work, controller: AbortController): Promise<void> {
+  private async execute(job: Job, work: Promise<JobOutcome>, controller: AbortController): Promise<void> {
     const timer = setTimeout(() => controller.abort(new Error("job timeout")), this.limits.jobTimeoutMs);
     timer.unref();
     try {
@@ -121,9 +125,7 @@ export class JobManager {
         const onAbort = () => reject(controller.signal.reason);
         if (controller.signal.aborted) return onAbort();
         controller.signal.addEventListener("abort", onAbort, { once: true });
-        Promise.resolve()
-          .then(() => work({ signal: controller.signal }))
-          .then(resolve, reject);
+        work.then(resolve, reject);
       });
       this.finish(job, outcome);
     } catch (e) {

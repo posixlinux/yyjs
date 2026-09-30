@@ -5,7 +5,7 @@ KOSPI 상장사 한 곳을 골라 **공시·시세·뉴스 자동 수집 → Cla
 - Node.js ≥ 22, TypeScript, Fastify, Zod, Vitest
 - **기본 워크플로는 공개 자료 자동 수집(`mode: "public"`)** 입니다: DART 정기보고서/재무제표 + Naver 시세·뉴스. 수동 데이터셋(`manual`)과 가상 데모(`demo`)는 명시적으로 요청할 때만 동작합니다.
 - **LLM은 구조화·교차검증만** 합니다. 돈 계산은 순수 TypeScript 모델이 하며, LLM이 만든 값은 문서 인용(원문 구절 + 숫자 대조)과 두 번째 모델의 독립 감사를 통과해야 교차검증된 데이터셋으로 인정됩니다. 한쪽 모델의 로그인/쿼터가 만료되면 그 모델은 호출하지 않고 나머지 모델의 결과만 쓰되(결정론적 검사는 그대로 적용) **교차검증 없음**으로 표시합니다.
-- 근거가 부족하면 **가격 없이 partial 결과**(수집 근거, 제품/산업 서술, 부족한 입력, 사유)를 돌려줍니다. 합성 데이터로 조용히 대체하지 않습니다.
+- **가능하면 가격을 계산합니다.** 모델 데이터셋이 교차검증을 통과하지 못해도 *하드 검사*(스키마, 올바른 회사, 합성 아님, asOf 이후 데이터 없음, 이중 계산·연간/분기·통화 혼동 없음)를 통과하면 **잠정 가격**(`valuation.grade: "provisional"`)을 내고, 걸린 모든 검사를 `partialReasons`에 `severity: "warning"`으로 남깁니다. 하드 검사에 걸리거나 데이터셋이 아예 없으면 **가격 없이 partial 결과**(수집 근거, 제품/산업 서술, 부족한 입력, 사유)를 돌려줍니다. 합성 데이터로 조용히 대체하지 않습니다.
 - 결과는 투자 권고가 아니며 `targetPriceKRW`는 **밸류에이션 프록시**(연환산 EPS × PE)이지 실현 주가 예측이 아닙니다. 확률/신뢰도는 제공하지 않습니다.
 
 ```mermaid
@@ -117,8 +117,8 @@ curl -s localhost:3000/v1/schema
     "evidence":  { /* 제공자 상태·이슈, 회사(KOSPI 검증), 시세, 뉴스, 공시 목록, 상품/지표 후보, requiredInputs, 모델에 전달한 문서 목록 */ },
     "research":  { /* Claude/agy 각각의 상태·코드, `crossChecked`, 만료된 모델 목록(`unavailable`), 제품/산업 서술(한국어), 인용, 가정, 불일치, 부족 필드, 감사 결과 */ },
     "analysis":  { /* 결정론적 모델 출력(아래 '모델' 참고). partial 이면 null */ },
-    "valuation": { "status": "available | partial | unavailable", "scenarios": { "bear": "available", … } },
-    "partialReasons": [ { "code", "message", "details?" } ],
+    "valuation": { "status": "available | partial | unavailable", "scenarios": { "bear": "available", … }, "grade": "verified | provisional | null" },
+    "partialReasons": [ { "code", "severity": "blocking | warning", "message", "details?" } ],
     "missingInputs":  [ { "source": "collector | intelligence | gate", "field", "detail?" } ],
     "notes": []
   },
@@ -127,10 +127,12 @@ curl -s localhost:3000/v1/schema
 ```
 
 - `completed`: 사유 없이 데이터셋이 이중 검토·결정론 검증을 모두 통과하고 세 시나리오 가치가 모두 산출됨. 이때 `missingInputs`는 비어 있습니다(수집기의 사전 부족 목록은 `evidence.requiredInputs`에 남음).
-- `partial`: 가격 없음(`analysis: null`) 또는 일부 시나리오 가치 불가(`VALUATION_UNAVAILABLE`, `analysis`는 유지). **수집 근거, 제품/산업 서술, 부족한 입력과 사유는 항상 노출**됩니다.
+- `partial`: 가격 없음(`blocking` 사유가 있어 `analysis: null`), 잠정 가격(`warning` 사유만 있어 `analysis` 유지, `valuation.grade: "provisional"`), 또는 일부 시나리오 가치 불가(`VALUATION_UNAVAILABLE`, `analysis`는 유지). **수집 근거, 제품/산업 서술, 부족한 입력과 사유는 항상 노출**됩니다.
 - `failed`: 수집 실패, KOSPI가 아님(`NOT_KOSPI`), 타임아웃(`JOB_TIMEOUT`), 종료(`SERVER_CLOSING`) 등.
 
-주요 `partialReasons` 코드: `EXCHANGE_UNVERIFIED`, `QUOTE_MISSING`, `HISTORICAL_QUOTE_UNAVAILABLE`(과거 `asOf`인데 그 날짜의 시세가 없음: Naver는 최신 스냅샷만 제공), `NO_EVIDENCE_DOCUMENTS`, `PROVIDER_ERROR`(Claude/agy 상태는 `research.providers`), `INTELLIGENCE_ERROR`, `RESEARCH_NOT_ACCEPTED`, `DATASET_SCHEMA_INVALID`, `DATASET_TICKER_MISMATCH`, `DATASET_QUOTE_MISMATCH`(가격 **및** KST 거래일 대조), `DATA_VALIDATION_FAILED`(정적+asOf 검증 이슈 목록), `VALUATION_UNAVAILABLE`.
+주요 `partialReasons` 코드:
+- `blocking`(가격 없음): `NO_EVIDENCE_DOCUMENTS`, `INTELLIGENCE_ERROR`, `RESEARCH_NOT_ACCEPTED`(쓸 수 있는 데이터셋 없음), `DATASET_SCHEMA_INVALID`, `DATASET_TICKER_MISMATCH`, `DATASET_SYNTHETIC`, `DATA_VALIDATION_FAILED`(하드 이슈: asOf 이후 데이터, FX/시장/커버리지 누락, 점유율 > 1, 매출 초과·이중 계산, 연간 기준 등), `MODEL_FAILED`.
+- `warning`(잠정 가격): `EXCHANGE_UNVERIFIED`, `QUOTE_MISSING`·`HISTORICAL_QUOTE_UNAVAILABLE`(데이터셋 문서상 시세를 미검증으로 사용), `PROVIDER_ERROR`(Claude/agy 상태는 `research.providers`), `RESEARCH_PROVISIONAL`(감사 미승인·미확인 숫자·인용 누락 등, 상세는 `research.audit.issues`), `DATASET_QUOTE_REPLACED`(수집한 Naver 시세로 교체), `DATASET_REPAIRED`(분기 정렬·중복 제거, 미종료 분기 제거, 점유율 범위 확장, 잔여 매출 가정 추가), `DATA_VALIDATION_WARNINGS`(오래된 근거, 커버리지 부족, 분기 급변 등), `VALUATION_UNAVAILABLE`.
 
 **추출된 데이터셋은 자동 저장하지 않습니다**(수동 저장소 오염 방지). 필요하면 결과를 검토한 뒤 직접 `POST /v1/datasets`로 올리세요.
 

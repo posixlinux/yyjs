@@ -421,10 +421,12 @@ describe("partial results never carry a valuation", () => {
     expect(intelligence).not.toHaveBeenCalled();
   });
 
-  it("unverified exchange is partial (no valuation) even if a dataset says KOSPI", async () => {
+  it("unverified exchange is a warning: the valuation is produced but graded provisional", async () => {
     const { body } = await partialCase(evidence({ company: { name: "X", corpCode: null, exchange: null, exchangeVerifiedBy: [] } }), accepted());
-    noPrices(body);
-    expect(body.result.partialReasons.map((r: any) => r.code)).toContain("EXCHANGE_UNVERIFIED");
+    expect(body.status).toBe("partial");
+    expect(body.result.analysis.scenarios).toHaveLength(3);
+    expect(body.result.valuation).toMatchObject({ status: "available", grade: "provisional" });
+    expect(body.result.partialReasons).toEqual([expect.objectContaining({ code: "EXCHANGE_UNVERIFIED", severity: "warning" })]);
   });
 
   it("dataset ticker must equal the request ticker", async () => {
@@ -435,13 +437,54 @@ describe("partial results never carry a valuation", () => {
     expect(body.result.partialReasons.map((r: any) => r.code)).toContain("DATASET_TICKER_MISMATCH");
   });
 
-  it("runs static + as-of validation on the proposed dataset", async () => {
+  it("runs static + as-of validation on the proposed dataset: soft issues keep a provisional price", async () => {
     const ds = makeDataset();
-    ds.financials.totalRevenueKRW = 2.5e11; // products explain 40% => coverage insufficient
+    ds.financials.totalRevenueKRW = 2.5e11; // products explain 40% => coverage insufficient (residual assumptions exist)
+    const { body } = await partialCase(evidence(), accepted(ds));
+    expect(body.result.valuation).toMatchObject({ status: "available", grade: "provisional" });
+    const reason = body.result.partialReasons.find((r: any) => r.code === "DATA_VALIDATION_WARNINGS");
+    expect(reason.severity).toBe("warning");
+    expect(reason.details.map((i: any) => i.code)).toContain("COVERAGE_INSUFFICIENT");
+  });
+
+  it("hard validation issues still block the valuation", async () => {
+    const ds = makeDataset();
+    ds.products[0].revenue[3].revenue = 2e9; // product revenue above the whole market => invalid share
     const { body } = await partialCase(evidence(), accepted(ds));
     noPrices(body);
     const reason = body.result.partialReasons.find((r: any) => r.code === "DATA_VALIDATION_FAILED");
-    expect(reason.details.map((i: any) => i.code)).toContain("COVERAGE_INSUFFICIENT");
+    expect(reason.severity).toBe("blocking");
+    expect(reason.details.map((i: any) => i.code)).toContain("INVALID_SHARE");
+  });
+
+  it("repairs a missing residual, out-of-range share bounds and unsorted series instead of refusing a price", async () => {
+    const ds = makeDataset();
+    delete ds.residual;
+    ds.products[0].shareBounds = { min: 0.2, max: 0.3 }; // observed share 0.1
+    ds.markets[0].observations.reverse();
+    const { body } = await partialCase(evidence(), accepted(ds));
+    expect(body.result.valuation).toMatchObject({ status: "available", grade: "provisional" });
+    const repaired = body.result.partialReasons.find((r: any) => r.code === "DATASET_REPAIRED");
+    expect(repaired.details.map((r: any) => r.code)).toEqual(expect.arrayContaining(["RESIDUAL_ASSUMED", "SHARE_BOUNDS_WIDENED", "SERIES_SORTED"]));
+    expect(body.result.analysis.assumptions.residual).toMatchObject({ annualGrowth: { bear: 0, base: 0, bull: 0 }, operatingMargin: { base: 0.2 } });
+    expect(body.result.analysis.scenarios[1].products[0].revenueShare).toBeCloseTo(0.1);
+  });
+
+  it("a draft the review did not accept is valued provisionally when it passed the hard checks", async () => {
+    const issues = [{ code: "AUDIT_UNCONFIRMED", path: "quote.priceKRW", message: "not confirmed" }];
+    const draft = accepted(null, { status: "partial", provisionalDataset: makeDataset(), audit: { issues, excludedDocuments: [], auditSummary: "x", auditedBy: "agy", independentAudit: true, limitations: [] } });
+    const { body } = await partialCase(evidence(), draft);
+    expect(body.status).toBe("partial");
+    expect(body.result.valuation).toMatchObject({ status: "available", grade: "provisional" });
+    const reason = body.result.partialReasons.find((r: any) => r.code === "RESEARCH_PROVISIONAL");
+    expect(reason).toMatchObject({ severity: "warning", details: [{ code: "AUDIT_UNCONFIRMED", path: "quote.priceKRW" }] });
+  });
+
+  it("a provider error next to a provisional dataset is a warning, not a block", async () => {
+    const draft = accepted(null, { status: "partial", provisionalDataset: makeDataset(), providers: { claude: ok("claude"), agy: err("agy", "SCHEMA_INVALID") } });
+    const { body } = await partialCase(evidence(), draft);
+    expect(body.result.valuation.grade).toBe("provisional");
+    expect(body.result.partialReasons.map((r: any) => [r.code, r.severity])).toEqual(expect.arrayContaining([["PROVIDER_ERROR", "warning"], ["RESEARCH_PROVISIONAL", "warning"]]));
   });
 
   it("rejects schema-invalid datasets from the intelligence module", async () => {
@@ -452,13 +495,15 @@ describe("partial results never carry a valuation", () => {
     expect(body.result.partialReasons.map((r: any) => r.code)).toContain("DATASET_SCHEMA_INVALID");
   });
 
-  it("requires the dataset quote (price AND trade date in KST) to equal the collected Naver quote", async () => {
+  it("replaces a dataset quote that differs (price OR trade date in KST) from the collected Naver quote", async () => {
     const price = makeDataset();
     price.quote.priceKRW = 49_000;
-    expect((await partialCase(evidence(), accepted(price))).body.result.partialReasons.map((r: any) => r.code)).toContain("DATASET_QUOTE_MISMATCH");
+    const p = (await partialCase(evidence(), accepted(price))).body.result;
+    expect(p.partialReasons).toEqual([expect.objectContaining({ code: "DATASET_QUOTE_REPLACED", severity: "warning" })]);
+    expect(p.analysis.facts.quote).toEqual({ priceKRW: 50_000, asOf: "2026-01-10" });
     const day = makeDataset();
     day.quote.asOf = "2026-01-09";
-    expect((await partialCase(evidence(), accepted(day))).body.result.partialReasons.map((r: any) => r.code)).toContain("DATASET_QUOTE_MISMATCH");
+    expect((await partialCase(evidence(), accepted(day))).body.result.partialReasons.map((r: any) => r.code)).toContain("DATASET_QUOTE_REPLACED");
     // a UTC timestamp for the same KST day is accepted
     const utc = evidence();
     utc.market.quote!.tradedAt = "2026-01-10T06:30:00Z"; // 15:30 KST same day
@@ -484,7 +529,7 @@ describe("partial results never carry a valuation", () => {
     ds.residual!.value.operatingMargin = { bear: -0.3, base: 0.1, bull: 0.1 };
     const { body } = await partialCase(evidence(), accepted(ds));
     expect(body.status).toBe("partial");
-    expect(body.result.valuation).toEqual({ status: "partial", scenarios: { bear: "unavailable", base: "available", bull: "available" } });
+    expect(body.result.valuation).toEqual({ status: "partial", scenarios: { bear: "unavailable", base: "available", bull: "available" }, grade: "verified" });
     expect(body.result.analysis.scenarios[0].valuation.status).toBe("unavailable");
     expect(body.result.partialReasons.map((r: any) => r.code)).toContain("VALUATION_UNAVAILABLE");
     expect(JSON.stringify(body.result.analysis)).not.toMatch(/NaN|Infinity/);
