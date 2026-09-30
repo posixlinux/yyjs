@@ -6,6 +6,7 @@ import { classifySecurity, describeRejections } from "../domain/security.js";
 import { AppError } from "../errors.js";
 import type { AnalysisResult, EvidenceInput } from "../intelligence/types.js";
 import { sanitize } from "../intelligence/runner.js";
+import { isExpiredCode } from "../intelligence/availability.js";
 import { analyze } from "../model/model.js";
 import { buildReport } from "./report.js";
 import { buildDocuments, kstDate, summarizeEvidence, type BuiltDocuments } from "./evidence.js";
@@ -218,7 +219,7 @@ export class ResearchService {
         const expired = new Set(research.unavailable.map((u) => u.provider));
         for (const p of Object.values(research.providers)) if (p.status !== "ok" && !expired.has(p.provider)) warn(`PROVIDER_${p.status.toUpperCase()}`, `${p.provider}: ${p.code} - ${p.message}`);
         for (const u of research.unavailable)
-          notes.push(`${u.provider} 사용 불가(${u.code}) — ${u.skippedWithoutCall ? "만료가 확인되어 호출하지 않고 건너뛰었습니다" : "호출했으나 만료되어 사용하지 않았습니다"}${singleModel ? ` (교차검증 없이 ${u.provider === "claude" ? "agy" : "claude"} 단일 모델 결과)` : ""}. 재사용 가능 시각(추정): ${u.retryAfter}`);
+          notes.push(`${u.provider} 사용 불가(${u.code}) — ${u.skippedWithoutCall ? "만료가 확인되어 호출하지 않고 건너뛰었습니다" : isExpiredCode(u.code) ? "호출했으나 만료되어 사용하지 않았습니다" : "호출했으나 실패해 사용하지 않았습니다"}${singleModel ? ` (교차검증 없이 ${u.provider === "claude" ? "agy" : "claude"} 단일 모델 결과)` : ""}. 재사용 가능 시각(추정): ${u.retryAfter}`);
         const reviewed = (research.status === "accepted" || singleModel) && research.dataset ? research.dataset : null;
         const proposed = reviewed ?? research.provisionalDataset ?? null;
         if (!proposed) {
