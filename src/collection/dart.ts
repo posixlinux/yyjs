@@ -118,6 +118,9 @@ function dartError(buf: Buffer, what: string): CollectionError {
       /* not JSON */
     }
   }
+  // 014 "파일이 존재하지 않습니다": DART has no downloadable original for this receipt (seen on some filings and
+  // corrections). Not an outage: the caller substitutes another filing.
+  if (status === "014") return new CollectionError("document_unavailable", `DART ${what} status ${status}: ${clip(message ?? "", 200)}`);
   return status
     ? new CollectionError("upstream_error", `DART ${what} status ${status}: ${clip(message ?? "", 200)}`)
     : new CollectionError("invalid_response", `DART ${what} returned neither ZIP nor a DART error`);
@@ -203,6 +206,8 @@ export async function collectDart(c: DartCtx): Promise<DartResult> {
   }
 
   const latest = new Map<string, FilingEvidence>();
+  // Every eligible receipt per period (original + corrections), so a missing document can fall back to a sibling.
+  const byPeriod = new Map<string, FilingEvidence[]>();
   for (const o of rows) {
     const rcept = str(o.rcept_no);
     const dt = str(o.rcept_dt);
@@ -213,12 +218,14 @@ export async function collectDart(c: DartCtx): Promise<DartResult> {
     const period = periodOf(name, fyeMonth);
     if (!period || period.end > c.asOf.dateKst) continue; // a period ending after asOf cannot have been reported yet
     const key = `${period.type}:${period.end}`;
-    const prev = latest.get(key);
-    if (prev && (prev.receivedDate > isoDate(dt) || (prev.receivedDate === isoDate(dt) && prev.rceptNo > rcept))) continue;
-    latest.set(key, {
+    const filing: FilingEvidence = {
       rceptNo: rcept, receiptUrl: receiptUrl(rcept), reportName: clip(name, 200), receivedDate: isoDate(dt),
       period, isCorrection: /정정/.test(name),
-    });
+    };
+    byPeriod.set(key, [...(byPeriod.get(key) ?? []), filing]);
+    const prev = latest.get(key);
+    if (prev && (prev.receivedDate > isoDate(dt) || (prev.receivedDate === isoDate(dt) && prev.rceptNo > rcept))) continue;
+    latest.set(key, filing);
   }
   out.filings = [...latest.values()].sort((a, b) => b.period.end.localeCompare(a.period.end)).slice(0, Math.max(1, Math.min(8, c.maxFilings)));
   if (out.filings.length === 0) out.issues.push(issue("dart", "no_filings", "No periodic (annual/half/quarterly) filings found before asOf", "warning"));
@@ -233,9 +240,38 @@ export async function collectDart(c: DartCtx): Promise<DartResult> {
   }
 
   const docs = out.filings.slice(0, Math.max(0, Math.min(8, c.maxDocuments)));
-  const results = await mapLimit(docs, 2, (f) => fetchDocument(c, f).then((r) => ({ f, r }), (e: unknown) => ({ f, e })));
+  const results: ({ f: FilingEvidence; r: Awaited<ReturnType<typeof fetchDocument>> } | { f: FilingEvidence; e: unknown })[] =
+    await mapLimit(docs, 2, (f) => fetchDocument(c, f).then((r) => ({ f, r }), (e: unknown) => ({ f, e })));
+  // A receipt without a downloadable document (DART 014) is replaced, sequentially and at most once per failure: first
+  // by another receipt for the same period (e.g. the original a correction superseded), then by the next listed filing
+  // that was not fetched. A substitute from outside the list is added to it so its excerpts stay attributable.
+  const tried = new Set(docs.map((f) => f.rceptNo));
+  const spare = out.filings.slice(docs.length);
+  for (const x of [...results]) {
+    if (!("e" in x) || !(x.e instanceof CollectionError) || x.e.code !== "document_unavailable") continue;
+    const siblings = (byPeriod.get(`${x.f.period.type}:${x.f.period.end}`) ?? []).filter((f) => !tried.has(f.rceptNo))
+      .sort((a, b) => b.receivedDate.localeCompare(a.receivedDate) || b.rceptNo.localeCompare(a.rceptNo));
+    let used: string | null = null;
+    for (const alt of [...siblings, ...spare.filter((f) => !tried.has(f.rceptNo))]) {
+      tried.add(alt.rceptNo);
+      try {
+        results.push({ f: alt, r: await fetchDocument(c, alt) });
+        if (!out.filings.some((f) => f.rceptNo === alt.rceptNo)) out.filings.push(alt);
+        used = alt.rceptNo;
+        break;
+      } catch (e) {
+        if (e instanceof CollectionError && e.code === "document_unavailable") continue;
+        results.push({ f: alt, e });
+        break;
+      }
+    }
+    out.issues.push(issue("dart", "document_unavailable",
+      `Document ${x.f.rceptNo}: ${x.e.message}${used ? `; used document ${used} instead` : "; no substitute document was available"}`, used ? "warning" : "error"));
+  }
+  out.filings.sort((a, b) => b.period.end.localeCompare(a.period.end)); // stable: a sibling lands beside its period
   for (const x of results) {
     if ("e" in x) {
+      if (x.e instanceof CollectionError && x.e.code === "document_unavailable") continue; // reported above
       out.issues.push(issue("dart", x.e instanceof CollectionError ? x.e.code : "document_failed", `Document ${x.f.rceptNo}: ${(x.e as Error).message}`));
       continue;
     }
