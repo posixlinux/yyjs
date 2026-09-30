@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Dataset } from "../domain/schema.js";
 import type { Issue } from "../errors.js";
-import type { Catalyst, ConsensusSnapshot, EarningsForecastSnapshot } from "../strategy/schema.js";
+import { SingleQuarterFundingPlanSchema, type Catalyst, type ConsensusSnapshot, type EarningsForecastSnapshot } from "../strategy/schema.js";
 import { StrategyDraftSchema } from "./strategyVerify.js";
 
 // ---- input ----------------------------------------------------------------
@@ -20,8 +20,8 @@ export const LIMITS = {
 /** Default per-CLI-call timeout (draft or audit), used whenever INTELLIGENCE_TIMEOUT_MS is unset. Generous on purpose:
  *  a full dataset draft with estimates/competitors/strategy fields is a long generation. */
 export const DEFAULT_CALL_TIMEOUT_MS = 600_000;
-/** Worst-case sequential CLI calls in one analysis: claude-draft, then (on a claude draft TIMEOUT) agy-draft, then an audit call. */
-export const JOB_MAX_SEQUENTIAL_CALLS = 3;
+/** Conservative bound even at concurrency=1: draft + fallback, audit + fallback, strategy + fallback, funding. */
+export const JOB_MAX_SEQUENTIAL_CALLS = 7;
 /** Default process-wide CLI concurrency: the audit and the separate strategy call of one analysis run in parallel
  * (2 calls), times the default number of concurrently running research jobs (RESEARCH_MAX_RUNNING=2). */
 export const DEFAULT_MAX_CONCURRENT = 4;
@@ -94,7 +94,7 @@ export type Proposal = z.infer<typeof ProposalSchema>;
  * earnings-gap-auto/v1 extraction (docs/STRATEGY_SPEC.md) gets the model's full attention instead of being an
  * afterthought appended to a long Dataset generation. `strategy` is required: only its outer shape is enforced here
  * (an object with all four keys, each possibly null; see StrategyDraftSchema), because the strategy sub-schemas
- * (EarningsForecastSnapshotSchema etc.) are strict and exacting -- verifyStrategyDraft (strategyVerify.ts) parses
+ * (SingleQuarterForecastSchema etc.) are strict and exacting -- verifyStrategyDraft (strategyVerify.ts) parses
  * each piece independently and drops (with a reason) whatever does not validate or cite real evidence. `citations`
  * are this call's own strategy citations (fieldPaths like "currentConsensus.epsPerShare"). */
 export const StrategyProposalSchema = z.object({
@@ -102,6 +102,11 @@ export const StrategyProposalSchema = z.object({
   citations: z.array(CitationSchema).max(300),
 });
 export type StrategyProposal = z.infer<typeof StrategyProposalSchema>;
+
+export const FundingProposalSchema = z.object({
+  funding: SingleQuarterFundingPlanSchema.nullable(),
+  missingFields: z.array(z.string().trim().min(1).max(500)).max(30),
+}).refine((r) => r.funding !== null || r.missingFields.length > 0, "explain missing funding inputs when funding is null");
 
 export const AuditSchema = z.object({
   approved: z.boolean(),

@@ -6,6 +6,8 @@ import { extractDisclosureText, extractDocument, extractMetrics, extractProducts
 import { CollectionError, issue } from "./types.js";
 import type {
   CollectionIssue,
+  CompetitorEvidence,
+  CompetitorPeriod,
   DerivedQuarter,
   DisclosureKind,
   ExchangeDisclosure,
@@ -19,6 +21,7 @@ import type {
   TextExcerpt,
 } from "./types.js";
 import { asRecord, clip, mapLimit, parseAmount, str } from "./text.js";
+import { calendarPeriodOf } from "./period.js";
 import type { AsOf } from "./text.js";
 
 const API = "https://opendart.fss.or.kr/api";
@@ -52,6 +55,8 @@ export interface DartCtx {
   zip: ZipLimits;
   maxFilings: number;
   maxDocuments: number;
+  /** Competitor mode: statements only (no documents/disclosures) and KOSDAQ (corp_cls K) allowed. */
+  competitor?: boolean;
 }
 
 export interface DartResult {
@@ -150,7 +155,7 @@ export async function collectDart(c: DartCtx): Promise<DartResult> {
   }
   const company = await dartJson(c, "company.json", { corp_code: corp.code });
   if (str(company?.stock_code) !== c.ticker) throw new CollectionError("invalid_response", "DART company stock_code does not match the ticker");
-  if (str(company?.corp_cls) !== "Y") {
+  if (!(c.competitor ? ["Y", "K"] : ["Y"]).includes(str(company?.corp_cls))) {
     out.issues.push(issue("dart", "not_kospi", `DART corp_cls is "${str(company?.corp_cls)}", not Y (KOSPI)`));
     return out;
   }
@@ -234,6 +239,7 @@ export async function collectDart(c: DartCtx): Promise<DartResult> {
   out.productCandidates = dedupeProducts(out.productCandidates).slice(0, MAX_PRODUCTS);
 
   // Best-effort: a failure here is a warning and never costs the periodic evidence collected above.
+  if (c.competitor) return out;
   try {
     out.disclosures = await collectDisclosures(c, corp.code, out.issues);
   } catch (e) {
@@ -442,4 +448,49 @@ async function fetchDocument(c: DartCtx, f: FilingEvidence) {
     }
   }
   return { excerpts, tables, metrics, products };
+}
+
+// Revenue lines, most specific first: the IFRS tag, then the usual Korean account names.
+const REVENUE_ID = /^(ifrs-full|ifrs)_Revenue$/;
+const REVENUE_NAME = /^(매출액|수익\(매출액\)|영업수익|매출)$/;
+const revenueRow = <T extends { statement: string; accountId: string; accountName: string }>(rows: T[]): T | undefined =>
+  rows.find((r) => (r.statement === "IS" || r.statement === "CIS") && REVENUE_ID.test(r.accountId)) ??
+  rows.find((r) => (r.statement === "IS" || r.statement === "CIS") && REVENUE_NAME.test(r.accountName.replace(/\s+/g, "")));
+
+/** Competitor revenue from DART: 3-month revenue of Q1/H1/Q3 reports, FY revenue, and Q4 = FY - Q3 cumulative. */
+export async function collectDartRevenue(c: {
+  code: string; asOf: AsOf; key: string; http: HttpClient; ttlMs: number; corpCodeTtlMs: number; zip: ZipLimits;
+}): Promise<{ evidence: CompetitorEvidence | null; issues: CollectionIssue[] }> {
+  const r = await collectDart({
+    ticker: c.code, asOf: c.asOf, key: c.key, http: c.http, ttlMs: c.ttlMs, corpCodeTtlMs: c.corpCodeTtlMs, documentTtlMs: 0,
+    maxBytes: 20 * 1024 * 1024, zip: c.zip, maxFilings: 8, maxDocuments: 0, competitor: true,
+  });
+  if (!r.exchangeVerified) return { evidence: null, issues: r.issues };
+  const filing = new Map(r.filings.map((f) => [f.rceptNo, f]));
+  const periods: CompetitorPeriod[] = [];
+  for (const s of r.statements) {
+    const row = revenueRow(s.rows);
+    if (!row || row.thisTermAmount === null || !row.currency) continue;
+    const months = s.period === "FY" ? 12 : 3;
+    const f = filing.get(s.rceptNo);
+    const end = s.periodEnd;
+    periods.push({
+      months, periodStart: null, periodEnd: end, fiscalLabel: `${s.fiscalYear} ${s.period === "FY" ? "사업보고서(연간)" : s.period === "H1" ? "반기보고서(2분기 3개월)" : `${s.period} 분기보고서`}`,
+      ...calendarPeriodOf(end, months), currency: row.currency, revenue: row.thisTermAmount, basis: "reported",
+      consolidated: s.fsDiv === "CFS", filedDate: f?.receivedDate ?? `${s.rceptNo.slice(0, 4)}-${s.rceptNo.slice(4, 6)}-${s.rceptNo.slice(6, 8)}`,
+      form: f?.reportName ?? s.period, sourceUrl: s.receiptUrl, concept: `${row.accountName} (${row.accountId})`,
+    });
+  }
+  for (const d of r.derivedQuarters) {
+    const row = revenueRow(d.rows);
+    const fy = r.statements.find((s) => s.rceptNo === d.annualRceptNo);
+    if (!row || !fy) continue;
+    periods.push({
+      months: 3, periodStart: null, periodEnd: d.periodEnd, fiscalLabel: `${d.fiscalYear} 4분기 (연간 - 3분기 누적)`,
+      ...calendarPeriodOf(d.periodEnd, 3), currency: row.currency!, revenue: row.amount, basis: "derived", consolidated: d.fsDiv === "CFS",
+      filedDate: filing.get(d.annualRceptNo)?.receivedDate ?? "", form: "사업보고서 - 3분기보고서", sourceUrl: fy.receiptUrl, concept: `${row.accountName} (${row.accountId})`,
+    });
+  }
+  periods.sort((a, b) => b.periodEnd.localeCompare(a.periodEnd) || a.months - b.months);
+  return { evidence: { market: "KR", code: c.code, name: r.name, system: "DART", periods }, issues: r.issues };
 }

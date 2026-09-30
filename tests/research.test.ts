@@ -12,7 +12,7 @@ import { buildDocuments, kstDate, truncateStatement } from "../src/research/evid
 import { AS_OF, makeDataset, NOW, tmpDir } from "../test/fixture.js";
 import { setup, type TestApp } from "../test/app.js";
 import { writeFile, mkdir } from "node:fs/promises";
-import { makeCandidateWithTicker } from "../test/strategy/fixture.js";
+import { makeSingleQuarterCandidate } from "../test/strategy/fixture.js";
 
 // ---- fakes -----------------------------------------------------------------------------------------------------
 
@@ -522,22 +522,22 @@ describe("API_KEY protects costly jobs and mutations", () => {
   });
 
   it("health exposes only booleans about integrations, never key material", async () => {
-    const config = loadConfig({ DART_API_KEY: "DARTSECRETVALUE", NAVER_CLIENT_ID: "id-value", NAVER_CLIENT_SECRET: "sec-value", API_KEY: "APIKEYVALUE" });
+    const config = loadConfig({ DART_API_KEY: "DARTSECRETVALUE", NAVER_CLIENT_ID: "id-value", NAVER_CLIENT_SECRET: "sec-value", API_KEY: "APIKEYVALUE", EDINET_API_KEY: "EDINETSECRET" });
     const { app } = await setup({ capabilities: config.capabilities, apiKey: config.apiKey });
     const body = (await app.inject({ url: "/health" })).body;
-    expect(JSON.parse(body).capabilities).toEqual({ dartConfigured: true, naverSearchConfigured: true });
-    for (const v of ["DARTSECRETVALUE", "sec-value", "APIKEYVALUE"]) expect(body).not.toContain(v);
-    expect(config.secrets()).toEqual(expect.arrayContaining(["DARTSECRETVALUE", "APIKEYVALUE"]));
+    expect(JSON.parse(body).capabilities).toEqual({ dartConfigured: true, naverSearchConfigured: true, secConfigured: false, edinetConfigured: true });
+    for (const v of ["DARTSECRETVALUE", "sec-value", "APIKEYVALUE", "EDINETSECRET"]) expect(body).not.toContain(v);
+    expect(config.secrets()).toEqual(expect.arrayContaining(["DARTSECRETVALUE", "APIKEYVALUE", "EDINETSECRET"]));
   });
 });
 
 describe("config: coherent job/call timeout budget", () => {
   it("derives the outer job timeout default from the per-call timeout when RESEARCH_JOB_TIMEOUT_MS is unset", () => {
-    // default per-call 600_000 * 3 sequential calls + 300_000 overhead = 2_100_000
-    expect(loadConfig({}).jobs.jobTimeoutMs).toBe(2_100_000);
+    // default per-call 600_000 * 7 sequential calls + 300_000 overhead = 4_500_000
+    expect(loadConfig({}).jobs.jobTimeoutMs).toBe(4_500_000);
     // a larger explicit per-call timeout derives a larger job budget too, instead of leaving an unrelated fixed
     // default to fight it.
-    expect(loadConfig({ INTELLIGENCE_TIMEOUT_MS: "900000" }).jobs.jobTimeoutMs).toBe(900_000 * 3 + 300_000);
+    expect(loadConfig({ INTELLIGENCE_TIMEOUT_MS: "900000" }).jobs.jobTimeoutMs).toBe(900_000 * 7 + 300_000);
   });
 
   it("an explicit RESEARCH_JOB_TIMEOUT_MS is always honored as-is, even when it looks too small for a worst-case sequential run", () => {
@@ -875,6 +875,19 @@ describe("evidence documents", () => {
     expect(text).toContain("67,890");
   });
 
+  it("keeps late funding accounts even when BS/CF themselves exceed their row quotas", () => {
+    const rows = (["BS", "CF"] as const).flatMap((category) => {
+      const blank = { ...statement("20251114000001").rows[0], statement: category, currency: "KRW" };
+      const filler = Array.from({ length: 100 }, (_, i) => ({ ...blank, accountId: `misc${i}`, accountName: `기타상세${i}` }));
+      const names = category === "BS" ? ["현금및현금성자산", "장기차입금", "유동성장기부채"] : ["유형자산의 취득", "차입금의 상환", "법인세의 납부", "이자의 지급", "감가상각비", "배당금 지급"];
+      return [...filler, ...names.map((accountName, i) => ({ ...blank, accountName, accountId: `funding${i}`, thisTermAmount: 12345 }))];
+    });
+    const ev = evidence({ filings: { statements: [statement("20251114000001", { rows })] } });
+    const text = buildDocuments(ev).documents.find((d) => d.id.startsWith("stmt-"))!.text;
+    for (const name of ["현금및현금성자산", "장기차입금", "유형자산의 취득", "차입금의 상환", "법인세의 납부", "이자의 지급", "감가상각비", "배당금 지급"])
+      expect(text).toContain(name);
+  });
+
   it("respects the intelligence limits: <=30 documents, bounded characters, every document schema-valid", () => {
     const f = filing("20251114000001", "2025-11-14", "Q3", "2025-09-30");
     const src = { rceptNo: f.rceptNo, receiptUrl: f.receiptUrl, reportName: f.reportName, periodEnd: f.period.end, sectionTitle: "s" };
@@ -999,7 +1012,7 @@ describe("common stock only", () => {
 
 describe("strategyAuto: automatic earnings-gap-auto/v1 connection on POST /v1/analyses", () => {
   it("ticker-only public analysis reaches the automatic strategy path and never affects the existing job status", async () => {
-    const candidate = makeCandidateWithTicker("111110");
+    const candidate = makeSingleQuarterCandidate("111110");
     const intelligence = vi.fn(async () => accepted(null, { strategy: { forecast: candidate.forecast, currentConsensus: candidate.currentConsensus, priorConsensus: candidate.priorConsensus, catalyst: candidate.catalyst, unavailable: [] } }));
     const { app } = await setup({}, NOW, { collect: async () => evidence(), intelligence });
     const job = (await submit(app, { ticker: "111110" })).json(); // ticker-only: no strategy JSON authored by the caller
@@ -1009,13 +1022,13 @@ describe("strategyAuto: automatic earnings-gap-auto/v1 connection on POST /v1/an
   });
 
   it("complete sourced fixtures produce a forecast bridge, funding risk and a full eligibility evaluation", async () => {
-    const candidate = makeCandidateWithTicker("111110");
+    const candidate = makeSingleQuarterCandidate("111110");
     const intelligence = vi.fn(async () => accepted(null, { strategy: { forecast: candidate.forecast, currentConsensus: candidate.currentConsensus, priorConsensus: candidate.priorConsensus, catalyst: candidate.catalyst, unavailable: [] } }));
     const { app } = await setup({}, NOW, { collect: async () => evidence(), intelligence });
     const { body } = await poll(app, (await submit(app, { ticker: "111110", asOf: AS_OF })).json().statusUrl);
     const sa = body.result.strategyAuto;
     expect(sa.status).toBe("eligible");
-    expect(sa.bridge.ntmEpsKRW).toBeCloseTo(8);
+    expect(sa.bridge.ntmEpsKRW).toBeCloseTo(2); // one quarter
     expect(sa.risk).not.toBeNull();
     expect(sa.evaluation.eligible).toBe(true);
     expect(sa.missing).toEqual([]);
@@ -1024,7 +1037,7 @@ describe("strategyAuto: automatic earnings-gap-auto/v1 connection on POST /v1/an
   });
 
   it("missing/mismatched consensus produces an explicit partial strategy subresult without blocking the existing valuation", async () => {
-    const candidate = makeCandidateWithTicker("111110");
+    const candidate = makeSingleQuarterCandidate("111110");
     const intelligence = vi.fn(async () =>
       accepted(makeDataset(), {
         strategy: {
@@ -1041,7 +1054,7 @@ describe("strategyAuto: automatic earnings-gap-auto/v1 connection on POST /v1/an
     expect(body.status).toBe("completed"); // the product-market valuation is unaffected by the missing consensus
     expect(body.result.valuation.status).toBe("available");
     const sa = body.result.strategyAuto;
-    expect(sa.status).toBe("insufficient_data");
+    expect(sa.status).toBe("estimate_only"); // the single-quarter estimate stands without consensus
     expect(sa.bridge).not.toBeNull(); // earnings bridge/risk still visible
     expect(sa.risk).not.toBeNull();
     expect(sa.evaluation).toBeNull();
@@ -1082,23 +1095,23 @@ describe("strategyAuto: automatic earnings-gap-auto/v1 connection on POST /v1/an
     const runnerOpts = (runner: Runner) => ({ claudePath: "/opt/bin/claude", agyPath: "/opt/bin/agy", runner, cache: false, env: { PATH: "/usr/bin" } });
 
     const CUR_NEWS = { id: "n-cur", title: "실적발표 컨퍼런스콜", snippet: "s", officeName: "A", url: "https://n.news.naver.com/mnews/article/001/0000000010", originalUrl: null, origin: "naver-stock-news" as const,
-      publishedAt: "2026-01-10T09:00:00+09:00", articleText: "2026Q2~2027Q1 연결 기준 보통주 희석 컨센서스 EPS 7원으로 집계됐다. 다음 실적발표 예정일은 2026-02-05이다." };
+      publishedAt: "2026-01-10T09:00:00+09:00", articleText: "2026Q1 연결 기준 보통주 희석 컨센서스 EPS 7원으로 집계됐다. 다음 실적발표 예정일은 2026-02-05이다." };
     const PRIOR_NEWS = { id: "n-prior", title: "이전 컨센서스", snippet: "s", officeName: "A", url: "https://n.news.naver.com/mnews/article/001/0000000011", originalUrl: null, origin: "naver-stock-news" as const,
-      publishedAt: "2025-12-06T09:00:00+09:00", articleText: "2026Q2~2027Q1 연결 기준 보통주 희석 컨센서스 EPS 6원으로 집계됐다." };
+      publishedAt: "2025-12-06T09:00:00+09:00", articleText: "2026Q1 연결 기준 보통주 희석 컨센서스 EPS 6원으로 집계됐다." };
     const groundedSrc = () => ({ title: "DART", url: "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20251114000001", kind: "filing", knownAt: "2025-11-14T00:00:00+09:00" });
     const segment = () => ({ name: "seg", volume: 10, unitPriceKRW: 100, variableCostPerUnitKRW: 60, fixedCostKRW: 100, source: groundedSrc(), assumptions: { isAssumption: true, rationale: "직전 분기 기반 전망", source: groundedSrc() } });
     const quarterOf = (q: string) => ({ quarter: q, segments: [segment()], coverageAttestation: { complete: true, statedBy: "claude" },
-      netInterestKRW: -10, taxRate: 0.2, noncontrollingShare: 0, preferredClaimsKRW: 0, dilutedCommonShares: 100,
+      netInterestKRW: -10, taxRate: 0.2, noncontrollingShare: 0, preferredClaimsKRW: 0, dilutedCommonShares: 25,
       bridgeAssumptions: { isAssumption: true, rationale: "가정 유지", source: groundedSrc() } });
     const draftForecast = () => ({ schemaVersion: 1, ticker: "111110", company: { name: "Test Co", exchange: "KOSPI", securityType: "common_stock", source: groundedSrc() },
       scope: "consolidated", sector: "auto", fiscalYearBasis: "calendar", currency: "KRW", generatedAt: "2026-01-15T00:00:00+09:00", analyst: "claude",
-      quarters: ["2026Q2", "2026Q3", "2026Q4", "2027Q1"].map(quarterOf) });
+      quarters: ["2026Q1"].map(quarterOf) });
     const draftConsensus = (eps: number, news: typeof CUR_NEWS) => ({ schemaVersion: 1, ticker: "111110", scope: "consolidated", basis: "common_diluted", currency: "KRW", unit: "KRW_per_share",
-      horizonQuarters: ["2026Q2", "2026Q3", "2026Q4", "2027Q1"], epsPerShare: eps, knownAt: news.publishedAt, source: { title: news.title, url: news.url, kind: "market_data_vendor", knownAt: news.publishedAt } });
+      horizonQuarters: ["2026Q1"], epsPerShare: eps, knownAt: news.publishedAt, source: { title: news.title, url: news.url, kind: "market_data_vendor", knownAt: news.publishedAt } });
     const draftCatalyst = () => ({ schemaVersion: 1, ticker: "111110", eventType: "earnings_release", eventAt: "2026-02-05T09:00:00+09:00", knownAt: CUR_NEWS.publishedAt,
       source: { title: CUR_NEWS.title, url: CUR_NEWS.url, kind: "exchange_notice", knownAt: CUR_NEWS.publishedAt } });
-    const curQuote = "2026Q2~2027Q1 연결 기준 보통주 희석 컨센서스 EPS 7원으로 집계됐다.";
-    const priorQuote = "2026Q2~2027Q1 연결 기준 보통주 희석 컨센서스 EPS 6원으로 집계됐다.";
+    const curQuote = "2026Q1 연결 기준 보통주 희석 컨센서스 EPS 7원으로 집계됐다.";
+    const priorQuote = "2026Q1 연결 기준 보통주 희석 컨센서스 EPS 6원으로 집계됐다.";
     const strategyDraft = () => ({
       dataset: null, missingFields: ["quote.priceKRW"], narrative: { product: "p", industry: "i" }, assumptions: [], limitations: [],
       citations: [
@@ -1120,7 +1133,7 @@ describe("strategyAuto: automatic earnings-gap-auto/v1 connection on POST /v1/an
       const { body } = await poll(app, (await submit(app, { ticker: "111110" })).json().statusUrl); // ticker-only
       const sa = body.result.strategyAuto;
       expect(sa.mode).toBe("live");
-      expect(sa.bridge?.ntmEpsKRW).toBeCloseTo(9.28); // 4x: revenue 1000, OP 300, pretax 290, tax 58, EPS 2.32/quarter
+      expect(sa.bridge?.ntmEpsKRW).toBeCloseTo(9.28); // one quarter: revenue 1000, OP 300, pretax 290, tax 58, net 232 over 25 shares
       expect(sa.risk).toBeNull(); // no funding plan was drafted; explicitly unavailable, never fabricated as zero
       expect(sa.missing).toContainEqual(expect.objectContaining({ field: "funding", code: "FUNDING_UNAVAILABLE" }));
       // gap ~32.6% and revision ~16.7% both clear the default thresholds; this is genuinely ineligible only because

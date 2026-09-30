@@ -115,11 +115,17 @@ function renderEvidence(ev) {
   parts.push(el("dl", { class: "kv" },
     el("dt", { text: "회사" }), el("dd", { text: `${company.name || "-"} (${ev.ticker || ""})${company.exchange ? ` · ${company.exchange}` : ""}` }),
     el("dt", { text: "현재가" }), el("dd", { text: quote ? `${won(quote.close)} (체결 ${quote.tradedAt})` : "수집되지 않음" }),
-    el("dt", { text: "DART 공시" }), el("dd", { text: `정기보고서 ${filings.length}건 · 재무제표 ${statements.length}건` }),
+    el("dt", { text: "DART 공시" }), el("dd", { text: ev.providers?.dart?.status === "not_configured"
+      ? "수집 안 함 — 서버에 DART_API_KEY가 설정되지 않았습니다"
+      : `정기보고서 ${filings.length}건 · 재무제표 ${statements.length}건` }),
     el("dt", { text: "뉴스" }), el("dd", { text: `${news.length}건` }),
+    ...(ev.competitors ? [el("dt", { text: "경쟁사 공시 매출" }), el("dd", { text: ev.competitors.length ? ev.competitors.map((c) => `${c.market}:${c.code}${c.name ? ` ${c.name}` : ""} (${c.system}, ${c.periods.length}개 기간)`).join(" · ") : "수집되지 않음" })] : []),
   ));
   const prov = ev.providers || {};
-  parts.push(el("p", { class: "small" }, "수집 상태: ", ...["naver", "dart", "naverSearch"].filter((k) => prov[k]).flatMap((k) => [`${k} `, badge(PROVIDER, prov[k].status), "  "])));
+  if (prov.dart?.status === "not_configured")
+    parts.push(el("div", { class: "box warn", text: "DART 공시·재무제표를 수집하지 않았습니다. 서버 폴더의 .env 파일에 DART_API_KEY(OpenDART 무료 인증키)를 넣고 서버를 다시 시작하세요. 키가 없으면 가치 계산도 할 수 없습니다." }));
+  parts.push(el("p", { class: "small" }, "수집 상태: ", ...["naver", "dart", "naverSearch"].filter((k) => prov[k]).flatMap((k) => [`${k} `, badge(PROVIDER, prov[k].status), "  "]),
+    ...Object.entries(prov.competitors || {}).flatMap(([m, r]) => [`경쟁사 ${m} `, badge(PROVIDER, r.status), "  "])));
   const issues = (ev.issues || []).filter((i) => i.severity !== "info");
   if (issues.length) parts.push(el("ul", { class: "plain" }, issues.slice(0, 8).map((i) => el("li", { text: `[${i.provider}] ${i.code}: ${i.message}` }))));
   if (filings.length) parts.push(el("details", {}, el("summary", { text: `DART 정기보고서 ${filings.length}건` }),
@@ -199,7 +205,7 @@ function renderAnalysis(a, valuation) {
     el("details", {}, el("summary", { text: "한계" }), el("ul", { class: "plain" }, (a.limitations || []).map((w) => el("li", { text: w })))));
 }
 
-const STRATEGY_STATUS = { eligible: ["적합", "ok"], ineligible: ["부적합", "warn"], insufficient_data: ["데이터 부족", "warn"] };
+const STRATEGY_STATUS = { eligible: ["적합", "ok"], ineligible: ["부적합", "warn"], estimate_only: ["추정 완료(컨센서스 판정 없음)", "ok"], insufficient_data: ["데이터 부족", "warn"] };
 const STRATEGY_MODE = { live: ["실시간(오늘 기준)", "ok"], retrospective_research: ["과거 재현(리서치, 실거래 신호 아님)", "warn"] };
 
 // Readable Korean labels for strategy assumption fieldPaths (e.g. "forecast.quarters[0].segments[0].assumptions",
@@ -237,7 +243,7 @@ function renderAssumption(a) {
 function renderStrategyAuto(sa) {
   if (!sa) return null;
   const parts = [];
-  parts.push(el("p", {}, "상태: ", badge(STRATEGY_STATUS, sa.status), " · ", badge(STRATEGY_MODE, sa.mode)));
+  parts.push(el("p", {}, "한 분기 실적 추정(단기, 최장 3개월): ", badge(STRATEGY_STATUS, sa.status), " · ", badge(STRATEGY_MODE, sa.mode)));
   parts.push(el("p", { class: "small", text: `생성 시각(전망 추출): ${sa.generatedAt || "없음 — 검증된 전망을 추출하지 못했습니다"} · 판단 시각: ${sa.decisionAt}` }));
   parts.push(el("p", { class: "small", text: `독립 감사: ${sa.independentlyAudited ? "받음" : "받지 않음"}` }));
   if (sa.mode === "retrospective_research")
@@ -246,23 +252,71 @@ function renderStrategyAuto(sa) {
   (sa.notes || []).forEach((n) => parts.push(el("p", { class: "small", text: n })));
 
   if (sa.bridge) {
-    parts.push(el("p", {}, el("strong", { text: "다음 4개 분기 합산 EPS: " }), won(sa.bridge.ntmEpsKRW)));
+    parts.push(el("p", {}, el("strong", { text: `${sa.bridge.quarters.map((q) => q.quarter).join(", ")} 추정 EPS: ` }), won(sa.bridge.ntmEpsKRW)));
     const rows = sa.bridge.quarters.map((q) => el("tr", {}, el("td", { text: q.quarter }), el("td", { text: big(q.revenueKRW) }), el("td", { text: big(q.operatingProfitKRW) }), el("td", { text: won(q.epsKRW) })));
     parts.push(el("div", { class: "tablewrap" }, el("table", {},
       el("thead", {}, el("tr", {}, el("th", { text: "분기" }), el("th", { text: "매출" }), el("th", { text: "영업이익" }), el("th", { text: "보통주 EPS" }))),
       el("tbody", {}, rows))));
   } else {
-    parts.push(el("p", { class: "small", text: "다음 4개 분기 실적 전망을 추출하지 못했습니다." }));
+    parts.push(el("p", { class: "small", text: "한 분기 실적 추정을 만들지 못했습니다." }));
+  }
+
+  const np = sa.nextQuarterPrice;
+  if (np) {
+    parts.push(el("h3", { text: "다음 분기 적정 주가 (PER 유지)" }));
+    if (np.status === "available") {
+      parts.push(el("p", {}, el("strong", { text: `${np.targetQuarter} 적정 주가: ${won(np.fairPriceKRW)}` }),
+        ` · ${np.baseQuarter} 평균 종가 ${won(np.base.averageCloseKRW)} 대비 ${pct(np.changeVsBaseAveragePct)}`,
+        np.latestClose ? ` · 최근 종가 ${won(np.latestClose.closeKRW)}(${np.latestClose.date}) 대비 ${pct(np.latestClose.changeToFairPct)}` : ""));
+      parts.push(el("p", { class: "small", text: `${np.baseQuarter} PER ${np.impliedPer.toFixed(2)}배 = 평균 종가 ${won(np.base.averageCloseKRW)}(${np.base.tradingDays}거래일) ÷ 최근 4분기 EPS ${won(np.baseTtmEpsKRW)} → ${np.targetQuarter}까지 4분기 EPS ${won(np.targetTtmEpsKRW)} × PER` }));
+      const rows = np.ttmComponents.map((c) => el("tr", {}, el("td", { text: c.quarter }), el("td", { text: won(c.epsKRW) }), el("td", { text: c.kind === "forecast" ? "자체 추정" : "실적(네이버)" })));
+      parts.push(el("div", { class: "tablewrap" }, el("table", {},
+        el("thead", {}, el("tr", {}, ...["분기", "EPS", "구분"].map((text) => el("th", { text })))),
+        el("tbody", {}, rows))));
+    } else {
+      parts.push(el("p", { class: "small", text: "계산할 수 없습니다." }));
+      parts.push(el("ul", { class: "plain" }, (np.reasons || []).map((r) => el("li", { text: r.message }))));
+    }
+    (np.notes || []).forEach((n) => parts.push(el("p", { class: "small", text: n })));
+  }
+
+  if ((sa.quarterlyConsensus || []).length) {
+    parts.push(el("h3", { text: "분기 컨센서스" }));
+    parts.push(el("p", { class: "small", text: "자체 추정과 나란히 보는 참고값입니다. 네이버 증권의 컨센서스 표시값이며, 조회 시점의 스냅샷입니다. EPS는 주식수 산정 기준이 확인되지 않았습니다." }));
+    const rows = sa.quarterlyConsensus.map(({ consensus: c }) => el("tr", {},
+      el("td", { text: c.quarter }), el("td", { text: big(c.revenueKRW) }), el("td", { text: big(c.operatingProfitKRW) }),
+      el("td", { text: big(c.netIncomeKRW) }), el("td", { text: won(c.epsKRW) })));
+    parts.push(el("div", { class: "tablewrap" }, el("table", {},
+      el("thead", {}, el("tr", {}, ...["대상 분기", "매출", "영업이익", "순이익", "EPS(참고)"].map((text) => el("th", { text })))),
+      el("tbody", {}, rows))));
+    for (const item of sa.quarterlyConsensus) {
+      const c = item.consensus;
+      parts.push(el("p", { class: "small" }, `${c.quarter} · 조회 ${c.observedAt} · `, safeLink(c.sourceUrl, "네이버 원자료")));
+      parts.push(el("p", { class: "small", text: item.note }));
+      for (const [label, diff] of [["매출", item.revenue], ["영업이익", item.operatingProfit]]) {
+        if (diff) parts.push(el("p", { class: "small", text: `${c.quarter} ${label}: 자체 전망 ${big(diff.forecastKRW)}, 컨센서스 대비 차이 ${big(diff.differenceKRW)}${diff.differencePct === null ? " (적자·0 기준 비율 미계산)" : ` (${pct(diff.differencePct)})`}` }));
+      }
+    }
+  } else {
+    parts.push(el("p", { class: "small", text: "조회 가능한 분기 컨센서스가 없습니다. 과거 기준일에는 현재 스냅샷을 사용하지 않습니다." }));
   }
 
   if (sa.risk) {
     const b = sa.risk.base;
     parts.push(el("p", {}, el("strong", { text: "자금 상태(기본 시나리오): " }),
       `분기 경계 최저 현금 ${big(b.minimumQuarterBoundaryCashKRW)}, 추가 자금 필요액 ${big(b.peakAdditionalFundingRequiredKRW)}`));
-    if (sa.risk.stress.peakAdditionalFundingRequiredKRW > 0)
-      parts.push(el("p", { class: "small box warn", text: `하방 시나리오에서 추가 자금 ${big(sa.risk.stress.peakAdditionalFundingRequiredKRW)}가 필요합니다.` }));
+    parts.push(el("p", { class: "small", text: `하방 시나리오: 분기 경계 최저 현금 ${big(sa.risk.stress.minimumQuarterBoundaryCashKRW)}, 추가 자금 필요액 ${big(sa.risk.stress.peakAdditionalFundingRequiredKRW)}` }));
+    parts.push(el("p", { class: "small", text: "공시 자료에 근거한 자금 계획 추정치입니다. 분기 중 현금 부족은 계산 범위에 포함되지 않습니다." }));
+    const fundingRows = b.quarters.map((q) => el("tr", {}, el("td", { text: q.quarter }),
+      ...[q.openingCashKRW, q.capexKRW, q.deltaWorkingCapitalKRW, q.debtPrincipalDueKRW, q.endingCashKRW, q.additionalFundingRequiredKRW].map((n) => el("td", { text: big(n) }))));
+    parts.push(el("div", { class: "tablewrap" }, el("table", {},
+      el("thead", {}, el("tr", {}, ...["분기", "기초 현금", "설비·무형자산 투자", "운전자본 증가", "차입 상환", "기말 현금", "추가 자금 필요"].map((text) => el("th", { text })))),
+      el("tbody", {}, fundingRows))));
   } else {
-    parts.push(el("p", { class: "small", text: "투자·운전자본·차입 자금 계획이 없어 자금 위험을 계산하지 못했습니다." }));
+    parts.push(el("p", { class: "small", text: "자금 위험을 계산할 수 있는 검증된 자금 계획을 확보하지 못했습니다." }));
+    const fundingReasons = (sa.missing || []).filter((m) => m.field === "funding" || m.code.startsWith("FUNDING_") || m.code === "INVALID_DEBT_SCHEDULE");
+    if (fundingReasons.length)
+      parts.push(el("ul", { class: "plain" }, fundingReasons.map((m) => el("li", { text: m.message }))));
   }
 
   if (sa.evaluation && sa.evaluation.eligible) {
@@ -287,38 +341,59 @@ function renderStrategyAuto(sa) {
 function renderJob(job, startedAt) {
   const out = $("out");
   out.hidden = false;
-  const r = job.result || {};
-  const elapsed = Math.round((Date.now() - startedAt) / 1000);
-  const kids = [];
-  kids.push(el("div", { class: "head" },
-    el("h2", { text: `${(r.evidence && r.evidence.company && r.evidence.company.name) || ""} ${job.request ? job.request.ticker : ""} · ${job.kind === "research" ? "증거 수집" : "전체 분석"}`.trim() }),
-    el("span", {}, badge(STATUS, job.status), ` ${elapsed}초`)));
-  if (job.status === "queued" || job.status === "running")
-    kids.push(el("p", { class: "hint", text: job.kind === "analysis" ? "공시·시세 수집 후 Claude·agy 검토가 이어집니다. 한쪽이 만료되었으면 자동으로 건너뜁니다. 수 분이 걸릴 수 있습니다…" : "공개 자료를 수집하는 중…" }));
-  if (job.error) kids.push(el("div", { class: "box bad" }, el("strong", { text: `${job.error.code}: ` }), job.error.message));
-  if (r.note) kids.push(el("p", { class: "hint", text: r.note }));
+  const title = el("h2");
+  const statusBadge = badge(STATUS, job.status);
+  const elapsed = el("span");
+  const content = el("div");
+  const hint = el("p", { class: "hint", text: job.kind === "analysis"
+    ? "공시·시세 수집 후 Claude·agy 검토가 이어집니다. 완료되면 결과가 자동으로 표시됩니다."
+    : "공개 자료를 수집하는 중입니다. 완료되면 결과가 자동으로 표시됩니다." });
+  content.append(hint);
+  out.replaceChildren(el("div", { class: "head" }, title, el("span", {}, statusBadge, elapsed)), content);
+  const kind = job.kind;
+  const ticker = job.request?.ticker || "";
+  const setText = (node, text) => { if (node.textContent !== text) node.textContent = text; };
 
-  const reasons = r.partialReasons || [];
-  if (reasons.length) kids.push(section("가치 산정이 되지 않은 이유", el("ul", { class: "plain" }, reasons.map((x) => el("li", {}, el("strong", { text: `${x.code} ` }), x.message)))));
-  (r.notes || []).forEach((n) => kids.push(el("p", { class: "small", text: n })));
+  // Keep the same nodes throughout the job. Only changed status/time text is patched during polling;
+  // the result container is populated once when the job reaches a terminal state.
+  const update = (job) => {
+    const r = job.result || {};
+    const [label, color] = STATUS[job.status] || [String(job.status), ""];
+    setText(statusBadge, label);
+    const badgeClass = `badge ${color}`;
+    if (statusBadge.className !== badgeClass) statusBadge.className = badgeClass;
+    setText(elapsed, ` ${Math.round((Date.now() - startedAt) / 1000)}초`);
+    setText(title, `${r.evidence?.company?.name || ""} ${job.request?.ticker || ticker} · ${(job.kind || kind) === "research" ? "증거 수집" : "전체 분석"}`.trim());
+    if (["queued", "running"].includes(job.status)) return;
+    const kids = [];
+    if (job.error) kids.push(el("div", { class: "box bad" }, el("strong", { text: `${job.error.code}: ` }), job.error.message));
+    if (r.note) kids.push(el("p", { class: "hint", text: r.note }));
 
-  const rep = renderReport(r.report);
-  if (rep) kids.push(rep);
-  const a = renderAnalysis(r.analysis, r.valuation);
-  if (a) kids.push(a);
-  for (const x of [renderStrategyAuto(r.strategyAuto), renderResearch(r.research), renderEvidence(r.evidence)]) if (x) kids.push(x);
+    const reasons = r.partialReasons || [];
+    if (reasons.length) kids.push(section("가치 산정이 되지 않은 이유", el("ul", { class: "plain" }, reasons.map((x) => el("li", {}, el("strong", { text: `${x.code} ` }), x.message)))));
+    (r.notes || []).forEach((n) => kids.push(el("p", { class: "small", text: n })));
 
-  const missing = (r.missingInputs || []).filter((m) => m.status !== "available_unverified");
-  if (missing.length)
-    kids.push(el("details", {}, el("summary", { text: `부족/미검증 입력 ${missing.length}건` }),
-      el("ul", { class: "plain" }, missing.map((m) => el("li", { text: `${m.field}${m.status ? ` [${m.status}]` : ""}${m.detail ? `: ${m.detail}` : ""}` })))));
-  kids.push(el("p", { class: "small", text: "작업은 서버 메모리에만 보관되며 재시작하면 사라집니다." }));
-  out.replaceChildren(...kids);
+    const rep = renderReport(r.report);
+    if (rep) kids.push(rep);
+    const a = renderAnalysis(r.analysis, r.valuation);
+    if (a) kids.push(a);
+    for (const x of [renderStrategyAuto(r.strategyAuto), renderResearch(r.research), renderEvidence(r.evidence)]) if (x) kids.push(x);
+
+    const missing = (r.missingInputs || []).filter((m) => m.status !== "available_unverified");
+    if (missing.length)
+      kids.push(el("details", {}, el("summary", { text: `부족/미검증 입력 ${missing.length}건` }),
+        el("ul", { class: "plain" }, missing.map((m) => el("li", { text: `${m.field}${m.status ? ` [${m.status}]` : ""}${m.detail ? `: ${m.detail}` : ""}` })))));
+    kids.push(el("p", { class: "small", text: "작업은 서버 메모리에만 보관되며 재시작하면 사라집니다." }));
+    content.replaceChildren(...kids);
+  };
+  update(job);
+  return update;
 }
 
 // ---- run ----------------------------------------------------------------------------------------------------------
 
 let running = false;
+const JOB_POLL_INTERVAL_MS = 15_000;
 $("form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   if (running) return;
@@ -327,6 +402,8 @@ $("form").addEventListener("submit", async (ev) => {
   const mode = new FormData($("form")).get("mode");
   const body = { ticker };
   if ($("asOf").value) body.asOf = $("asOf").value;
+  const competitors = ($("competitors")?.value || "").split(/[\s,]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
+  if (competitors.length) body.competitors = competitors;
   if (apiKeyRequired) { try { sessionStorage.setItem("yyKey", $("apiKey").value); } catch { /* storage unavailable */ } }
 
   running = true;
@@ -336,14 +413,16 @@ $("form").addEventListener("submit", async (ev) => {
   try {
     const started = await api(mode === "research" ? "/v1/research" : "/v1/analyses", { method: "POST", headers: headers(), body: JSON.stringify(mode === "research" ? body : { ...body, mode: "public" }) });
     out.hidden = false;
+    // Render once while waiting. Polls must not replace the DOM (or reset selection/expanded details).
+    const updateJob = renderJob({ ...started, status: started.status || "queued", kind: mode === "research" ? "research" : "analysis", request: body }, startedAt);
     // No client-side polling ceiling: the server owns job lifetime (per-call/whole-job timeouts), so this follows
     // queued/running through to whatever terminal status (completed/partial/failed) the server eventually reports.
     // A job that disappears (evicted after its retention TTL) surfaces as a normal JOB_NOT_FOUND error below.
     for (;;) {
+      await new Promise((r) => setTimeout(r, JOB_POLL_INTERVAL_MS));
       const job = await api(started.statusUrl, { headers: headers() });
-      renderJob(job, startedAt);
+      updateJob(job);
       if (!["queued", "running"].includes(job.status)) break;
-      await new Promise((r) => setTimeout(r, 2000));
     }
   } catch (e) {
     out.hidden = false;

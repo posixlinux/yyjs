@@ -146,7 +146,7 @@ Claude와 agy 중 하나가 만료(쿼터/로그인/CLI 없음)되어도 검사 
 ### 타임아웃 문제 해결
 
 - `providers.claude.code`(또는 `agy`)가 `TIMEOUT`이면 **그 모델 호출 자체**가 설정된 시간(`INTELLIGENCE_TIMEOUT_MS`, 기본 600000ms=10분) 안에 끝나지 않은 것입니다. Claude 초안이 TIMEOUT이면 서버가 자동으로 agy로 폴백해 초안을 다시 시도합니다(같은 실행에서 타임아웃난 모델은 그 이후 감사자로도 다시 호출하지 않습니다).
-- 작업 결과 `error.code`가 `JOB_TIMEOUT`이면 **전체 작업**(수집+모델 호출 전체)이 `RESEARCH_JOB_TIMEOUT_MS`(기본은 설정하지 않으며, `INTELLIGENCE_TIMEOUT_MS × 3회 순차 호출 + 300000ms 여유`로 자동 계산됨— 기본값끼리는 2100000ms=35분)를 넘긴 것입니다. 이 둘은 서로 다른 메커니즘이며 서버 로그에서 `[intel]`/`[config]` `DIAGNOSTIC` 줄로 둘의 관계(설정된 예산이 실제 필요한 값보다 작은지)를 알려줍니다.
+- 작업 결과 `error.code`가 `JOB_TIMEOUT`이면 **전체 작업**(수집+모델 호출 전체)이 `RESEARCH_JOB_TIMEOUT_MS`(기본은 설정하지 않으며, `INTELLIGENCE_TIMEOUT_MS × 최대 7회 호출 + 300000ms 여유`로 자동 계산됨— 기본값끼리는 4500000ms=75분)를 넘긴 것입니다. 이 둘은 서로 다른 메커니즘이며 서버 로그에서 `[intel]`/`[config]` `DIAGNOSTIC` 줄로 둘의 관계(설정된 예산이 실제 필요한 값보다 작은지)를 알려줍니다.
 - **`INTELLIGENCE_TIMEOUT_MS`는 절대 자동으로 줄어들지 않습니다.** 예전 버전은 `RESEARCH_JOB_TIMEOUT_MS`의 옛 고정 기본값(900000ms)과 맞지 않으면 개별 호출 타임아웃을 몰래 줄였는데(예: 600000ms를 280000ms로), 지금은 그러지 않고 서버 시작/실행 로그에 경고만 남깁니다. `RESEARCH_JOB_TIMEOUT_MS`를 직접 설정했다면 항상 그 값 그대로 적용됩니다.
 - `INTELLIGENCE_TIMEOUT_MS`를 바꾸면(`.env`) **서버를 재시작**해야 적용됩니다(`RESEARCH_JOB_TIMEOUT_MS`를 명시하지 않았다면 재시작 시 새 기본 작업 예산도 함께 다시 계산됩니다).
 - 모델에 보내는 근거 문서 크기는 `INTELLIGENCE_EVIDENCE_CHAR_BUDGET`(기본 90000자)로 제한되지만, 문서 종류(시세, 재무제표, 사업의 내용, 표, 참고 지표, 뉴스)별로 최소 배분을 보장하므로 재무제표가 많다고 사업 서술·주식수 근거가 사라지지 않습니다. 원본 수집 데이터(`GET /v1/research/:id`의 `evidence` 필드)는 잘리지 않습니다.
@@ -156,7 +156,7 @@ Claude와 agy 중 하나가 만료(쿼터/로그인/CLI 없음)되어도 검사 
 정확한 전체 시장 규모를 구할 수 없으면 이전 자료로 **추론해서라도 예측**합니다. 허용 범위와 규칙:
 
 - **추정 가능한 값**: 시장 규모(`markets[].observations[]`), 제품 매출(`products[].revenue[]`), 경쟁사 매출(`competitors[].revenue[]`). **주가·주식수·환율·회사 총매출은 절대 추정하지 않습니다**(인용 필수).
-- 추정 항목은 `estimate: {method, basedOn, rationale}`와 `source.manualReference: "MODEL_ESTIMATE: …"`(또는 그 값을 도출한 실제 문서)를 가져야 합니다. `method`: `share_implied`(제품 매출 ÷ 문서에 적힌 점유율), `prior_extrapolation`(이전 시점 값 × 성장률), `sum_of_players`(회사 + 경쟁사 + 추정 기타), `segment_allocation`, `model_knowledge`(문서 없이 모델의 배경지식 — 가장 낮은 등급). `basedOn`은 근거가 되는 dataset 경로/문서 id이며 `model_knowledge` 외에는 비어 있으면 안 되고, 자기 자신을 근거로 삼거나 존재하지 않는 경로/문서를 가리키면 거부됩니다(`ESTIMATE_*` 코드).
+- 추정 항목은 `estimate: {method, basedOn, rationale}`와 `source.manualReference: "MODEL_ESTIMATE: …"`(또는 그 값을 도출한 실제 문서)를 가져야 합니다. `method`: `share_implied`(제품 매출 ÷ 문서에 적힌 점유율), `prior_extrapolation`(이전 시점 값 × 성장률), `sum_of_players`(회사 + 경쟁사 + 추정 기타), `segment_allocation`, `period_allocation`(공시된 반기·연간 매출을 분기로 배분; 일본 기업은 반기 공시만 있음), `article_synthesis`(여러 기사의 서로 다른 누적 판매량·매출 수치를 단위·기간을 맞춰 종합한 대략값; 중앙값 기본, 범위 밖 값 금지, `basedOn`에 기사 문서 id 2개 이상 필수), `model_knowledge`(문서 없이 모델의 배경지식 — 가장 낮은 등급). `basedOn`은 근거가 되는 dataset 경로/문서 id이며 `model_knowledge` 외에는 비어 있으면 안 되고, 자기 자신을 근거로 삼거나 존재하지 않는 경로/문서를 가리키면 거부됩니다(`ESTIMATE_*` 코드).
 - 추정치는 인용이 필요 없는 대신 **감사 모델이 항목별로 타당성(`reasonable/unreasonable/unverifiable`)을 평가**합니다. `unreasonable`이면 데이터셋이 거부됩니다. 출처에서 읽은 값에 `estimate`를 붙이지 않은 채 인용을 생략하면 `NUMBER_UNCITED`로 거부됩니다(추정을 관측값으로 위장할 수 없음).
 - **경쟁사(`competitors[]`)**: 같은 시장의 주요 업체 매출(문서에서 인용하거나 추정). 검증: 시장 통화·분기 일치, 연속 분기, 그리고 **회사 + 명시된 경쟁사 합이 "보고된" 시장 규모를 넘으면 `PLAYERS_EXCEED_MARKET`으로 거부**합니다. 시장 규모가 **추정치**이고 명시된 업체 합보다 작으면 거부하지 않고 **합계로 끌어올린 뒤** 그 조정을 `dataQuality.adjustments`와 경고로 보고합니다.
 - **합계 정합성(모델)**: 최근 확정 분기의 `회사 + 경쟁사 + 기타(=시장 − 파악된 업체) = 시장 규모`이며 `identifiedCoverage`(파악된 업체 비중)를 보고합니다. 전망 분기에서는 `share_c(T) = clamp(share_c(최근) + shareDelta_c)`로 경쟁사를 전개하고, 회사와 경쟁사 몫의 합이 100%를 넘으면 경쟁사를 남은 몫에 맞게 비례 축소(`competitorsScaled`, 축소 전 합계 `bottomUpBeforeScalingPct` 보고)한 뒤 `기타 = 1 − Σ`로 닫아서 **모든 구성요소의 합이 항상 전망 시장 규모와 같습니다**(`partsSumGapPct ≈ 0`).
@@ -266,9 +266,11 @@ test/ tests/      Vitest
 
 ## 실적 기대 차이·투자·위험 전략
 
+**자동 분석은 한 분기만 추정합니다(단기, 최장 3개월).** 방금 끝나 실적이 아직 나오지 않은 분기 또는 진행 중인 분기 하나의 매출·영업이익·EPS를, 최근에 공시된 한 분기 실적만 있어도 추정합니다. 컨센서스가 없어도 추정 결과가 나오며(`estimate_only`), 네이버 증권이 컨센서스로 표시한 같은 분기 값은 추정 옆에 참고로만 보여줍니다(현재 스냅샷이라 과거 기준일에는 쓰지 않고, 희석 기준이 확인되지 않은 EPS는 비교하지 않습니다). 자세한 내용은 `docs/STRATEGY.md`.
+
 별도 연구 모듈 `earnings-gap-auto/v1`을 추가했습니다. **사용자가 직접 고른 KOSPI 보통주 후보 티커**(업종 제한 없음)의 네 분기 실적과 같은 기간 컨센서스를 비교하고, **설비투자·운전자본·차입금 상환 이후 자금 부족** 및 판매량/가격/원가/금리 하방 시나리오를 계산합니다. 위험 조건을 통과한 종목만 업종별(사용자 선언 라벨 기준, 업종마다 독립 적용)·종목 비중과 거래대금 한도 안에서 배분합니다.
 
-기존 웹 분석 화면의 `POST /v1/analyses`(티커만 입력)는 이 전략용 4분기 실적 전망·컨센서스·촉매·자금 입력을 공개 수집(DART/Naver)과 기존 Claude 초안 호출로 **자동으로 채우려 시도**합니다(사용자가 전략 JSON을 직접 작성할 필요 없음). 근거 문서가 없는 컨센서스/촉매/유동성은 절대 지어내지 않고 명시적으로 미확보 처리하며, 실적 브릿지·자금 위험은 컨센서스가 없어도 계속 표시됩니다. 비중/투자금액(수수료·세금·초기자본)은 개인 포트폴리오 가정이라 자동 계산하지 않으며, 실제 배분이 필요하면 아래 CLI/API를 명시적 설정으로 직접 호출하세요. 자세한 내용과 한계는 [전략 사용 설명](docs/STRATEGY.md)의 "자동 연결" 절을 참고하세요.
+기존 웹 분석 화면의 `POST /v1/analyses`(티커만 입력)는 이 전략용 한 분기 실적 추정·컨센서스·촉매·자금 입력을 공개 수집(DART/Naver)과 기존 Claude 초안 호출로 **자동으로 채우려 시도**합니다(사용자가 전략 JSON을 직접 작성할 필요 없음). 근거 문서가 없는 컨센서스/촉매/유동성은 절대 지어내지 않고 명시적으로 미확보 처리하며, 실적 브릿지·자금 위험은 컨센서스가 없어도 계속 표시됩니다. 비중/투자금액(수수료·세금·초기자본)은 개인 포트폴리오 가정이라 자동 계산하지 않으며, 실제 배분이 필요하면 아래 CLI/API를 명시적 설정으로 직접 호출하세요. 자세한 내용과 한계는 [전략 사용 설명](docs/STRATEGY.md)의 "자동 연결" 절을 참고하세요.
 
 ```bash
 npm run strategy -- screen examples/strategy/screen-request.json

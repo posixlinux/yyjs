@@ -9,6 +9,7 @@ import type { StatementSet } from "../src/collection/types.js";
 import { extractDocument, extractMetrics } from "../src/collection/extract.js";
 import { articleFetchUrl, parseArticle } from "../src/collection/articles.js";
 import type { NewsItem } from "../src/collection/types.js";
+import { parseQuarterlyConsensus } from "../src/collection/naver.js";
 
 const KEY = "SECRETKEY0123456789abcdef0123456789abcdef";
 const NAVER_ID = "naver-id-value";
@@ -118,13 +119,24 @@ const newsItem = (officeId: string, articleId: string, datetime: string, title: 
 const N1 = newsItem("001", "0000000001", "202609281030", "삼성전자, <b>신제품</b> 공개", "&quot;HBM&quot; 공급 확대");
 const NEWS_PAGES: Record<string, unknown[]> = {
   "1": [{ total: 9, items: [N1, newsItem("002", "0000000002", "202609281000", "삼성전자, 신제품 공개!"), newsItem("009", "0000000009", "202609291000", "미래 기사"), newsItem("008", "0000000008", "202613011000", "잘못된 날짜")] }],
-  "2": [{ total: 9, items: [N1, newsItem("003", "0000000005", "202609270900", "반도체 시황", "", false)] }],
-  "3": [{ total: 9, items: [newsItem("004", "0000000006", "202609260900", "환율 동향")] }],
+  "2": [{ total: 9, items: [N1, newsItem("003", "0000000005", "202609270900", "반도체 시황", "삼성전자 등 대형주 강세", false)] }],
+  "3": [{ total: 9, items: [newsItem("004", "0000000006", "202609260900", "삼성전자 환율 동향"), newsItem("005", "0000000007", "202609260800", "젠슨 황 방한", "엔비디아 CEO 방한")] }],
 };
+
+const quarterlyFinance = () => ({ itemCode: "005930", financePeriodType: "quarter", financeInfo: {
+  itemCode: "005930", trTitleList: [{ key: "202606", isConsensus: "N" }, { key: "202612", isConsensus: "Y" }],
+  rowList: [
+    { title: "매출액", columns: { "202606": { value: "999" }, "202612": { value: "1,234.5" } } },
+    { title: "영업이익", columns: { "202612": { value: "-12.3" } } },
+    { title: "당기순이익", columns: { "202612": { value: "-" } } },
+    { title: "EPS", columns: { "202612": { value: "0" } } },
+  ],
+} });
 
 const naverHandler: Handler = (u) => {
   if (u.hostname !== "m.stock.naver.com") return undefined;
   if (u.pathname === "/api/stock/005930/basic") return json(basic());
+  if (u.pathname === "/api/stock/005930/finance/quarter") return json(quarterlyFinance());
   if (u.pathname === "/api/stock/005930/integration") {
     return json({
       totalInfos: [
@@ -261,6 +273,9 @@ describe("Naver provider", () => {
     expect(e.market.news[0]?.snippet).toBe('"HBM" 공급 확대');
     expect(e.market.news[1]?.url).toBe("https://n.news.naver.com/article/003/0000000005");
     expect(e.issues.some((i) => i.code === "future_news_excluded")).toBe(true);
+    // ticker news that never names the company (market wraps, other companies) is excluded
+    expect(e.market.news.some((n) => n.title.includes("젠슨"))).toBe(false);
+    expect(e.issues.find((i) => i.code === "news_unrelated_excluded")?.message).toContain("1 of 4");
 
     // endpoints and bounded pagination
     const paths = f.calls.map((u) => u.pathname + u.search);
@@ -270,7 +285,26 @@ describe("Naver provider", () => {
     expect(paths.some((p) => p.includes("page=4"))).toBe(false);
     expect(f.calls.every((u) => u.protocol === "https:" && u.hostname === "m.stock.naver.com")).toBe(true);
     expect(f.calls.some((u) => u.hostname.includes("opendart"))).toBe(false);
-    expect(e.requestsUsed).toBe(5);
+    expect(paths).toContain("/api/stock/005930/price?pageSize=60&page=1");
+    expect(e.requestsUsed).toBe(7); // + one daily-price page (404 here: a warning, provider stays ok)
+  });
+
+  it("collects daily closes on or before asOf and reported quarterly EPS for the next-quarter price", async () => {
+    // 3 days apart per row: page 1 reaches ~180 days back, page 2 passes the 200-day lookback, so page 3 is never asked.
+    const page = (n: number) =>
+      Array.from({ length: 60 }, (_, i) => ({
+        localTradedAt: new Date(Date.parse("2026-09-30T00:00:00Z") - ((n - 1) * 60 + i) * 3 * 86_400_000).toISOString().slice(0, 10),
+        closePrice: "70,000",
+      }));
+    const prices: Handler = (u) => (u.pathname === "/api/stock/005930/price" ? json(page(Number(u.searchParams.get("page")))) : undefined);
+    const f = fake(either(prices, naverHandler));
+    const e = await run(f);
+    const pages = f.calls.filter((u) => u.pathname === "/api/stock/005930/price").map((u) => u.searchParams.get("page"));
+    expect(pages).toEqual(["1", "2"]);
+    expect(e.market.dailyCloses?.[0]?.date).toBe("2026-09-27"); // 09-30 is after asOf 09-28
+    expect(e.market.dailyCloses?.every((d) => d.date <= ASOF && d.closeKRW === 70000)).toBe(true);
+    expect(e.market.dailyCloses?.length).toBe(119);
+    expect(e.market.quarterlyActuals).toBeDefined();
   });
 
   it("required inputs stay explicit; news alone never makes the model ready", async () => {
@@ -859,7 +893,7 @@ describe("Naver article bodies", () => {
     expect(byId("001:0000000001")?.articlePublishedAt).toBe("2026-09-28T10:30:00+09:00");
     expect(byId("001:0000000001")?.articleTruncated).toBe(false);
     expect(byId("003:0000000005")?.articleText).toBe(undefined);
-    expect(byId("003:0000000005")?.snippet).toBe(""); // snippet path untouched
+    expect(byId("003:0000000005")?.snippet).toBe("삼성전자 등 대형주 강세"); // snippet path untouched
     expect(byId("004:0000000006")?.articleText).toBe(undefined);
     const codes = e.issues.map((i) => i.code);
     expect(codes).toContain("http_error");
@@ -892,12 +926,12 @@ describe("Naver article bodies", () => {
 
   it("prefers keyword-relevant articles, else the most recent", async () => {
     const pages = (items: unknown[]) => either((u) => (u.pathname === "/api/news/stock/005930" ? json(u.searchParams.get("page") === "1" ? [{ total: 2, items }] : []) : undefined), naverHandler);
-    const relevant = fake(either(pages([newsItem("010", "0000000010", "202609281100", "환율 동향"), newsItem("011", "0000000011", "202609270900", "DRAM 시장 점유율 확대")]), articleHandler({ "/mnews/article/011/0000000011": () => new Response(ARTICLE('<meta property="article:published_time" content="2026-09-27T09:00:00+09:00">')) })));
+    const relevant = fake(either(pages([newsItem("010", "0000000010", "202609281100", "삼성전자 환율 동향"), newsItem("011", "0000000011", "202609270900", "삼성전자 DRAM 시장 점유율 확대")]), articleHandler({ "/mnews/article/011/0000000011": () => new Response(ARTICLE('<meta property="article:published_time" content="2026-09-27T09:00:00+09:00">')) })));
     const e1 = await run(relevant, { maxArticles: 1 });
     expect(relevant.calls.filter((u) => u.hostname === "n.news.naver.com").map((u) => u.pathname)).toEqual(["/mnews/article/011/0000000011"]);
     expect(e1.market.news.find((n) => n.id === "011:0000000011")?.articleText).toContain("800억 달러");
 
-    const recent = fake(pages([newsItem("020", "0000000020", "202609270900", "일반 소식"), newsItem("021", "0000000021", "202609281100", "다른 소식")]));
+    const recent = fake(pages([newsItem("020", "0000000020", "202609270900", "삼성전자 일반 소식"), newsItem("021", "0000000021", "202609281100", "삼성전자 다른 소식")]));
     await run(recent, { maxArticles: 1 });
     expect(recent.calls.filter((u) => u.hostname === "n.news.naver.com").map((u) => u.pathname)).toEqual(["/mnews/article/021/0000000021"]);
   });
@@ -908,7 +942,7 @@ describe("Naver article bodies", () => {
     expect(none.calls.some((u) => u.hostname === "n.news.naver.com")).toBe(false);
 
     const f = fake(either(naverHandler, articleHandler({ "/mnews/article/001/0000000001": () => new Response(ARTICLE()) })));
-    const e = await run(f, { maxArticles: 3, maxRequests: 6 }); // 5 Naver calls + 1 article
+    const e = await run(f, { maxArticles: 3, maxRequests: 8 }); // 7 Naver calls (including consensus and one price page) + 1 article
     expect(f.calls.filter((u) => u.hostname === "n.news.naver.com").length).toBeLessThan(2);
     expect(e.issues.filter((i) => i.code === "request_budget_exceeded")).toHaveLength(2);
     expect(e.providers.naver.status).toBe("ok");
@@ -929,6 +963,8 @@ describe("Naver search query expansion", () => {
     const f = fake(either(naverHandler, dartHandler(), empty));
     const e = await run(f, { env: keys });
     expect(searchCalls(f)).toEqual([
+      "삼성전자 전망",
+      "삼성전자 성장률",
       "삼성전자 시장 점유율",
       "DRAM 세계 시장 규모 점유율 성장률",
       "NAND Flash 세계 시장 규모 점유율 성장률",
@@ -944,7 +980,7 @@ describe("Naver search query expansion", () => {
   it("falls back to the company query without DART candidates, and explicit productQueries win", async () => {
     const f = fake(either(naverHandler, empty));
     await run(f, { env: { NAVER_CLIENT_ID: NAVER_ID, NAVER_CLIENT_SECRET: NAVER_SECRET } });
-    expect(searchCalls(f)).toEqual(["삼성전자 시장 점유율"]);
+    expect(searchCalls(f)).toEqual(["삼성전자 전망", "삼성전자 성장률", "삼성전자 시장 점유율"]);
     const g = fake(either(naverHandler, dartHandler(), empty));
     await run(g, { env: keys, productQueries: ["HBM 시장"] });
     expect(searchCalls(g)).toEqual(["HBM 시장"]);
@@ -1052,5 +1088,42 @@ describe("result shape", () => {
   it("is plain JSON-serializable data", async () => {
     const e: PublicEvidence = await run(fake(either(naverHandler, dartHandler())), withKey);
     expect(JSON.parse(JSON.stringify(e)).schemaVersion).toBe("collection-evidence/1");
+  });
+});
+
+describe("single-quarter public consensus", () => {
+  it("selects only estimates, converts hundred-million KRW once, and preserves missing/zero/negative values", () => {
+    const items = parseQuarterlyConsensus(quarterlyFinance(), "005930", NOW().toISOString());
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ quarter: "2026Q4", revenueKRW: 123450000000, operatingProfitKRW: -1230000000,
+      netIncomeKRW: null, epsKRW: 0, scope: "provider_default", epsBasis: "unspecified" });
+  });
+  it("rejects the wrong ticker and annual data, and excludes ambiguous columns", () => {
+    expect(() => parseQuarterlyConsensus(quarterlyFinance(), "000660", NOW().toISOString())).toThrow();
+    expect(() => parseQuarterlyConsensus({ ...quarterlyFinance(), financePeriodType: "annual" }, "005930", NOW().toISOString())).toThrow();
+    const raw = quarterlyFinance();
+    raw.financeInfo.trTitleList.push({ key: "202612", isConsensus: "N" }, { key: "202613", isConsensus: "Y" });
+    expect(parseQuarterlyConsensus(raw, "005930", NOW().toISOString())).toEqual([]);
+  });
+  it("returns quarterly data with no DART key or model call", async () => {
+    const e = await run(fake(naverHandler));
+    expect(e.market.quarterlyConsensus?.[0]?.quarter).toBe("2026Q4");
+    expect(e.market.quarterlyConsensus?.[0]?.observedAt).toBe(NOW().toISOString());
+  });
+  it("does not fetch a current snapshot for a historical date or an earlier instant today", async () => {
+    for (const asOf of ["2026-09-27", "2026-09-28T11:59:59+09:00"]) {
+      const f = fake(naverHandler);
+      const e = await run(f, {}, { ticker: "005930", asOf });
+      expect(e.market.quarterlyConsensus).toEqual([]);
+      expect(f.calls.some((u) => u.pathname.endsWith("/finance/quarter"))).toBe(false);
+      expect(e.issues.some((i) => i.code === "consensus_snapshot_after_asOf")).toBe(true);
+    }
+  });
+  it("keeps quote/news working if the optional consensus endpoint fails", async () => {
+    const e = await run(fake((u, init) => u.pathname.endsWith("/finance/quarter") ? new Response("unavailable", { status: 503 }) : naverHandler(u, init)));
+    expect(e.market.quote).not.toBeNull();
+    expect(e.market.news.length).toBeGreaterThan(0);
+    expect(e.market.quarterlyConsensus).toEqual([]);
+    expect(e.providers.naver.status).toBe("ok");
   });
 });

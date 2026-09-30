@@ -18,6 +18,7 @@ import {
 } from "../src/intelligence/index.js";
 import { buildEnv, Semaphore, sanitize, spawnRunner } from "../src/intelligence/runner.js";
 import { numericSupport, unitMultipliers } from "../src/intelligence/verify.js";
+import { evaluateAutoStrategy } from "../src/strategy/auto.js";
 
 // HOME is only passed through to the CLI child; agy keeps its token in the OS keyring, so there is nothing to fake.
 const HOME = mkdtempSync(join(tmpdir(), "intel-test-home-"));
@@ -196,9 +197,9 @@ describe("dual-provider acceptance", () => {
 // verifyStrategyDraft) driven through an injected fake CLI runner, not a stubbed AnalysisResult.
 
 const D3 = { id: "d3", title: "실적발표 컨퍼런스콜", url: "https://www.example.com/ir/call", publishedAt: "2026-06-01",
-  text: "2026Q3~2027Q2 연결 기준 보통주 희석 컨센서스 EPS 7원으로 집계됐다. 다음 실적발표 예정일은 2026-08-10이다." };
+  text: "2026Q2 연결 기준 보통주 희석 컨센서스 EPS 7원으로 집계됐다. 다음 실적발표 예정일은 2026-08-10이다." };
 const D4 = { id: "d4", title: "이전 컨센서스", url: "https://www.example.com/ir/prior", publishedAt: "2026-04-25",
-  text: "2026Q3~2027Q2 연결 기준 보통주 희석 컨센서스 EPS 6원으로 집계됐다." };
+  text: "2026Q2 연결 기준 보통주 희석 컨센서스 EPS 6원으로 집계됐다." };
 const strategySrc = (d: typeof D1, kind: string, knownAt?: string) => ({ title: d.title, url: d.url, kind, knownAt: knownAt ?? `${d.publishedAt}T00:00:00+09:00` });
 const strategyQuarter = (q: string) => ({
   quarter: q,
@@ -212,11 +213,11 @@ const strategyForecast = () => ({
   schemaVersion: 1, ticker: "005930", company: { name: "삼성전자", exchange: "KOSPI", securityType: "common_stock", source: strategySrc(D1, "filing") },
   scope: "consolidated", sector: "반도체", fiscalYearBasis: "calendar", currency: "KRW",
   generatedAt: "2026-06-30T00:00:00+09:00", analyst: "claude",
-  quarters: ["2026Q3", "2026Q4", "2027Q1", "2027Q2"].map(strategyQuarter),
+  quarters: ["2026Q2"].map(strategyQuarter),
 });
 const strategyConsensus = (d: typeof D3, eps: number) => ({
   schemaVersion: 1, ticker: "005930", scope: "consolidated", basis: "common_diluted", currency: "KRW", unit: "KRW_per_share",
-  horizonQuarters: ["2026Q3", "2026Q4", "2027Q1", "2027Q2"], epsPerShare: eps, knownAt: `${d.publishedAt}T00:00:00+09:00`, source: strategySrc(d, "market_data_vendor"),
+  horizonQuarters: ["2026Q2"], epsPerShare: eps, knownAt: `${d.publishedAt}T00:00:00+09:00`, source: strategySrc(d, "market_data_vendor"),
 });
 const strategyCatalyst = () => ({ schemaVersion: 1, ticker: "005930", eventType: "earnings_release", eventAt: "2026-08-10T09:00:00+09:00", knownAt: `${D3.publishedAt}T00:00:00+09:00`, source: strategySrc(D3, "exchange_notice") });
 const strategyCitations = () => [
@@ -234,6 +235,100 @@ const strategyReply = (over: Record<string, unknown> = {}) => ({
 });
 const withStrategy = (reply: unknown) => route(() => claudeOut(proposal()), () => agyOut(audit()), (r) => replyAs(r, reply));
 
+const FUNDING_DOC = { id: "cash", title: "연결 자금 계획", url: "https://dart.fss.or.kr/r/cash", publishedAt: "2026-06-01",
+  text: "전망 시작 현금 100원, 차입금 100원. 분기 감가상각 20원, 설비투자 80원, 운전자본 증가 5원, 세금 58원, 이자 10원, 상환 25원, 배당 10원. 추가 차입 및 기타 영업 조정 없음." };
+const fundingPlan = () => {
+  const assumptions = { isAssumption: true, rationale: "공시 자금 계획의 분기 금액 유지 가정", source: strategySrc(FUNDING_DOC, "filing") };
+  return { openingBalanceBasis: "projected_start_of_horizon", openingUnrestrictedCashKRW: 100, openingDebtKRW: 100, assumptions,
+    quarters: strategyForecast().quarters.map(({ quarter }) => ({ quarter, depreciationAndAmortizationKRW: 20, capexKRW: 80,
+      deltaWorkingCapitalKRW: 5, cashTaxesKRW: 58, cashInterestPaidKRW: 10, otherOperatingCashFlowKRW: 0,
+      otherOperatingCashFlowRationale: "공시의 기타 조정 없음 적용", debtPrincipalDueKRW: 25, committedDebtDrawKRW: 0, dividendsAndBuybacksKRW: 10, assumptions })) };
+};
+const isFundingPrompt = (r: RunRequest) => [r.stdin, ...r.args].some((a) => a.includes("누락된 투자·운전자본·차입 자금 계획만 보완"));
+
+describe("automatic funding completion", () => {
+  const reply = () => strategyReply({ strategy: { forecast: strategyForecast(), currentConsensus: null, priorConsensus: null, catalyst: null }, citations: [] });
+  it("completes missing funding and calculates cash risk without any consensus or catalyst", async () => {
+    const base = withStrategy(reply());
+    let calls = 0;
+    const runner: Runner = (r) => {
+      if (!isFundingPrompt(r)) return base(r);
+      calls++;
+      expect(r.stdin).toContain(FUNDING_DOC.text);
+      expect(r.stdin).toContain("분기 [2026Q2]");
+      return Promise.resolve(replyAs(r, { funding: fundingPlan(), missingFields: [] }));
+    };
+    const r = await analyzeEvidence(input([FUNDING_DOC]), opts(runner, { now: () => new Date("2026-06-30T10:00:00+09:00") }));
+    expect(calls).toBe(1);
+    expect(r.strategy.unavailable).toEqual([]);
+    const sa = evaluateAutoStrategy({ ...r.strategy, ticker: "005930", decisionAt: "2026-06-30T11:00:00+09:00", mode: "live", minimumCashBufferKRW: 0, cashBufferConfigured: true });
+    expect(sa.status).toBe("estimate_only");
+    // One quarter only. OP=300; cash increase=300+20-58-10-5-80-25-10=132.
+    expect(sa.risk?.base.quarters.map((q) => q.endingCashKRW)).toEqual([232]);
+    expect(sa.risk?.base.endingDebtKRW).toBe(75);
+    // Stress OP=9*(95-63)-100=188; interest shock on the opening debt is 0.5.
+    expect(sa.risk?.stress.endingCashKRW).toBeCloseTo(119.5);
+    expect(sa.assumptions?.filter((a) => a.fieldPath.includes("funding"))).toHaveLength(2);
+    expect(sa.currentConsensus).toBeNull();
+    expect(sa.risk?.status).toBe("estimated");
+  });
+
+  it.each([null, { quarters: [] }])("repairs an invalid optional funding block without losing the EPS forecast: %j", async (funding) => {
+    const initial = reply();
+    Object.assign(initial.strategy.forecast, { funding });
+    const base = withStrategy(initial);
+    const runner: Runner = async (r) => isFundingPrompt(r) ? replyAs(r, { funding: fundingPlan(), missingFields: [] }) : base(r);
+    const r = await analyzeEvidence(input([FUNDING_DOC]), opts(runner));
+    expect(r.strategy.forecast?.funding?.quarters).toHaveLength(1);
+    expect(r.strategy.unavailable).toEqual([]);
+  });
+
+  it("reports missing inputs and keeps the bridge when no grounded plan can be produced", async () => {
+    const base = withStrategy(reply());
+    const runner: Runner = async (r) => isFundingPrompt(r) ? replyAs(r, { funding: null, missingFields: ["사용제한 현금과 차입 만기 근거가 없습니다."] }) : base(r);
+    const r = await analyzeEvidence(input([FUNDING_DOC]), opts(runner));
+    expect(r.strategy.forecast).not.toBeNull();
+    expect(r.strategy.forecast?.funding).toBeUndefined();
+    expect(r.strategy.unavailable).toContainEqual({ field: "funding", code: "FUNDING_INPUT_MISSING", message: "사용제한 현금과 차입 만기 근거가 없습니다." });
+  });
+
+  it("rejects a completion citing a document that was never supplied", async () => {
+    const plan = fundingPlan();
+    plan.assumptions.source.url = "https://example.com/invented";
+    const base = withStrategy(reply());
+    const runner: Runner = async (r) => isFundingPrompt(r) ? replyAs(r, { funding: plan, missingFields: [] }) : base(r);
+    const r = await analyzeEvidence(input([FUNDING_DOC]), opts(runner));
+    expect(r.strategy.forecast).not.toBeNull();
+    expect(r.strategy.forecast?.funding).toBeUndefined();
+    expect(r.strategy.unavailable.some((u) => u.code === "FUNDING_ASSUMPTION_SOURCE_INVALID")).toBe(true);
+  });
+
+  it("does not cache a failed completion, and succeeds on the next analysis", async () => {
+    const base = withStrategy(reply());
+    let calls = 0;
+    const runner: Runner = async (r) => {
+      if (!isFundingPrompt(r)) return base(r);
+      return ++calls === 1 ? { ...ok(""), timedOut: true, exitCode: null } : replyAs(r, { funding: fundingPlan(), missingFields: [] });
+    };
+    const options = { ...opts(runner), cache: true };
+    const a = await analyzeEvidence(input([FUNDING_DOC]), options);
+    expect(a.status).toBe("accepted");
+    expect(a.strategy.unavailable.some((u) => u.code === "FUNDING_CALL_FAILED")).toBe(true);
+    const b = await analyzeEvidence(input([FUNDING_DOC]), options);
+    expect(calls).toBe(2);
+    expect(b.strategy.forecast?.funding).toBeDefined();
+  });
+
+  it("does not call completion when the strategy already contains a valid funding plan", async () => {
+    const initial = reply();
+    Object.assign(initial.strategy.forecast, { funding: fundingPlan() });
+    const base = withStrategy(initial);
+    const runner: Runner = async (r) => { expect(isFundingPrompt(r)).toBe(false); return base(r); };
+    const r = await analyzeEvidence(input([FUNDING_DOC]), opts(runner));
+    expect(r.strategy.forecast?.funding).toBeDefined();
+  });
+});
+
 describe("earnings-gap-auto/v1 automatic strategy extraction (real analyzeEvidence, fake CLI runner)", () => {
   it("extracts and verifies forecast/consensus/catalyst end-to-end from the separate strategy call", async () => {
     const seen: RunRequest[] = [];
@@ -243,6 +338,11 @@ describe("earnings-gap-auto/v1 automatic strategy extraction (real analyzeEviden
     expect(seen.map(isStrategyPrompt)).toEqual([false, true]);
     expect(seen[0]!.stdin).not.toContain("EarningsForecastSnapshot");
     expect(seen[1]!.stdin).toContain("EarningsForecastSnapshot");
+    // Short-term horizon: one quarter (the one just ended or the one in progress at asOf), never four.
+    expect(seen[1]!.stdin).toContain("직전 분기 2026Q1");
+    expect(seen[1]!.stdin).toContain("진행 중인 분기 2026Q2");
+    expect(seen[1]!.stdin).not.toContain("2026Q3");
+    expect(seen[1]!.stdin).toContain("가장 최근에 공시된 한 분기의 실적만 있어도");
     expect(r.status).toBe("accepted"); // the unrelated product-market Dataset is unaffected
     expect(r.strategy.unavailable).toEqual([]);
     expect(r.strategy.forecast?.ticker).toBe("005930");
@@ -262,7 +362,7 @@ describe("earnings-gap-auto/v1 automatic strategy extraction (real analyzeEviden
     expect(r.strategy.unavailable).toContainEqual(expect.objectContaining({ field: "currentConsensus" }));
   });
 
-  it("rejects an annual-only consensus figure dressed up as a four-quarter horizon through the full real pipeline", async () => {
+  it("rejects an annual-only consensus figure dressed up as a quarterly consensus through the full real pipeline", async () => {
     const annualDoc = { id: "d5", title: "연간 컨센서스", url: "https://www.example.com/ir/annual", publishedAt: "2026-06-01", text: "2026 annual EPS consensus is 7 KRW. No quarterly horizon or event schedule is supplied." };
     const badConsensus = { ...strategyConsensus(D3, 7), source: strategySrc(annualDoc as any, "market_data_vendor") };
     const badCitations = [
@@ -574,6 +674,7 @@ describe("estimated market size and competitors", () => {
     ["empty basis for a non-knowledge method", (d: any) => (d.markets[0].observations[0].estimate.basedOn = []), "ESTIMATE_WITHOUT_BASIS"],
     ["estimate based on itself", (d: any) => (d.markets[0].observations[0].estimate.basedOn = ["markets[0].observations[0].revenue"]), "ESTIMATE_SELF_REFERENCE"],
     ["share_implied without a product revenue basis", (d: any) => (d.markets[0].observations[0].estimate.basedOn = ["financials.totalRevenueKRW"]), "ESTIMATE_BASIS_MISMATCH"],
+    ["article_synthesis based on a single article", (d: any) => (d.markets[0].observations[0].estimate = { method: "article_synthesis", basedOn: ["d2"], rationale: "기사 1건" }), "ESTIMATE_BASIS_MISMATCH"],
     ["MODEL_ESTIMATE on a price", (d: any) => (d.quote.source = estSrc("주가 추정")), "MODEL_ESTIMATE_ON_OBSERVED_FIELD"],
     ["MODEL_ESTIMATE on a share count", (d: any) => (d.shares.source = estSrc("주식수 추정")), "MODEL_ESTIMATE_ON_OBSERVED_FIELD"],
   ])("rejects: %s", async (_n, mutate, code) => {
@@ -677,10 +778,10 @@ describe("job timeout budget", () => {
     for (const req of seen) expect(req.timeoutMs).toBe(600_000); // default per-call timeout
   });
 
-  it("an explicit whole-job deadline large enough for the worst-case 3-call sequence leaves the per-call timeout untouched", async () => {
+  it("an explicit whole-job deadline large enough for the worst-case 7-call sequence leaves the per-call timeout untouched", async () => {
     const { seen, runner } = seenTimeouts();
-    // 600_000 * 3 sequential calls + 300_000 overhead = 2_100_000: exactly the worst-case budget.
-    await analyzeEvidence(input(), opts(runner, { jobTimeoutMs: 2_100_000 }));
+    // 600_000 * 7 sequential calls + 300_000 overhead = 4_500_000: exactly the worst-case budget.
+    await analyzeEvidence(input(), opts(runner, { jobTimeoutMs: 4_500_000 }));
     for (const req of seen) expect(req.timeoutMs).toBe(600_000);
   });
 

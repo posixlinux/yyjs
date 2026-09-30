@@ -45,7 +45,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const apiKey = env.API_KEY || undefined;
   const loopback = ["127.0.0.1", "::1", "localhost"].includes(host);
   if (!loopback && !apiKey) throw new Error(`Refusing to listen on ${host} without API_KEY (mutations and paid/quota-consuming jobs would be unauthenticated)`);
-  const secretKeys = ["API_KEY", "DART_API_KEY", "NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET"];
+  const secretKeys = ["API_KEY", "DART_API_KEY", "NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET", "EDINET_API_KEY"];
   const cashBufferRaw = env.STRATEGY_MIN_CASH_BUFFER_KRW;
   const strategyMinimumCashBufferKRW = cashBufferRaw !== undefined && cashBufferRaw !== "" ? Number(cashBufferRaw) : undefined;
   if (strategyMinimumCashBufferKRW !== undefined && !(Number.isFinite(strategyMinimumCashBufferKRW) && strategyMinimumCashBufferKRW >= 0))
@@ -53,8 +53,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   // The outer job deadline (RESEARCH_JOB_TIMEOUT_MS, enforced by JobManager) is kept coherent with the per-call CLI
   // timeout (INTELLIGENCE_TIMEOUT_MS, enforced by the intelligence module): a full sequential analysis is up to
-  // JOB_MAX_SEQUENTIAL_CALLS provider calls (claude-draft, an agy-draft fallback on a claude TIMEOUT, and one audit
-  // call) plus JOB_OVERHEAD_MS of non-LLM headroom. When RESEARCH_JOB_TIMEOUT_MS is left unset, its default is
+  // JOB_MAX_SEQUENTIAL_CALLS provider calls (draft/audit/strategy including fallbacks, plus funding completion)
+  // plus JOB_OVERHEAD_MS of non-LLM headroom. When RESEARCH_JOB_TIMEOUT_MS is left unset, its default is
   // DERIVED from the per-call timeout instead of a fixed constant, so an explicit INTELLIGENCE_TIMEOUT_MS is never
   // silently squeezed by an unrelated old default. An explicit RESEARCH_JOB_TIMEOUT_MS is always honored AS SET
   // (never overridden): a budget that looks too small for a worst-case sequential run is only diagnosed (a startup
@@ -102,6 +102,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     capabilities: {
       dartConfigured: !!(env.DART_API_KEY ?? "").trim(),
       naverSearchConfigured: !!((env.NAVER_CLIENT_ID ?? "").trim() && (env.NAVER_CLIENT_SECRET ?? "").trim()),
+      secConfigured: !!(env.SEC_USER_AGENT ?? "").trim(),
+      edinetConfigured: !!(env.EDINET_API_KEY ?? "").trim(),
     },
     strategyMinimumCashBufferKRW,
   };

@@ -1,3 +1,5 @@
+import { formatQuarter, quarterOfDate } from "../domain/time.js";
+
 // Strategy inputs are timestamped with full ISO 8601 datetimes (explicit UTC offset), never bare dates, because
 // eligibility depends on same-day ordering of knownAt/generatedAt/decisionAt events. All comparisons use epoch
 // milliseconds (Date.parse), never string comparison: two equal instants written with different offsets
@@ -25,3 +27,11 @@ export const calendarDateOf = (iso: string): string => new Date(epoch(iso)).toIS
 
 /** The strategy's fiscal calendar is Korea's calendar, including at UTC quarter boundaries. */
 export const seoulDateOf = (iso: string): string => new Date(epoch(iso) + 9 * 3600_000).toISOString().slice(0, 10);
+
+/** The only quarters the automatic short-term path may estimate, given a KST decision date: the quarter that just
+ * ended (its results are normally still unpublished for several weeks) and the quarter in progress. Either way the
+ * estimated quarter ends, or its results are due, within about three months of the decision. */
+export const singleQuarterHorizon = (decisionDate: string): { previous: string; current: string } => {
+  const current = quarterOfDate(decisionDate);
+  return { previous: formatQuarter(current - 1), current: formatQuarter(current) };
+};

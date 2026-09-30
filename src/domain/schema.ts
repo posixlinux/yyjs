@@ -45,6 +45,8 @@ export const ESTIMATE_METHODS = [
   "sum_of_players", // market = company + identified competitors + an estimated remainder
   "prior_extrapolation", // earlier reported figure rolled forward with a stated growth
   "segment_allocation", // product revenue carved out of a reported segment/company figure
+  "period_allocation", // a filed half-year/annual figure split into quarters (e.g. Japanese filers report halves only)
+  "article_synthesis", // differing figures from several articles (cumulative sales, revenue, ...) combined into one approximate value
   "model_knowledge", // background knowledge of the analyst/model without a supplied document (lowest grade)
 ] as const;
 export const EstimateSchema = z
@@ -182,14 +184,21 @@ export type Source = z.infer<typeof SourceSchema>;
 export const SCENARIOS = ["bear", "base", "bull"] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
+// Competitors for global comparison: Korea, US and Japan only ("KR:000660", "US:MU", "JP:8035"), normalized to upper case.
+const competitorIds = z
+  .array(z.string().trim().toUpperCase().pipe(z.string().regex(/^(KR:\d{6}|US:[A-Z][A-Z0-9.-]{0,9}|JP:[0-9][0-9A-Z]{3})$/, "KR:000660, US:MU or JP:8035 (Korea, US and Japan only)")))
+  .max(6)
+  .transform((a) => [...new Set(a)]);
+
 export const AnalysisRequestSchema = z
   .object({
     ticker: z.string().regex(/^\d{6}$/, "six-digit KOSPI ticker"),
     asOf: date.optional(), // defaults to today's Asia/Seoul calendar date
     mode: z.enum(["public", "demo", "manual"]).default("public"),
+    competitors: competitorIds.optional(),
   })
   .strict();
 
 export const ResearchRequestSchema = z
-  .object({ ticker: z.string().regex(/^\d{6}$/, "six-digit KOSPI ticker"), asOf: date.optional() })
+  .object({ ticker: z.string().regex(/^\d{6}$/, "six-digit KOSPI ticker"), asOf: date.optional(), competitors: competitorIds.optional() })
   .strict();

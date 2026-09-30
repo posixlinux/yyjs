@@ -1,10 +1,19 @@
 import { CollectionError } from "./types.js";
 
 /** Only these hosts are ever fetched. Receipt URLs on dart.fss.or.kr are emitted as links, never fetched. */
-export const ALLOWED_HOSTS: ReadonlySet<string> = new Set(["m.stock.naver.com", "n.news.naver.com", "openapi.naver.com", "opendart.fss.or.kr"]);
+export const ALLOWED_HOSTS: ReadonlySet<string> = new Set([
+  "m.stock.naver.com", "n.news.naver.com", "openapi.naver.com", "opendart.fss.or.kr",
+  "www.sec.gov", "data.sec.gov", "api.edinet-fsa.go.jp", "disclosure2dl.edinet-fsa.go.jp",
+]);
 
-/** Hosts that are only reachable for an exact path shape (no query/fragment). */
-const PATH_RULES: Record<string, RegExp> = { "n.news.naver.com": /^\/(?:mnews\/)?article\/\d+\/\d+$/ };
+/** Hosts that are only reachable for an exact path shape; `query: false` also forbids a query/fragment. */
+const PATH_RULES: Record<string, { path: RegExp; query: boolean }> = {
+  "n.news.naver.com": { path: /^\/(?:mnews\/)?article\/\d+\/\d+$/, query: false },
+  "www.sec.gov": { path: /^\/files\/company_tickers\.json$/, query: false },
+  "data.sec.gov": { path: /^\/api\/xbrl\/companyfacts\/CIK\d{10}\.json$/, query: false },
+  "api.edinet-fsa.go.jp": { path: /^\/api\/v2\/documents(?:\.json|\/[A-Z0-9]{8})$/, query: true },
+  "disclosure2dl.edinet-fsa.go.jp": { path: /^\/searchdocument\/codelist\/Edinetcode\.zip$/, query: false },
+};
 
 export interface HttpConfig {
   fetch: typeof fetch;
@@ -40,7 +49,7 @@ const caches = new WeakMap<typeof fetch, Map<string, Entry>>();
 const MAX_ENTRIES = 64;
 
 export function redact(text: string, secrets: string[]): string {
-  let out = text.replace(/(crtfc_key|client[_-]?secret|client[_-]?id)=[^&\s"']*/gi, "$1=***");
+  let out = text.replace(/(crtfc_key|client[_-]?secret|client[_-]?id|subscription-key)=[^&\s"']*/gi, "$1=***");
   for (const s of secrets) if (s) out = out.split(s).join("***").split(encodeURIComponent(s)).join("***");
   return out;
 }
@@ -77,7 +86,7 @@ export function createHttp(cfg: HttpConfig): HttpClient {
       throw new CollectionError("blocked_url", `Host not allowed: ${u.hostname}`);
     }
     const rule = PATH_RULES[u.hostname];
-    if (rule && (!rule.test(u.pathname) || u.search || u.hash)) throw new CollectionError("blocked_url", `Path not allowed on ${u.hostname}`);
+    if (rule && (!rule.path.test(u.pathname) || (!rule.query && u.search) || u.hash)) throw new CollectionError("blocked_url", `Path not allowed on ${u.hostname}`);
     const label = `${u.host}${u.pathname}`;
     if (++used > cfg.maxRequests) throw new CollectionError("request_budget_exceeded", `More than ${cfg.maxRequests} upstream requests`);
     const timeout = AbortSignal.timeout(cfg.timeoutMs);

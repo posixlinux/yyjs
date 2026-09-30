@@ -51,6 +51,13 @@ export function makeForecast(overrides: Partial<EarningsForecastSnapshot> = {}):
   };
 }
 
+/** Automatic short-term path: the same synthetic company, estimated for ONE quarter (in progress at DECISION_AT). EPS 2. */
+export const SINGLE_QUARTER = "2026Q1";
+export function makeSingleQuarterForecast(overrides: Partial<EarningsForecastSnapshot> = {}): EarningsForecastSnapshot {
+  const f = makeForecast();
+  return { ...f, quarters: [{ ...f.quarters[0]!, quarter: SINGLE_QUARTER }], funding: { ...f.funding!, quarters: [{ ...f.funding!.quarters[0]!, quarter: SINGLE_QUARTER }] }, ...overrides };
+}
+
 export function makeConsensus(overrides: Partial<ConsensusSnapshot> = {}): ConsensusSnapshot {
   return {
     schemaVersion: 1,
@@ -116,6 +123,18 @@ export function makeCandidateWithTicker(ticker: string, sector = "automotive") {
     forecast: makeForecast({ ticker, sector }),
     currentConsensus: makeConsensus({ ticker, epsPerShare: 7, knownAt: "2026-01-05T00:00:00+09:00" }),
     priorConsensus: makeConsensus({ ticker, epsPerShare: 6, knownAt: "2025-12-06T00:00:00+09:00" }), // 30 days before current
+    catalyst: makeCatalyst({ ticker }),
+  };
+}
+
+/** Single-quarter counterpart for the automatic short-term path: EPS 2 vs consensus 1.75 -> gap ~14.3%; prior 1.5 -> revision ~16.7%. */
+export function makeSingleQuarterCandidate(ticker: string) {
+  const consensus = (epsPerShare: number, knownAt: string) => makeConsensus({ ticker, horizonQuarters: [SINGLE_QUARTER], epsPerShare, knownAt });
+  return {
+    ticker,
+    forecast: makeSingleQuarterForecast({ ticker }),
+    currentConsensus: consensus(1.75, "2026-01-05T00:00:00+09:00"),
+    priorConsensus: consensus(1.5, "2025-12-06T00:00:00+09:00"),
     catalyst: makeCatalyst({ ticker }),
   };
 }

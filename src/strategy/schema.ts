@@ -59,15 +59,18 @@ export const FundingQuarterSchema = z.object({
   dividendsAndBuybacksKRW: cashAmount,
   assumptions: ForecastAssumptionsSchema,
 }).strict();
-export const FundingPlanSchema = z.object({
+const fundingPlan = (quarterCount: number) => z.object({
   // These are projected balances at the START of the first forecast quarter, not today's cash silently
   // carried past an unmodelled stub period. Intraperiod/stub funding risk is separately disclosed.
   openingBalanceBasis: z.literal("projected_start_of_horizon"),
   openingUnrestrictedCashKRW: cashAmount,
   openingDebtKRW: cashAmount,
   assumptions: ForecastAssumptionsSchema,
-  quarters: z.array(FundingQuarterSchema).length(4),
+  quarters: z.array(FundingQuarterSchema).length(quarterCount),
 }).strict().refine((p) => fourConsecutiveQuarters(p.quarters.map((q) => q.quarter)), "funding quarters must be consecutive");
+export const FundingPlanSchema = fundingPlan(4);
+/** Funding plan of the automatic short-term path: the one forecast quarter only (see SingleQuarterForecastSchema). */
+export const SingleQuarterFundingPlanSchema = fundingPlan(1);
 export type FundingPlan = z.infer<typeof FundingPlanSchema>;
 
 export const LiquiditySchema = z.object({
@@ -116,7 +119,10 @@ export const QuarterForecastSchema = z
   .strict();
 export type QuarterForecast = z.infer<typeof QuarterForecastSchema>;
 
-export const EarningsForecastSnapshotSchema = z
+const horizonMessage = (quarterCount: number) =>
+  quarterCount === 1 ? "must be exactly one calendar quarter" : "must be four consecutive, non-duplicate calendar quarters in ascending order";
+
+const forecastSnapshot = (quarterCount: number) => z
   .object({
     schemaVersion: z.literal(1),
     ticker,
@@ -130,17 +136,22 @@ export const EarningsForecastSnapshotSchema = z
     currency: z.literal("KRW"),
     generatedAt: isoDateTime, // forecast production time / observation cutoff
     analyst: text(200), // who/what produced the forecast; never "model_knowledge"
-    quarters: z.array(QuarterForecastSchema).length(4),
-    funding: FundingPlanSchema.optional(),
+    quarters: z.array(QuarterForecastSchema).length(quarterCount),
+    funding: fundingPlan(quarterCount).optional(),
     liquidity: LiquiditySchema.optional(),
   })
   .strict()
-  .refine((f) => fourConsecutiveQuarters(f.quarters.map((q) => q.quarter)), { message: "quarters must be four consecutive, non-duplicate calendar quarters in ascending order", path: ["quarters"] });
+  .refine((f) => fourConsecutiveQuarters(f.quarters.map((q) => q.quarter)), { message: `quarters ${horizonMessage(quarterCount)}`, path: ["quarters"] });
+export const EarningsForecastSnapshotSchema = forecastSnapshot(4);
+// Automatic short-term path (strategy/auto.ts): ONE quarter, estimated on its own, for a holding period that never
+// exceeds about three months. Same fields and the same inferred type as the four-quarter snapshot; only the horizon
+// length differs. The manual /v1/strategy/* API and its journal keep the four-quarter schema above.
+export const SingleQuarterForecastSchema = forecastSnapshot(1);
 export type EarningsForecastSnapshot = z.infer<typeof EarningsForecastSnapshotSchema>;
 
 // ---------- consensus (current and prior) ----------
 
-export const ConsensusSnapshotSchema = z
+const consensusSnapshot = (quarterCount: number) => z
   .object({
     schemaVersion: z.literal(1),
     ticker,
@@ -148,13 +159,15 @@ export const ConsensusSnapshotSchema = z
     basis: z.literal("common_diluted"), // rejects trailing/annual/basic-share consensus by construction
     currency: z.literal("KRW"),
     unit: z.literal("KRW_per_share"),
-    horizonQuarters: z.array(quarterTag).length(4),
+    horizonQuarters: z.array(quarterTag).length(quarterCount),
     epsPerShare: z.number().finite(), // sign is checked at eligibility time (explicit ineligible reason, not a 400)
     knownAt: isoDateTime,
     source: StrategySourceSchema,
   })
   .strict()
-  .refine((c) => fourConsecutiveQuarters(c.horizonQuarters), { message: "horizonQuarters must be four consecutive, non-duplicate calendar quarters in ascending order", path: ["horizonQuarters"] });
+  .refine((c) => fourConsecutiveQuarters(c.horizonQuarters), { message: `horizonQuarters ${horizonMessage(quarterCount)}`, path: ["horizonQuarters"] });
+export const ConsensusSnapshotSchema = consensusSnapshot(4);
+export const SingleQuarterConsensusSchema = consensusSnapshot(1);
 export type ConsensusSnapshot = z.infer<typeof ConsensusSnapshotSchema>;
 
 // ---------- catalyst schedule ----------
@@ -188,18 +201,20 @@ export type DiagnosticInput = z.infer<typeof DiagnosticInputSchema>;
 export const EVIDENCE_MODES = ["forward", "historical_import_unverified", "synthetic"] as const;
 export type EvidenceMode = (typeof EVIDENCE_MODES)[number];
 
-export const CandidateInputSchema = z
+const candidateInput = (forecast: ReturnType<typeof forecastSnapshot>, consensus: ReturnType<typeof consensusSnapshot>) => z
   .object({
     ticker,
     evidenceMode: z.enum(EVIDENCE_MODES),
-    forecast: EarningsForecastSnapshotSchema,
-    currentConsensus: ConsensusSnapshotSchema,
-    priorConsensus: ConsensusSnapshotSchema,
+    forecast,
+    currentConsensus: consensus,
+    priorConsensus: consensus,
     catalyst: CatalystSchema,
     diagnostic: DiagnosticInputSchema.optional(),
     recordRefs: z.record(z.string(), z.object({ id: z.uuid(), contentHash: z.string(), recordedAt: isoDateTime, mode: z.enum(["forward", "historical_import_unverified", "synthetic"]) }).strict()).optional(),
   })
   .strict();
+export const CandidateInputSchema = candidateInput(EarningsForecastSnapshotSchema, ConsensusSnapshotSchema);
+export const SingleQuarterCandidateInputSchema = candidateInput(SingleQuarterForecastSchema, SingleQuarterConsensusSchema);
 export type CandidateInput = z.infer<typeof CandidateInputSchema>;
 
 export { assumption, money, isoDateTime, quarterTag, ticker as tickerSchema, fourConsecutiveQuarters };

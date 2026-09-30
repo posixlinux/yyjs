@@ -6,7 +6,7 @@ import { isValidDate } from "../domain/time.js";
 import { AppError, type Issue } from "../errors.js";
 import { Availability, isExpiredCode } from "./availability.js";
 import { abortedStatus, AGY_DEFAULT_MODEL, callProvider, skipped, validateClaudeEffort, type ProviderConfig, type ProviderOutcome } from "./providers.js";
-import { auditPrompt, draftPrompt, strategyPrompt } from "./prompts.js";
+import { auditPrompt, draftPrompt, strategyPrompt, fundingPrompt } from "./prompts.js";
 import { buildEnv, sanitize, Semaphore, spawnRunner } from "./runner.js";
 import {
   AuditSchema,
@@ -18,6 +18,7 @@ import {
   LIMITS,
   ProposalSchema,
   StrategyProposalSchema,
+  FundingProposalSchema,
   type AnalysisResult,
   type EvidenceInput,
   type IntelligenceOptions,
@@ -84,8 +85,8 @@ const resolveOptions = (o: IntelligenceOptions) => {
 
   // jobTimeoutMs is the actual effective whole-job deadline (see src/config.ts: explicit RESEARCH_JOB_TIMEOUT_MS, or
   // a default derived from the SAME per-call default so an unset job timeout never fights an unset per-call timeout).
-  // A full sequential run is up to JOB_MAX_SEQUENTIAL_CALLS calls (claude-draft, then on a claude draft TIMEOUT an
-  // agy-draft fallback, then one audit call) plus JOB_OVERHEAD_MS of non-LLM headroom (collection, queue, cleanup).
+  // A full run is bounded by JOB_MAX_SEQUENTIAL_CALLS calls (draft/audit/strategy with fallbacks and funding
+  // completion), even with semaphore concurrency=1, plus JOB_OVERHEAD_MS for collection, queue and cleanup.
   // The configured per-call timeout is NEVER silently shortened here: a caller-set INTELLIGENCE_TIMEOUT_MS is
   // honored as-is. A budget that does not fit is only diagnosed (logged); the actual hard stop, if any, is the
   // job's own AbortController (see research/jobs.ts JOB_TIMEOUT), which is a separate, explicit mechanism.
@@ -267,7 +268,30 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
         result.strategy = verifyStrategyDraft(input.asOf, input.documents, out.value.citations, out.value.strategy);
         // generatedAt is server-owned, never the model's own claim: the model cannot backdate/postdate when its
         // forecast was produced (docs/STRATEGY.md "no backdating new LLM forecasts into old decisions").
-        if (result.strategy.forecast) result.strategy.forecast = { ...result.strategy.forecast, generatedAt };
+        if (result.strategy.forecast) {
+          result.strategy.forecast = { ...result.strategy.forecast, generatedAt };
+          // No extra call without financial evidence or when the first strategy pass already supplied a plan.
+          if (!result.strategy.forecast.funding && input.documents.some((d) => /현금|차입|현금흐름|cash.?flow|borrowings/i.test(d.text))) {
+            const completion = await limited(provider, () => callProvider(provider, cfgOf(provider), fundingPrompt(input, result.strategy.forecast!), FundingProposalSchema, "funding"));
+            if (completion.value?.funding) {
+              const repaired = verifyStrategyDraft(input.asOf, input.documents, out.value.citations, {
+                ...out.value.strategy, forecast: { ...result.strategy.forecast, funding: completion.value.funding },
+              });
+              if (repaired.forecast?.funding) {
+                result.strategy.forecast = repaired.forecast;
+                result.strategy.unavailable = result.strategy.unavailable.filter((u) => !u.code.startsWith("FUNDING_") && u.code !== "INVALID_DEBT_SCHEDULE");
+              } else {
+                result.strategy.unavailable.push(...repaired.unavailable.filter((u) => u.code.startsWith("FUNDING_") || u.code === "INVALID_DEBT_SCHEDULE"));
+              }
+            } else if (completion.value) {
+              result.strategy.unavailable.push(...completion.value.missingFields.map((message) => ({ field: "funding", code: "FUNDING_INPUT_MISSING", message })));
+            } else {
+              result.strategy.unavailable.push({ field: "funding", code: "FUNDING_CALL_FAILED", message: `자금 계획 보완 추출 실패: ${completion.status.code} (${completion.status.message})` });
+              if (completion.status.status === "error" && isExpiredCode(completion.status.code))
+                expire(provider, completion.status.code, completion.status.message, completion.cooldownMs, false);
+            }
+          }
+        }
         return;
       }
       failures.push(`${provider} ${out.status.code}: ${out.status.message}`);
@@ -381,7 +405,7 @@ export async function analyzeEvidence(raw: unknown, options: IntelligenceOptions
       refs: 0,
       promise: run(input, excluded, o, controller.signal).then((result) => {
         // Provider failures (timeout, quota, missing CLI, abort) and skipped-because-expired providers are transient: never cached.
-        if (ttl > 0 && !result.unavailable.length && !Object.values(result.providers).some((s) => s.status === "error") && !result.strategy.unavailable.some((u) => u.code === "STRATEGY_CALL_FAILED")) {
+        if (ttl > 0 && !result.unavailable.length && !Object.values(result.providers).some((s) => s.status === "error") && !result.strategy.unavailable.some((u) => u.code === "STRATEGY_CALL_FAILED" || u.code === "FUNDING_CALL_FAILED")) {
           if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value!);
           cache.set(key, { at: Date.now(), result });
         }

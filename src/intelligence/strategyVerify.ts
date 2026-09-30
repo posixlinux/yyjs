@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { formatQuarter, parseQuarter } from "../domain/time.js";
-import { CatalystSchema, ConsensusSnapshotSchema, EarningsForecastSnapshotSchema, type StrategySource } from "../strategy/schema.js";
+import { CatalystSchema, SingleQuarterConsensusSchema, SingleQuarterForecastSchema, SingleQuarterFundingPlanSchema, type StrategySource } from "../strategy/schema.js";
 import { seoulDateOf } from "../strategy/time.js";
 import { checkCitation, numericSupport } from "./verify.js";
 import type { Citation, EvidenceDocument, StrategyDropReason, StrategyExtraction } from "./types.js";
@@ -9,7 +9,7 @@ import type { Citation, EvidenceDocument, StrategyDropReason, StrategyExtraction
 // by the SEPARATE strategy call (see StrategyProposalSchema / StrategyDraftSchema below). This never widens what the model is trusted to assert: every source must resolve
 // to a real supplied document (url + matching date), and every consensus/liquidity/catalyst fact must carry a
 // citation whose quoted text actually anchors it -- not just a bare number or a resolvable URL, but text that
-// deterministically expands to the SAME four quarters being claimed, affirmatively states consolidated/diluted
+// deterministically expands to the SAME single quarter being claimed, affirmatively states consolidated/diluted
 // basis, and (for a catalyst) actually describes a scheduled earnings/guidance/disclosure event, in the SAME
 // document as the field's own declared `source`. Anything that fails is dropped with a reason, never silently
 // coerced or guessed. Forward forecast segments/bridge/funding numbers MAY rest on a rationale rather than an
@@ -149,7 +149,7 @@ const EXPLICIT_BASIC_RE = /기본\s*(주당|EPS)?|\bbasic\b/i;
 
 function citedHorizon(field: string, horizonQuarters: string[], citations: Citation[], docs: Map<string, EvidenceDocument>, asOf: string, sameDocumentAs: string): string | null {
   const cands = citations.filter((c) => c.fieldPath === `${field}.horizonQuarters`);
-  if (!cands.length) return "no citation anchoring the four-quarter horizon (a citation on epsPerShare alone is not enough)";
+  if (!cands.length) return "no citation anchoring the consensus quarter (a citation on epsPerShare alone is not enough)";
   let last = "no supporting citation";
   for (const c of cands) {
     const bad = checkCitation(c, docs, asOf);
@@ -200,7 +200,10 @@ function isFinancialSector(name: string | undefined, sector: string | undefined)
 function verifyForecast(raw: unknown, docs: EvidenceDocument[], docsById: Map<string, EvidenceDocument>, citations: Citation[], asOf: string) {
   const drops: StrategyDropReason[] = [];
   if (raw === null || raw === undefined) return { value: null, drops };
-  const parsed = EarningsForecastSnapshotSchema.safeParse(raw);
+  // Funding is optional enrichment. A null/incomplete plan from a model must not discard a valid EPS forecast;
+  // keep the core so the dedicated funding pass can repair the plan.
+  const rawFunding = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>).funding : undefined;
+  const parsed = SingleQuarterForecastSchema.safeParse(typeof raw === "object" && raw !== null ? { ...raw, funding: undefined } : raw);
   if (!parsed.success) return { value: null, drops: [drop("forecast", "SCHEMA_INVALID", parsed.error.issues[0]?.message ?? "forecast failed schema validation")] };
   const f = parsed.data;
   const bad = (code: string, msg: string) => drops.push(drop("forecast", code, msg));
@@ -242,6 +245,11 @@ function verifyForecast(raw: unknown, docs: EvidenceDocument[], docsById: Map<st
   // failure here is recorded and returned in `drops` for visibility, but only strips the ONE offending block --
   // it never re-nulls the core forecast that already passed.
   const optionalDrops: StrategyDropReason[] = [];
+  if (rawFunding !== undefined && rawFunding !== null) {
+    const fp = SingleQuarterFundingPlanSchema.safeParse(rawFunding);
+    if (fp.success) f.funding = fp.data;
+    else optionalDrops.push(drop("funding", "FUNDING_SCHEMA_INVALID", fp.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).slice(0, 5).join("; ")));
+  }
   let liquidity = f.liquidity;
   if (liquidity) {
     const e = sourceIssue("liquidity.source", liquidity.source, docs, asOf, "observed");
@@ -254,6 +262,19 @@ function verifyForecast(raw: unknown, docs: EvidenceDocument[], docsById: Map<st
   let funding = f.funding;
   if (funding) {
     let fundingBad = false;
+    if (funding.quarters.some((q, i) => q.quarter !== f.quarters[i].quarter)) {
+      optionalDrops.push(drop("funding", "FUNDING_HORIZON_MISMATCH", "자금 계획의 분기가 실적 전망 분기와 다릅니다."));
+      fundingBad = true;
+    }
+    let debt = funding.openingDebtKRW;
+    for (const q of funding.quarters) {
+      debt += q.committedDebtDrawKRW - q.debtPrincipalDueKRW;
+      if (debt < 0) {
+        optionalDrops.push(drop("funding", "INVALID_DEBT_SCHEDULE", `${q.quarter}: 차입 원금 상환액이 차입 잔액과 확약 차입의 합계를 초과합니다.`));
+        fundingBad = true;
+        break;
+      }
+    }
     const fe = sourceIssue("funding.assumptions.source", funding.assumptions.source, docs, asOf, "assumption");
     if (fe) { optionalDrops.push(drop("forecast", "FUNDING_ASSUMPTION_SOURCE_INVALID", fe)); fundingBad = true; }
     funding.quarters.forEach((fq, fi) => {
@@ -267,7 +288,7 @@ function verifyForecast(raw: unknown, docs: EvidenceDocument[], docsById: Map<st
 
 function verifyConsensus(field: "currentConsensus" | "priorConsensus", raw: unknown, docs: EvidenceDocument[], docsById: Map<string, EvidenceDocument>, citations: Citation[], asOf: string) {
   if (raw === null || raw === undefined) return { value: null, drops: [] as StrategyDropReason[] };
-  const parsed = ConsensusSnapshotSchema.safeParse(raw);
+  const parsed = SingleQuarterConsensusSchema.safeParse(raw);
   if (!parsed.success) return { value: null, drops: [drop(field, "SCHEMA_INVALID", parsed.error.issues[0]?.message ?? "failed schema validation")] };
   const c = parsed.data;
   const src = resolveSource(`${field}.source`, c.source, docs, asOf, "observed");
@@ -276,7 +297,7 @@ function verifyConsensus(field: "currentConsensus" | "priorConsensus", raw: unkn
   if (ge) return { value: null, drops: [drop(field, "KNOWN_AT_NOT_GROUNDED", ge)] };
   // Both the EPS number and the horizon it covers must come from the SAME document as the declared source -- an
   // EPS quote from one filing plus an unrelated horizon quote from a different document would not actually connect
-  // the number to the claimed four-quarter period.
+  // the number to the claimed quarter.
   const eps = validEpsCitations(`${field}.epsPerShare`, c.epsPerShare, citations, docsById, asOf, src.doc.id);
   if (!eps.ok.length) return { value: null, drops: [drop(field, "EPS_UNCITED", `epsPerShare: ${eps.reason}`)] };
   const horizonError = citedHorizon(field, c.horizonQuarters, citations, docsById, asOf, src.doc.id);

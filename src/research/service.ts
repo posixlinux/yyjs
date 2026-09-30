@@ -12,7 +12,7 @@ import { buildDocuments, kstDate, summarizeEvidence, type BuiltDocuments } from 
 import { JobManager, type Job, type JobKind, type JobLimits, type JobOutcome, type Work } from "./jobs.js";
 import { evaluateAutoStrategy } from "../strategy/auto.js";
 
-export type Collector = (input: { ticker: string; asOf: string }, opts: { signal: AbortSignal }) => Promise<PublicEvidence>;
+export type Collector = (input: { ticker: string; asOf: string; competitors?: string[] }, opts: { signal: AbortSignal }) => Promise<PublicEvidence>;
 /** `signal` aborts running CLI children (job timeout / server close). */
 export type Intelligence = (input: EvidenceInput, opts: { signal: AbortSignal }) => Promise<AnalysisResult>;
 
@@ -51,16 +51,18 @@ export class ResearchService {
     if (r.length) throw new AppError(422, "NOT_COMMON_STOCK", `Ticker ${ticker} is not a KOSPI common stock: ${describeRejections(r)}`, r, "Only common shares of operating companies are analysed (no preferred shares, ETF/ETN, REITs, infrastructure funds or SPACs).");
   }
 
-  startAnalysis(req: { ticker: string; asOf?: string }) {
+  startAnalysis(req: { ticker: string; asOf?: string; competitors?: string[] }) {
     this.requireCommonStock(req.ticker);
     const asOf = this.resolveAsOf(req.asOf);
-    return this.submit("analysis", req.ticker, asOf, (ticker, a) => this.analysisWork(ticker, a));
+    const competitors = req.competitors ?? [];
+    return this.submit("analysis", req.ticker, asOf, competitors, (ticker, a) => this.analysisWork(ticker, a, competitors));
   }
 
-  startResearch(req: { ticker: string; asOf?: string }) {
+  startResearch(req: { ticker: string; asOf?: string; competitors?: string[] }) {
     this.requireCommonStock(req.ticker);
     const asOf = this.resolveAsOf(req.asOf);
-    return this.submit("research", req.ticker, asOf, (ticker, a) => this.researchWork(ticker, a));
+    const competitors = req.competitors ?? [];
+    return this.submit("research", req.ticker, asOf, competitors, (ticker, a) => this.researchWork(ticker, a, competitors));
   }
 
   getJob(id: string, kind: JobKind): ReturnType<ResearchService["view"]> {
@@ -73,8 +75,14 @@ export class ResearchService {
     return this.jobs.close();
   }
 
-  private submit(kind: JobKind, ticker: string, asOf: string, work: (ticker: string, asOf: string) => Work) {
-    const { job, deduplicated } = this.jobs.submit(kind, `${kind}:${ticker}:${asOf}`, { ticker, asOf, ...(kind === "analysis" && { mode: "public" }) }, work(ticker, asOf));
+  private submit(kind: JobKind, ticker: string, asOf: string, competitors: string[], work: (ticker: string, asOf: string) => Work) {
+    const cmp = [...competitors].sort();
+    const { job, deduplicated } = this.jobs.submit(
+      kind,
+      `${kind}:${ticker}:${asOf}${cmp.length ? `:${cmp.join(",")}` : ""}`,
+      { ticker, asOf, ...(kind === "analysis" && { mode: "public" }), ...(cmp.length && { competitors: cmp }) },
+      work(ticker, asOf),
+    );
     return { id: job.id, status: job.status, statusUrl: `${ROUTES[kind]}/${job.id}`, deduplicated };
   }
 
@@ -112,9 +120,9 @@ export class ResearchService {
     return m;
   }
 
-  private async collectEvidence(ticker: string, asOf: string, signal: AbortSignal): Promise<{ ev: PublicEvidence } | { outcome: JobOutcome }> {
+  private async collectEvidence(ticker: string, asOf: string, competitors: string[], signal: AbortSignal): Promise<{ ev: PublicEvidence } | { outcome: JobOutcome }> {
     try {
-      const ev = await this.deps.collect({ ticker, asOf }, { signal });
+      const ev = await this.deps.collect({ ticker, asOf, ...(competitors.length && { competitors }) }, { signal });
       const notCommon = ev.issues?.find((i) => i.code === "not_common_stock");
       if (notCommon)
         return { outcome: { status: "failed", error: { code: "NOT_COMMON_STOCK", message: this.msg(notCommon.message) }, result: this.clean({ ticker, asOf, evidence: summarizeEvidence(ev, buildDocuments(ev)) }) } };
@@ -130,9 +138,9 @@ export class ResearchService {
 
   // ---- evidence-only job (no LLM) -----------------------------------------------------------------------------
 
-  private researchWork(ticker: string, asOf: string): Work {
+  private researchWork(ticker: string, asOf: string, competitors: string[]): Work {
     return async ({ signal }) => {
-      const got = await this.collectEvidence(ticker, asOf, signal);
+      const got = await this.collectEvidence(ticker, asOf, competitors, signal);
       if ("outcome" in got) return got.outcome;
       const built = buildDocuments(got.ev);
       const status = got.ev.status === "ok" ? "completed" : got.ev.status === "partial" ? "partial" : "failed";
@@ -154,9 +162,9 @@ export class ResearchService {
 
   // ---- full public analysis job -------------------------------------------------------------------------------
 
-  private analysisWork(ticker: string, asOf: string): Work {
+  private analysisWork(ticker: string, asOf: string, competitors: string[]): Work {
     return async ({ signal }) => {
-      const got = await this.collectEvidence(ticker, asOf, signal);
+      const got = await this.collectEvidence(ticker, asOf, competitors, signal);
       if ("outcome" in got) return got.outcome;
       const ev = got.ev;
       const built = buildDocuments(ev);
@@ -246,6 +254,9 @@ export class ResearchService {
         mode: live ? "live" : "retrospective_research",
         forecast: research?.strategy.forecast ?? null,
         currentConsensus: research?.strategy.currentConsensus ?? null,
+        quarterlyConsensus: ev.market.quarterlyConsensus ?? [],
+        quarterlyActuals: ev.market.quarterlyActuals ?? [],
+        dailyCloses: ev.market.dailyCloses ?? [],
         priorConsensus: research?.strategy.priorConsensus ?? null,
         catalyst: research?.strategy.catalyst ?? null,
         unavailable: research?.strategy.unavailable ?? [{ field: "all", code: "NO_MODEL_DRAFT", message: "no model draft was produced for this analysis (see partialReasons)" }],

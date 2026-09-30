@@ -6,16 +6,16 @@ import type { Citation, EvidenceDocument } from "../src/intelligence/types.js";
 // net that stops a model from fabricating consensus/catalyst provenance or claiming an uncited "observed" number,
 // while still allowing genuinely forward-looking forecast segments that are explicitly labelled as assumptions.
 
-const ASOF = "2026-06-30"; // Q2 -> next four quarters are 2026Q3..2027Q2
-const HORIZON = ["2026Q3", "2026Q4", "2027Q1", "2027Q2"];
+const ASOF = "2026-06-30"; // Q2 in progress -> the single estimated quarter is 2026Q2
+const HORIZON = ["2026Q2"];
 const DOC: EvidenceDocument = {
   id: "d1",
   title: "1H26 report",
   url: "https://dart.fss.or.kr/r/1",
   publishedAt: "2026-05-15",
   text:
-    "2026년 2분기 실제 판매량 10개, 평균단가 100원, 변동비 60원, 고정비 100원. " +
-    "2026Q3~2027Q2 연결 기준 보통주 희석 컨센서스 EPS 7원. " +
+    "2026년 1분기 실제 판매량 10개, 평균단가 100원, 변동비 60원, 고정비 100원. " +
+    "2026Q2 연결 기준 보통주 희석 컨센서스 EPS 7원. " +
     "실적발표 예정일 2026-08-10.",
 };
 const OTHER_DOC: EvidenceDocument = { ...DOC, id: "d2", url: "https://news.example.com/other" };
@@ -69,7 +69,7 @@ const catalyst = (over: Record<string, unknown> = {}) => ({
 const cite = (fieldPath: string, quote: string, quotedNumber: string, doc = DOC): Citation => ({ fieldPath, documentId: doc.id, url: doc.url, publishedAt: doc.publishedAt, evidenceQuote: quote, quotedNumber });
 
 // Citations proving the consensus horizon/eps together, and the catalyst date, in the SAME document as their source.
-const HORIZON_QUOTE = "2026Q3~2027Q2 연결 기준 보통주 희석 컨센서스 EPS 7원";
+const HORIZON_QUOTE = "2026Q2 연결 기준 보통주 희석 컨센서스 EPS 7원";
 const epsAndHorizonCitations = (field: "currentConsensus" | "priorConsensus" = "currentConsensus") => [
   cite(`${field}.epsPerShare`, HORIZON_QUOTE, "7"),
   cite(`${field}.horizonQuarters`, HORIZON_QUOTE, "7"),
@@ -141,6 +141,26 @@ describe("verifyStrategyDraft: forecast", () => {
     expect(r.unavailable.filter((u) => u.field === "forecast")).toEqual([]);
   });
 
+  it("rejects a multi-quarter forecast: the automatic path estimates exactly one quarter", () => {
+    const raw = forecast();
+    raw.quarters = ["2026Q2", "2026Q3", "2026Q4", "2027Q1"].map((q) => quarter(q));
+    const r = run({ forecast: raw });
+    expect(r.forecast).toBeNull();
+    expect(r.unavailable).toContainEqual(expect.objectContaining({ field: "forecast", code: "SCHEMA_INVALID" }));
+  });
+
+  it.each([
+    ["FUNDING_HORIZON_MISMATCH", { quarters: ["2026Q3"].map((q) => fundingQuarter(q)) }],
+    ["INVALID_DEBT_SCHEDULE", { openingDebtKRW: 0, quarters: HORIZON.map((q) => fundingQuarter(q, { debtPrincipalDueKRW: 100, committedDebtDrawKRW: 0 })) }],
+    ["FUNDING_SCHEMA_INVALID", { quarters: [] }],
+    ["FUNDING_SCHEMA_INVALID", { quarters: ["2026Q2", "2026Q3"].map((q) => fundingQuarter(q)) }],
+  ])("drops invalid funding (%s) while preserving EPS", (code, over) => {
+    const r = run({ forecast: { ...forecast(), funding: funding(over as Record<string, unknown>) } });
+    expect(r.forecast).not.toBeNull();
+    expect(r.forecast?.funding).toBeUndefined();
+    expect(r.unavailable.some((u) => u.code === code)).toBe(true);
+  });
+
   it("drops ONLY the funding block, never the valid core EPS forecast, when funding assumptions are ungrounded", () => {
     const raw = forecast() as any;
     raw.funding = funding({ assumptions: { isAssumption: true, rationale: "guess", source: manualSource() } });
@@ -206,12 +226,12 @@ describe("verifyStrategyDraft: consensus (must never be fabricated)", () => {
   });
 
   it("rejects a schema-invalid consensus (e.g. wrong horizon length) without throwing", () => {
-    const r = run({ currentConsensus: { ...consensus(), horizonQuarters: HORIZON.slice(0, 3) } });
+    const r = run({ currentConsensus: { ...consensus(), horizonQuarters: ["2026Q2", "2026Q3", "2026Q4", "2027Q1"] } });
     expect(r.currentConsensus).toBeNull();
     expect(r.unavailable).toContainEqual(expect.objectContaining({ field: "currentConsensus", code: "SCHEMA_INVALID" }));
   });
 
-  it("rejects an annual-only EPS quote dressed up as a four-quarter horizon (the exact fabrication this closes)", () => {
+  it("rejects an annual-only EPS quote dressed up as a quarterly consensus (the exact fabrication this closes)", () => {
     const annualDoc: EvidenceDocument = { ...DOC, id: "annual", text: "2026 annual EPS consensus is 7 KRW. No quarterly horizon or event schedule is supplied." };
     const citations = [
       cite("currentConsensus.epsPerShare", "2026 annual EPS consensus is 7 KRW.", "7", annualDoc),
@@ -222,8 +242,7 @@ describe("verifyStrategyDraft: consensus (must never be fabricated)", () => {
     expect(r.unavailable).toContainEqual(expect.objectContaining({ field: "currentConsensus", code: "HORIZON_NOT_ANCHORED" }));
   });
 
-  it("rejects a horizon citation naming a different (even if adjacent) four-quarter range", () => {
-    const wrongRange = "2025Q1~2025Q4 연결 보통주 희석 컨센서스 EPS 7원";
+  it.each([["2026Q1 연결 보통주 희석 컨센서스 EPS 7원"], ["2026Q2~2027Q1 연결 보통주 희석 컨센서스 EPS 7원"]])("rejects a horizon citation naming a different quarter or a multi-quarter range: %s", (wrongRange) => {
     const wrongDoc: EvidenceDocument = { ...DOC, id: "wrong-range", text: wrongRange };
     const citations = [cite("currentConsensus.epsPerShare", wrongRange, "7", wrongDoc), cite("currentConsensus.horizonQuarters", wrongRange, "7", wrongDoc)];
     const src = { title: "d", url: wrongDoc.url, kind: "filing" as const, knownAt: `${wrongDoc.publishedAt}T00:00:00+09:00` };
@@ -233,7 +252,7 @@ describe("verifyStrategyDraft: consensus (must never be fabricated)", () => {
   });
 
   it("rejects a horizon quote that never affirmatively states consolidated/diluted basis (absence of contradiction is not enough)", () => {
-    const noBasis = "2026Q3~2027Q2 컨센서스 EPS 7원"; // quarters present, but no 연결/희석 wording at all
+    const noBasis = "2026Q2 컨센서스 EPS 7원"; // quarters present, but no 연결/희석 wording at all
     const noBasisDoc: EvidenceDocument = { ...DOC, id: "no-basis", text: noBasis };
     const citations = [cite("currentConsensus.epsPerShare", noBasis, "7", noBasisDoc), cite("currentConsensus.horizonQuarters", noBasis, "7", noBasisDoc)];
     const src = { title: "d", url: noBasisDoc.url, kind: "filing" as const, knownAt: `${noBasisDoc.publishedAt}T00:00:00+09:00` };
@@ -243,7 +262,7 @@ describe("verifyStrategyDraft: consensus (must never be fabricated)", () => {
   });
 
   it("rejects a horizon quote that states BASIC common EPS, not diluted, even though it names 보통주 (the exact fabrication this closes)", () => {
-    const basicText = "2026Q3~2027Q2 연결 보통주 기본 EPS 컨센서스 7원.";
+    const basicText = "2026Q2 연결 보통주 기본 EPS 컨센서스 7원.";
     const basicDoc: EvidenceDocument = { ...DOC, id: "basic-eps", text: basicText };
     const citations = [cite("currentConsensus.epsPerShare", basicText, "7", basicDoc), cite("currentConsensus.horizonQuarters", basicText, "7", basicDoc)];
     const src = { title: "d", url: basicDoc.url, kind: "filing" as const, knownAt: `${basicDoc.publishedAt}T00:00:00+09:00` };
@@ -253,7 +272,7 @@ describe("verifyStrategyDraft: consensus (must never be fabricated)", () => {
   });
 
   it("rejects a horizon quote naming 보통주 alone with no diluted/basic wording at all (diluted is never inferred from common alone)", () => {
-    const commonOnly = "2026Q3~2027Q2 연결 보통주 컨센서스 EPS 7원";
+    const commonOnly = "2026Q2 연결 보통주 컨센서스 EPS 7원";
     const commonOnlyDoc: EvidenceDocument = { ...DOC, id: "common-only", text: commonOnly };
     const citations = [cite("currentConsensus.epsPerShare", commonOnly, "7", commonOnlyDoc), cite("currentConsensus.horizonQuarters", commonOnly, "7", commonOnlyDoc)];
     const src = { title: "d", url: commonOnlyDoc.url, kind: "filing" as const, knownAt: `${commonOnlyDoc.publishedAt}T00:00:00+09:00` };
@@ -263,7 +282,7 @@ describe("verifyStrategyDraft: consensus (must never be fabricated)", () => {
   });
 
   it("accepts an English-language diluted EPS statement as satisfying the diluted basis requirement", () => {
-    const enText = "2026Q3~2027Q2 연결 diluted common EPS consensus is 7 KRW.";
+    const enText = "2026Q2 연결 diluted common EPS consensus is 7 KRW.";
     const enDoc: EvidenceDocument = { ...DOC, id: "en-diluted", text: enText };
     const citations = [cite("currentConsensus.epsPerShare", enText, "7", enDoc), cite("currentConsensus.horizonQuarters", enText, "7", enDoc)];
     const src = { title: "d", url: enDoc.url, kind: "filing" as const, knownAt: `${enDoc.publishedAt}T00:00:00+09:00` };

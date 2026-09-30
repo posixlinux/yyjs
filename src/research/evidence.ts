@@ -23,7 +23,7 @@ const MAX_NEWS_DOCS = 10;
 // whole budget with financial statements alone before the loop ever reaches filing_text (business/product narrative)
 // or reference (shares/foreign-ownership context), which is exactly the starvation observed on a real large-cap
 // snapshot (quote + statements only, no business narrative, no shares proof beyond the statements). Must sum to 1.
-const KIND_BUDGET_SHARE: Record<DocumentKind, number> = { quote: 0.05, statement: 0.27, derived: 0.08, disclosure: 0.05, filing_text: 0.25, filing_tables: 0.1, reference: 0.05, news: 0.15 };
+const KIND_BUDGET_SHARE: Record<DocumentKind, number> = { quote: 0.05, statement: 0.25, derived: 0.08, disclosure: 0.05, competitor: 0.07, filing_text: 0.23, filing_tables: 0.1, reference: 0.05, news: 0.12 };
 const MAX_STATEMENT_ROWS = 150;
 // Per-category row budget within MAX_STATEMENT_ROWS: a large income statement must never crowd out the balance
 // sheet or cash flow statement (financing/investing/CAPEX rows), which the automatic strategy path (strategy/auto.ts)
@@ -32,7 +32,7 @@ const MAX_STATEMENT_ROWS = 150;
 const STATEMENT_ROW_BUDGET: Record<number, number> = { 0: 80, 1: 40, 2: 30 };
 const MAX_CANDIDATES_PER_FILING = 15;
 
-export type DocumentKind = "quote" | "statement" | "derived" | "disclosure" | "filing_text" | "filing_tables" | "reference" | "news";
+export type DocumentKind = "quote" | "statement" | "derived" | "disclosure" | "competitor" | "filing_text" | "filing_tables" | "reference" | "news";
 
 export type DocumentRef = { id: string; kind: DocumentKind; title: string; url: string; publishedAt: string; chars: number; truncated: boolean };
 
@@ -81,7 +81,12 @@ function stmtLines(s: StatementSet): StatementLines {
     if (r.priorCumulativeAmount !== null) cols.push(`전기 누적: ${fmt(r.priorCumulativeAmount)}`);
     return cols.join(" | ");
   };
-  const cat = (k: number) => (byCategory.get(k) ?? []).slice(0, STATEMENT_ROW_BUDGET[k]).map(render);
+  // DART commonly lists investing/financing details after dozens of operating adjustments. Keep the funding
+  // inputs before applying either the row or character cap, not merely a quota for the CF category as a whole.
+  const fundingPriority = (r: Row) => /현금및현금성|현금및예금|사용.*제한|차입|사채|유동성장기|감가상각|상각비|유형자산.*취득|무형자산.*취득|운전자본|매출채권|재고자산|매입채무|법인세.*(납부|지급)|이자.*지급|배당.*지급|자기주식.*취득|CashAndCashEquivalents|Borrowings|Repayments|Depreciation|Amortisation|PurchaseOfProperty|PurchaseOfIntangible|InterestPaid|IncomeTaxesPaid|DividendsPaid/i.test(`${r.accountName} ${r.accountId}`) ? 0 : 1;
+  const cat = (k: number) => (byCategory.get(k) ?? [])
+    .sort((a, b) => k === 0 ? 0 : fundingPriority(a) - fundingPriority(b))
+    .slice(0, STATEMENT_ROW_BUDGET[k]).map(render);
   const byCat: [string[], string[], string[]] = [cat(0), cat(1), cat(2)];
   const total = byCat[0].length + byCat[1].length + byCat[2].length;
   if (total > MAX_STATEMENT_ROWS) byCat[0] = byCat[0].slice(0, Math.max(0, MAX_STATEMENT_ROWS - byCat[1].length - byCat[2].length));
@@ -212,7 +217,7 @@ function truncateCategorized(byCat: Partial<Record<CategoryKey, string[]>>, limi
   return { text: text.length <= limit ? text : text.slice(0, limit), truncated: true };
 }
 
-const PRODUCT_MARKET_WORDS = ["시장", "점유율", "점유", "성장", "업황", "출하", "수요", "제품", "판매", "매출", "시황", "가격", "공급"];
+const PRODUCT_MARKET_WORDS = ["시장", "점유율", "점유", "성장", "전망", "가이던스", "업황", "출하", "수요", "제품", "판매", "매출", "시황", "가격", "공급"];
 const coverageScore = (text: string) => PRODUCT_MARKET_WORDS.reduce((n, w) => n + (text.includes(w) ? 1 : 0), 0);
 
 export function buildDocuments(ev: PublicEvidence): BuiltDocuments {
@@ -280,6 +285,34 @@ export function buildDocuments(ev: PublicEvidence): BuiltDocuments {
       d.receiptUrl,
       d.receivedDate,
       `[거래소 공시 · ${DISCLOSURE_LABEL[d.kind]} · 회사 자체 공시이며 애널리스트 컨센서스가 아님] ${d.reportName} (접수일 ${d.receivedDate}, 접수번호 ${d.rceptNo})${d.truncated ? " [일부 잘림]" : ""}\n${d.text}`,
+    );
+  }
+
+  // Competitors (KR/US/JP filings): one document per company. The document's url/date are its NEWEST filing's; every
+  // period line names its own filing, so a cited value is traceable. Values are as filed (currency, whole company).
+  const MONTHS = { 3: "3개월(분기)", 6: "6개월(반기)", 12: "12개월(연간)" } as const;
+  for (const c of ev.competitors ?? []) {
+    const newest = [...c.periods].sort((a, b) => b.filedDate.localeCompare(a.filedDate))[0];
+    if (!newest) continue;
+    const lines = c.periods.map((p) =>
+      [
+        `${p.calendarPeriod}${p.calendarAlignment === "exact" ? "" : "(근사)"} · ${MONTHS[p.months]} · 회계 ${p.fiscalLabel}${p.periodStart ? ` (${p.periodStart}~${p.periodEnd})` : ` (기말 ${p.periodEnd})`}`,
+        `[${p.currency}] 매출 ${fmt(p.revenue)}${p.basis === "derived" ? " (파생값: 연간 - 같은 회계연도 다른 기간)" : ""}`,
+        `${p.consolidated === false ? "별도/개별" : "연결"} · ${p.form} 공시 ${p.filedDate} · ${p.sourceUrl}`,
+      ].join(" | "),
+    );
+    add(
+      "competitor",
+      `cmp-${c.market}-${c.code}`,
+      `[경쟁사 공시 매출 · ${c.market}] ${c.name ?? c.code} (${c.system})`,
+      newest.sourceUrl,
+      newest.filedDate,
+      [
+        `[경쟁사 공시 매출 · ${c.system} · ${c.market === "KR" ? "한국" : c.market === "US" ? "미국" : "일본"}] ${c.name ?? ""} (${c.market}:${c.code}). 공시 원문 수치 그대로이며 환산·단위 변환 없음(금액은 통화 1단위 기준).`,
+        "해석: 회사 전체 매출이며 특정 제품 시장 매출이 아닙니다. 회계 기간은 달력 기간(예 2026Q2, 2026H1)으로 표시했고 '(근사)'는 기말이 달력 기간 말과 7일 넘게 다른 경우입니다." +
+          (c.market === "JP" ? " 일본 기업은 2024년 이후 분기보고서가 없어 반기·연간 수치만 있습니다." : ""),
+        ...lines,
+      ].join("\n"),
     );
   }
 
@@ -425,6 +458,7 @@ export function summarizeEvidence(ev: PublicEvidence, built: BuiltDocuments) {
     company: ev.company,
     quote: ev.market.quote,
     referenceMetricCount: ev.market.referenceMetrics.length,
+    quarterlyConsensus: ev.market.quarterlyConsensus ?? [],
     news: [...ev.market.news, ...ev.market.searchNews].slice(0, 30).map((n) => ({ title: n.title, url: n.url, publishedAt: n.publishedAt, origin: n.origin, officeName: n.officeName })),
     filings: {
       list: ev.filings.list,
@@ -434,6 +468,10 @@ export function summarizeEvidence(ev: PublicEvidence, built: BuiltDocuments) {
       productCandidates: ev.filings.productCandidates.slice(0, 40),
       metricCandidates: ev.filings.metricCandidates.slice(0, 40),
     },
+    competitors: (ev.competitors ?? []).map((c) => ({
+      market: c.market, code: c.code, name: c.name, system: c.system,
+      periods: c.periods.map((p) => ({ calendarPeriod: p.calendarPeriod, months: p.months, currency: p.currency, revenue: p.revenue, basis: p.basis, filedDate: p.filedDate, sourceUrl: p.sourceUrl })),
+    })),
     requiredInputs: ev.requiredInputs,
     documents: { sentToModels: built.refs, omitted: built.omitted },
   };

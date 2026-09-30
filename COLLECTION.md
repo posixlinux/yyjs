@@ -24,7 +24,7 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 
 키는 `options.env`(기본 `process.env`)에서만 읽으며 로그·오류·결과에 넣지 않는다(URL의 `crtfc_key`와 키 값은 `***`로 치환).
 
-주요 옵션(`CollectionOptions`): `fetch`(테스트 주입), `now`, `signal`, `timeoutMs`(15s), `maxResponseBytes`(20MiB), `maxDecompressedBytes`(64MiB), `maxRequests`(40), `maxNewsPages`(3), `maxArticles`(3, 0~5; 0이면 기사 본문을 가져오지 않음), `maxFilings`(8, 1~8), `maxDocuments`(4, 0~8), `cacheTtlMs`(60s), `corpCodeTtlMs`(24h), `documentTtlMs`(1h), `productQueries`(검색용 제품 질의, 최대 5개).
+주요 옵션(`CollectionOptions`): `fetch`(테스트 주입), `now`, `signal`, `timeoutMs`(15s), `maxResponseBytes`(20MiB), `maxDecompressedBytes`(64MiB), `maxRequests`(48), `maxNewsPages`(3), `maxArticles`(5, 0~5; 0이면 기사 본문을 가져오지 않음), `maxFilings`(8, 1~8), `maxDocuments`(4, 0~8), `cacheTtlMs`(60s), `corpCodeTtlMs`(24h), `documentTtlMs`(1h), `productQueries`(기본 검색 질의를 대체, 최대 6개).
 
 ## 호출하는 엔드포인트
 
@@ -32,9 +32,12 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 |---|---|---|
 | Naver | `https://m.stock.naver.com/api/stock/{ticker}/basic` | 종목코드 일치 + `stockExchangeType.code=KS`/`KOSPI` 확인. 아니면 `not_kospi`, 이후 Naver 호출 중단. |
 | Naver | `.../stock/{ticker}/integration` | `totalInfos`. PER/EPS/추정치는 **참고값**(`usableAsModelInput: false`). 시가총액은 주식수가 아니다. |
+| Naver | `.../stock/{ticker}/finance/quarter` | `market.quarterlyConsensus`: `isConsensus=Y` 분기만 수집. 매출·영업이익·순이익은 억원→원, EPS는 원/주. 한 분기만 있어도 제공하며 연결/별도·희석 기준은 미확인으로 보존. 조회 시각이 `asOf`보다 늦으면 요청하지 않음. 실패는 경고로 처리. |
+| Naver | `.../stock/{ticker}/finance/quarter` (같은 응답) | `market.quarterlyActuals`: `isConsensus=N`(실적) 분기의 EPS(원/주). 다음 분기 적정 주가(PER 유지)의 최근 4분기 EPS에 쓰인다. 컨센서스와 같은 조건(현재 기준일만)으로 수집. |
+| Naver | `.../stock/{ticker}/price?pageSize=60&page=1..3` | `market.dailyCloses`: asOf 이하 일별 종가(최신순). asOf 200일 전까지 덮으면 중단. 현재 기준일에만 수집(과거 asOf는 오늘부터의 페이지로 닿지 않음). 실패는 경고. |
 | Naver | `.../news/stock/{ticker}?pageSize=20&page=1..3` | 최대 3페이지. 구 `finance.naver.com` 뉴스 URL은 사용하지 않는다(410). |
 | Naver 기사 | `https://n.news.naver.com/mnews/article/<숫자>/<숫자>` 또는 `/article/<숫자>/<숫자>` | 상위 `maxArticles`건의 본문(`dic_area`)만. 아래 "기사 본문" 참조. |
-| Naver Open API | `https://openapi.naver.com/v1/search/news.json?query=…&display=20&sort=date` | 키가 있을 때만. 질의는 `productQueries`(명시하면 그대로) 또는 기본값: `"{종목명} 시장 점유율"` + DART 제품 후보 상위 2~3개에 대한 `"{제품} 세계 시장 규모 점유율 성장률"`(총 5개 이내). |
+| Naver Open API | `https://openapi.naver.com/v1/search/news.json?query=…&display=20&sort=date` | 키가 있을 때만. 질의는 `productQueries`(명시하면 그대로) 또는 기본값: `"{종목명} 전망"`, `"{종목명} 성장률"`, `"{종목명} 시장 점유율"` + DART 제품 후보 상위 3개에 대한 `"{제품} 세계 시장 규모 점유율 성장률"`(총 6개 이내). 전망·성장률 기사는 모델이 성장률을 **보수적으로** 판단하는 근거(여러 수치 중 낮은 쪽, 상단 표현 할인)로 쓰이며, 기사 본문 선택에서도 `전망`·`성장률`·`가이던스` 키워드를 우선한다. |
 | DART | `corpCode.xml` (ZIP→`CORPCODE.xml`) | 상장 종목코드→`corp_code` 색인을 TTL 24h 캐시. 특정 회사 하드코딩 없음. |
 | DART | `company.json` | `stock_code` 일치, `corp_cls=Y`(유가증권) 확인, `acc_mt` 사용. |
 | DART | `list.json` (`pblntf_ty=A`, `last_reprt_at=N`, `page_count=100`, 최대 3페이지) | 사업/반기/분기보고서만 사용. `rcept_dt`가 asOf 이후인 공시는 제외. |

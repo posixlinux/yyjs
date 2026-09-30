@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateAutoStrategy } from "../src/strategy/auto.js";
-import { DECISION_AT, makeCatalyst, makeConsensus, makeForecast, makeFunding } from "../test/strategy/fixture.js";
+import { DECISION_AT, SINGLE_QUARTER, makeCatalyst, makeConsensus, makeForecast, makeSingleQuarterForecast } from "../test/strategy/fixture.js";
 
 // Unit coverage for the automatic single-candidate path (src/strategy/auto.ts): given whatever the intelligence
 // module could verify for one ticker, does it compute a genuinely useful complete OR partial result without ever
@@ -11,9 +11,9 @@ const base = () => ({
   ticker: TICKER,
   decisionAt: DECISION_AT,
   mode: "live" as const,
-  forecast: makeForecast(),
-  currentConsensus: makeConsensus({ epsPerShare: 7, knownAt: "2026-01-05T00:00:00+09:00" }),
-  priorConsensus: makeConsensus({ epsPerShare: 6, knownAt: "2025-12-06T00:00:00+09:00" }),
+  forecast: makeSingleQuarterForecast(),
+  currentConsensus: makeConsensus({ horizonQuarters: [SINGLE_QUARTER], epsPerShare: 1.75, knownAt: "2026-01-05T00:00:00+09:00" }),
+  priorConsensus: makeConsensus({ horizonQuarters: [SINGLE_QUARTER], epsPerShare: 1.5, knownAt: "2025-12-06T00:00:00+09:00" }),
   catalyst: makeCatalyst(),
   unavailable: [],
   minimumCashBufferKRW: 0,
@@ -24,10 +24,11 @@ describe("evaluateAutoStrategy: complete-data path", () => {
   it("produces a bridge, risk, and a full eligible evaluation when every piece is present and consistent", () => {
     const r = evaluateAutoStrategy(base());
     expect(r.status).toBe("eligible");
-    expect(r.bridge!.ntmEpsKRW).toBeCloseTo(8);
+    expect(r.bridge!.quarters.map((q) => q.quarter)).toEqual([SINGLE_QUARTER]);
+    expect(r.bridge!.ntmEpsKRW).toBeCloseTo(2); // the one estimated quarter, never multiplied by four
     expect(r.risk).not.toBeNull();
     expect(r.risk!.base.peakAdditionalFundingRequiredKRW).toBeDefined();
-    expect(r.evaluation).toMatchObject({ eligible: true, gapPct: expect.closeTo(8 / 7 - 1, 5), revisionPct: expect.closeTo(7 / 6 - 1, 5) });
+    expect(r.evaluation).toMatchObject({ eligible: true, gapPct: expect.closeTo(2 / 1.75 - 1, 5), revisionPct: expect.closeTo(1.75 / 1.5 - 1, 5) });
     expect(r.missing).toEqual([]);
   });
 
@@ -38,17 +39,18 @@ describe("evaluateAutoStrategy: complete-data path", () => {
 });
 
 describe("evaluateAutoStrategy: genuinely useful partial path", () => {
-  it("missing consensus: bridge and funding risk stay visible, no eligibility number is fabricated", () => {
+  it("missing consensus: the single-quarter estimate is the result, no eligibility number is fabricated", () => {
     const r = evaluateAutoStrategy({ ...base(), currentConsensus: null, priorConsensus: null });
-    expect(r.status).toBe("insufficient_data");
-    expect(r.bridge!.ntmEpsKRW).toBeCloseTo(8); // earnings bridge is independent of consensus
+    expect(r.status).toBe("estimate_only");
+    expect(r.notes.join(" ")).toMatch(/Single-quarter estimate for 2026Q1/);
+    expect(r.bridge!.ntmEpsKRW).toBeCloseTo(2); // earnings bridge is independent of consensus
     expect(r.risk).not.toBeNull(); // funding risk is independent of consensus too
     expect(r.evaluation).toBeNull();
     expect(r.missing.map((m) => m.field)).toEqual(expect.arrayContaining(["currentConsensus", "priorConsensus"]));
   });
 
   it("missing funding: risk is unavailable (never treated as zero), forecast/eligibility still run", () => {
-    const forecast = makeForecast({ funding: undefined });
+    const forecast = makeSingleQuarterForecast({ funding: undefined });
     const r = evaluateAutoStrategy({ ...base(), forecast });
     expect(r.risk).toBeNull();
     expect(r.missing).toContainEqual(expect.objectContaining({ field: "funding", code: "FUNDING_UNAVAILABLE" }));
@@ -86,24 +88,46 @@ describe("evaluateAutoStrategy: genuinely useful partial path", () => {
 
 describe("evaluateAutoStrategy: identity/scope/horizon validation runs BEFORE any bridge/risk is shown", () => {
   it("a forecast for the wrong ticker never produces a bridge, even with consensus null (company check does not require consensus)", () => {
-    const wrongTicker = makeForecast({ ticker: "123450" });
+    const wrongTicker = makeSingleQuarterForecast({ ticker: "123450" });
     const r = evaluateAutoStrategy({ ...base(), forecast: wrongTicker, currentConsensus: null, priorConsensus: null, catalyst: null });
     expect(r.bridge).toBeNull();
     expect(r.risk).toBeNull();
     expect(r.missing).toContainEqual(expect.objectContaining({ field: "forecast", code: "FORECAST_TICKER_MISMATCH" }));
   });
 
-  it("a forecast whose quarters are in the past is never labelled as the next four quarters", () => {
-    const pastForecast = makeForecast({ quarters: makeForecast().quarters.map((q) => ({ ...q, quarter: "2024Q2" })) });
-    const r = evaluateAutoStrategy({ ...base(), forecast: pastForecast });
+  it.each([["2025Q3"], ["2026Q2"]])("a forecast for %s, neither the quarter just ended nor the one in progress, never produces a bridge", (quarter) => {
+    const forecast = makeSingleQuarterForecast({ quarters: makeSingleQuarterForecast().quarters.map((q) => ({ ...q, quarter })) });
+    const r = evaluateAutoStrategy({ ...base(), forecast });
     expect(r.bridge).toBeNull();
-    expect(r.missing.some((m) => m.field === "forecast" && (m.code === "FORECAST_HORIZON_NOT_NEXT_FOUR" || m.code === "FORECAST_QUARTER_NOT_FUTURE"))).toBe(true);
+    expect(r.status).toBe("insufficient_data");
+    expect(r.missing).toContainEqual(expect.objectContaining({ field: "forecast", code: "FORECAST_HORIZON_NOT_SINGLE_QUARTER" }));
+  });
+
+  it("a four-quarter forecast is rejected: this path estimates one quarter only", () => {
+    const r = evaluateAutoStrategy({ ...base(), forecast: makeForecast() });
+    expect(r.bridge).toBeNull();
+    expect(r.missing).toContainEqual(expect.objectContaining({ field: "forecast", code: "FORECAST_HORIZON_NOT_SINGLE_QUARTER" }));
+  });
+
+  it("accepts the quarter that just ended (results not yet published) as the single estimated quarter", () => {
+    const forecast = makeSingleQuarterForecast();
+    forecast.quarters[0]!.quarter = "2025Q4";
+    forecast.funding!.quarters[0]!.quarter = "2025Q4";
+    const consensus = (epsPerShare: number, knownAt: string) => makeConsensus({ horizonQuarters: ["2025Q4"], epsPerShare, knownAt });
+    const r = evaluateAutoStrategy({ ...base(), forecast, currentConsensus: consensus(1.75, "2026-01-05T00:00:00+09:00"), priorConsensus: consensus(1.5, "2025-12-06T00:00:00+09:00") });
+    expect(r.status).toBe("eligible");
+    expect(r.bridge!.quarters[0]!.quarter).toBe("2025Q4");
+  });
+
+  it("a catalyst more than about three months away makes the candidate ineligible", () => {
+    const r = evaluateAutoStrategy({ ...base(), catalyst: makeCatalyst({ eventAt: "2026-04-20T06:00:00+09:00" }) });
+    expect(r.status).toBe("ineligible");
+    expect((r.evaluation as any).reasons.map((x: any) => x.code)).toContain("CATALYST_WINDOW_VIOLATION");
   });
 
   it("an invalid debt schedule is caught and degrades to funding-unavailable instead of crashing the whole result", () => {
-    const funding = makeFunding();
-    funding.quarters[0]!.debtPrincipalDueKRW = 999_999; // far exceeds opening debt + committed draws
-    const forecast = makeForecast({ funding });
+    const forecast = makeSingleQuarterForecast();
+    forecast.funding!.quarters[0]!.debtPrincipalDueKRW = 999_999; // far exceeds opening debt + committed draws
     expect(() => evaluateAutoStrategy({ ...base(), forecast })).not.toThrow();
     const r = evaluateAutoStrategy({ ...base(), forecast });
     expect(r.risk).toBeNull();
@@ -112,7 +136,7 @@ describe("evaluateAutoStrategy: identity/scope/horizon validation runs BEFORE an
   });
 
   it("company/scope validation runs even when consensus/catalyst are entirely absent", () => {
-    const badScope = makeForecast({ company: undefined });
+    const badScope = makeSingleQuarterForecast({ company: undefined });
     const r = evaluateAutoStrategy({ ...base(), forecast: badScope, currentConsensus: null, priorConsensus: null, catalyst: null });
     expect(r.bridge).toBeNull();
     expect(r.missing).toContainEqual(expect.objectContaining({ field: "forecast", code: "FORECAST_COMPANY_SCOPE_MISSING" }));
@@ -121,8 +145,8 @@ describe("evaluateAutoStrategy: identity/scope/horizon validation runs BEFORE an
 
 describe("evaluateAutoStrategy: source timing validated even for partial (no-consensus) results", () => {
   it("a segment source backdated after the forecast's generatedAt never produces a bridge, even with consensus/catalyst absent", () => {
-    const backdated = makeForecast({
-      quarters: makeForecast().quarters.map((q, i) =>
+    const backdated = makeSingleQuarterForecast({
+      quarters: makeSingleQuarterForecast().quarters.map((q, i) =>
         i === 0 ? { ...q, segments: [{ ...q.segments[0]!, source: { ...q.segments[0]!.source, knownAt: "2026-01-11T00:00:00+09:00" } }] } : q,
       ),
     });
@@ -132,7 +156,7 @@ describe("evaluateAutoStrategy: source timing validated even for partial (no-con
   });
 
   it("a company source backdated after generatedAt never produces a bridge", () => {
-    const forecast = makeForecast();
+    const forecast = makeSingleQuarterForecast();
     const backdated = { ...forecast, company: { ...forecast.company!, source: { ...forecast.company!.source, knownAt: "2026-01-11T00:00:00+09:00" } } };
     const r = evaluateAutoStrategy({ ...base(), forecast: backdated, currentConsensus: null, priorConsensus: null, catalyst: null });
     expect(r.bridge).toBeNull();
@@ -140,7 +164,7 @@ describe("evaluateAutoStrategy: source timing validated even for partial (no-con
   });
 
   it("liquidity known after generatedAt is dropped by itself; the earnings bridge (core forecast) survives", () => {
-    const base_ = makeForecast();
+    const base_ = makeSingleQuarterForecast();
     const forecast = { ...base_, liquidity: { ...base_.liquidity!, knownAt: "2026-01-12T00:00:00+09:00", source: { ...base_.liquidity!.source, knownAt: "2026-01-12T00:00:00+09:00" } } };
     const r = evaluateAutoStrategy({ ...base(), forecast });
     expect(r.bridge).not.toBeNull();
@@ -149,7 +173,7 @@ describe("evaluateAutoStrategy: source timing validated even for partial (no-con
   });
 
   it("funding known after generatedAt is dropped by itself (risk unavailable); the earnings bridge survives", () => {
-    const base_ = makeForecast();
+    const base_ = makeSingleQuarterForecast();
     const funding = { ...base_.funding!, assumptions: { ...base_.funding!.assumptions, source: { ...base_.funding!.assumptions.source, knownAt: "2026-01-12T00:00:00+09:00" } } };
     const forecast = { ...base_, funding };
     const r = evaluateAutoStrategy({ ...base(), forecast });

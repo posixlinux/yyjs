@@ -191,6 +191,8 @@ export function verifyProposal(asOf: string, ticker: string, docs: EvidenceDocum
     }
     if (e.estimate.method === "share_implied" && !e.estimate.basedOn.some((b) => /^products\[\d+\]\.revenue\[\d+\]\.revenue$/.test(b)))
       issues.push(issue("ESTIMATE_BASIS_MISMATCH", at, "share_implied must be based on a product revenue path (market = product revenue / stated share)"));
+    if (e.estimate.method === "article_synthesis" && new Set(e.estimate.basedOn.filter((b) => docIds.has(b))).size < 2)
+      issues.push(issue("ESTIMATE_BASIS_MISMATCH", at, "article_synthesis must be based on at least two supplied documents (the articles whose figures were combined)"));
     if (e.estimate.method === "prior_extrapolation" && !e.estimate.basedOn.some((b) => /^(markets\[\d+\]\.observations\[\d+\]|competitors\[\d+\]\.revenue\[\d+\]|products\[\d+\]\.revenue\[\d+\])\.revenue$/.test(b) || docIds.has(b)))
       issues.push(issue("ESTIMATE_BASIS_MISMATCH", at, "prior_extrapolation must be based on an earlier figure (dataset path or supplied document)"));
   }

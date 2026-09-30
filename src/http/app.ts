@@ -122,9 +122,12 @@ export function buildApp(
   // mode=public (default): asynchronous job (202). mode=demo|manual: synchronous deterministic analysis of stored data.
   app.post("/v1/analyses", async (req, reply) => {
     const body = AnalysisRequestSchema.parse(req.body);
-    if (body.mode !== "public") return service.analyze({ ticker: body.ticker, asOf: body.asOf, mode: body.mode });
+    if (body.mode !== "public") {
+      if (body.competitors?.length) throw new AppError(400, "COMPETITORS_PUBLIC_ONLY", "competitors are collected only in mode=public");
+      return service.analyze({ ticker: body.ticker, asOf: body.asOf, mode: body.mode });
+    }
     requireKey(req.headers);
-    const job = research.startAnalysis({ ticker: body.ticker, asOf: body.asOf });
+    const job = research.startAnalysis({ ticker: body.ticker, asOf: body.asOf, competitors: body.competitors });
     return reply.status(202).header("location", job.statusUrl).send(job);
   });
 

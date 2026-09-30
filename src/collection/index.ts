@@ -2,6 +2,7 @@ import { classifySecurity, describeRejections } from "../domain/security.js";
 import { createHttp, redact } from "./http.js";
 import { collectNaver, collectNaverSearch } from "./naver.js";
 import { collectDart } from "./dart.js";
+import { collectCompetitors, parseCompetitorIds } from "./competitors.js";
 import { CollectionError, CollectionInputError, issue } from "./types.js";
 import type {
   CollectPublicEvidenceInput,
@@ -38,13 +39,16 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
   const early = classifySecurity({ ticker });
   if (early.length) throw new CollectionInputError(`Only KOSPI common stocks are supported: ${describeRejections(early)}`);
   const asOf = parseAsOf(input.asOf);
+  const competitorIds = parseCompetitorIds(input.competitors, ticker);
   const env = options.env ?? process.env;
   const now = (options.now ?? (() => new Date()))();
   const nowIso = now.toISOString();
   const dartKey = (env.DART_API_KEY ?? "").trim();
   const naverId = (env.NAVER_CLIENT_ID ?? "").trim();
   const naverSecret = (env.NAVER_CLIENT_SECRET ?? "").trim();
-  const secrets = [dartKey, naverId, naverSecret].filter(Boolean);
+  const secUserAgent = (env.SEC_USER_AGENT ?? "").trim();
+  const edinetKey = (env.EDINET_API_KEY ?? "").trim();
+  const secrets = [dartKey, naverId, naverSecret, edinetKey].filter(Boolean);
   const ttlMs = options.cacheTtlMs ?? 60_000;
   const maxBytes = options.maxResponseBytes ?? 20 * MiB;
 
@@ -52,7 +56,7 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
     fetch: options.fetch ?? fetch,
     timeoutMs: options.timeoutMs ?? 15_000,
     maxBytes,
-    maxRequests: options.maxRequests ?? 40,
+    maxRequests: options.maxRequests ?? 48,
     secrets,
     signal: options.signal,
   });
@@ -73,7 +77,17 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
         }),
       )
     : Promise.resolve({ value: null, fatal: issue("dart", "missing_configuration", "DART_API_KEY is not set; DART filings were not collected", "warning"), configured: false });
-  const [naver, dart] = await Promise.all([naverP, dartP]);
+  // Competitors (KR/US/JP disclosure systems) use their own per-company request budgets; see competitors.ts.
+  const competitorsP = competitorIds.length
+    ? collectCompetitors(competitorIds, {
+        asOf, fetch: options.fetch ?? fetch, timeoutMs: options.timeoutMs ?? 15_000, maxBytes, signal: options.signal, secrets,
+        ttlMs: options.competitorTtlMs ?? 6 * 3600_000,
+        dart: dartKey ? { key: dartKey, corpCodeTtlMs: options.corpCodeTtlMs ?? 24 * 3600_000, zip: { maxEntries: 50, maxEntryBytes: options.maxDecompressedBytes ?? 64 * MiB, maxTotalBytes: options.maxDecompressedBytes ?? 64 * MiB } } : null,
+        secUserAgent: secUserAgent || null,
+        edinetKey: edinetKey || null,
+      })
+    : null;
+  const [naver, dart, cmp] = await Promise.all([naverP, dartP, competitorsP]);
 
   // Optional search runs after the ticker is known to be a verified KOSPI name.
   let searchNews: NewsItem[] = [];
@@ -96,20 +110,32 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
   const nv = naver.value;
   const dv = dart.value;
 
+  // Naver's per-ticker news list also carries market wraps and articles that only mention the company in passing
+  // (e.g. other companies, AI-chip CEO visits). Keep only items whose title or lead names the company.
+  const names = companyNames([nv?.name, dv?.name]);
+  const newsIssues: CollectionIssue[] = [];
+  if (nv && names.length) {
+    const before = nv.news.length;
+    nv.news = nv.news.filter((n) => names.some((k) => normalizeName(`${n.title} ${n.snippet}`).includes(k)));
+    if (nv.news.length < before)
+      newsIssues.push(issue("naver", "news_unrelated_excluded", `${before - nv.news.length} of ${before} ticker news items do not mention ${names.join("/")} in the title or lead; excluded`, "info"));
+  }
+
   // Article bodies for the most relevant items; failures keep the snippet and add warnings.
   const articleIssues = nv
     ? await enrichArticles([...nv.news, ...searchNews], {
         http, asOf, ttlMs,
-        max: Math.max(0, Math.min(5, Math.trunc(options.maxArticles ?? 3))),
-        keywords: [...productNames, ...(options.productQueries ?? [])],
+        max: Math.max(0, Math.min(5, Math.trunc(options.maxArticles ?? 5))),
+        keywords: ["전망", "성장률", "가이던스", ...productNames, ...(options.productQueries ?? [])],
       })
     : [];
 
   const providers = {
-    naver: report(naver, !!nv && (!!nv.quote || nv.news.length > 0 || nv.referenceMetrics.length > 0), [...(nv?.issues ?? []), ...articleIssues], secrets),
+    naver: report(naver, !!nv && (!!nv.quote || nv.news.length > 0 || nv.referenceMetrics.length > 0), [...(nv?.issues ?? []), ...newsIssues, ...articleIssues], secrets),
     // an answered search with zero matches is not a failure
     naverSearch: report(search, !!search.value && (searchNews.length > 0 || search.value.issues.length === 0), search.value?.issues, secrets),
     dart: report(dart, !!dv && (dv.statements.length > 0 || dv.excerpts.length > 0 || dv.filings.length > 0), dv?.issues, secrets),
+    ...(cmp && { competitors: Object.fromEntries(Object.entries(cmp.reports).map(([m, r]) => [m, { ...r, issues: r.issues.map((i) => ({ ...i, message: redact(i.message, secrets) })) }])) }),
   };
   const exchangeVerifiedBy: ("naver" | "dart")[] = [];
   if (nv?.exchangeVerified) exchangeVerifiedBy.push("naver");
@@ -125,14 +151,18 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
     modelReady: false,
     untrustedContentNotice: NOTICE,
     providers,
-    issues: [...providers.naver.issues, ...providers.dart.issues, ...providers.naverSearch.issues],
+    issues: [...providers.naver.issues, ...providers.dart.issues, ...providers.naverSearch.issues, ...Object.values(providers.competitors ?? {}).flatMap((r) => r.issues)],
     company: { name, corpCode: dv?.corpCode ?? null, exchange: exchangeVerifiedBy.length && !notKospi ? "KOSPI" : null, exchangeVerifiedBy },
-    market: { quote: nv?.quote ?? null, referenceMetrics: nv?.referenceMetrics ?? [], news: nv?.news ?? [], searchNews },
+    market: {
+      quote: nv?.quote ?? null, referenceMetrics: nv?.referenceMetrics ?? [], quarterlyConsensus: nv?.quarterlyConsensus ?? [],
+      quarterlyActuals: nv?.quarterlyActuals ?? [], dailyCloses: nv?.dailyCloses ?? [], news: nv?.news ?? [], searchNews,
+    },
     filings: {
       list: dv?.filings ?? [], statements: dv?.statements ?? [], derivedQuarters: dv?.derivedQuarters ?? [],
       excerpts: dv?.excerpts ?? [], tables: dv?.tables ?? [], metricCandidates: dv?.metricCandidates ?? [], productCandidates: dv?.productCandidates ?? [],
       disclosures: dv?.disclosures ?? [],
     },
+    ...(cmp && { competitors: cmp.competitors }),
     requiredInputs: [],
   };
   // A date-only asOf for today is normal (its cutoff is end-of-day); only later dates / later timestamps are future.
@@ -142,6 +172,13 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
   }
   evidence.requiredInputs = requiredInputs(evidence);
   return evidence;
+}
+
+const normalizeName = (s: string) => s.normalize("NFKC").replace(/\(주\)|㈜|주식회사|\s+/g, "").toLowerCase();
+
+/** Distinct normalized company names (Naver short name, DART legal name), at least two characters. */
+function companyNames(raw: (string | null | undefined)[]): string[] {
+  return [...new Set(raw.filter((x): x is string => !!x).map(normalizeName).filter((x) => x.length >= 2))];
 }
 
 const GENERIC_PRODUCT = /^(기타|상품|제품|서비스|용역|임대|합계|내수|수출)/;
@@ -157,9 +194,12 @@ function usefulProductNames(candidates: ProductCandidate[], max: number): string
   return out;
 }
 
-/** Company query plus product-market expansions; the Naver search collector caps the total at 5. */
+/**
+ * Company outlook/growth queries first (the model's growth assumptions are grounded on these, judged conservatively),
+ * then the share query and product-market expansions; the Naver search collector caps the total at 6.
+ */
 function expandQueries(name: string | null, products: string[]): string[] {
-  return [...(name ? [`${name} 시장 점유율`] : []), ...products.map((p) => `${p} 세계 시장 규모 점유율 성장률`)];
+  return [...(name ? [`${name} 전망`, `${name} 성장률`, `${name} 시장 점유율`] : []), ...products.map((p) => `${p} 세계 시장 규모 점유율 성장률`)];
 }
 
 interface Outcome<T> {
@@ -187,9 +227,9 @@ function report(o: Outcome<unknown>, hasData: boolean, issues: CollectionIssue[]
 
 function overall(p: PublicEvidence["providers"]): PublicEvidence["status"] {
   const core = [p.naver.status, p.dart.status];
-  const search = p.naverSearch.status;
+  const optional = [p.naverSearch.status, ...Object.values(p.competitors ?? {}).map((r) => r.status)];
   if (core.every((s) => s === "failed" || s === "not_configured")) return "failed";
-  return core.every((s) => s === "ok") && (search === "ok" || search === "not_configured") ? "ok" : "partial";
+  return core.every((s) => s === "ok") && optional.every((s) => s === "ok" || s === "not_configured") ? "ok" : "partial";
 }
 
 function requiredInputs(e: PublicEvidence): RequiredInput[] {
@@ -200,6 +240,12 @@ function requiredInputs(e: PublicEvidence): RequiredInput[] {
   return [
     need("quarterlyGlobalMarketRevenue", has((c) => c.kind === "market_size" && c.basis === "quarterly") ? "candidate_only" : "missing",
       "Quarterly global product-market revenue (explicit currency and definition). Filing text may give annual or company-defined market sizes; those are never converted to quarterly. Supply via a validated manual dataset."),
+    ...(e.competitors
+      ? [need("competitorRevenue", e.competitors.length ? "available_unverified" : "missing",
+          e.competitors.length
+            ? `Filed revenue for ${e.competitors.map((c) => `${c.market}:${c.code}`).join(", ")} (DART/SEC EDGAR/EDINET, as reported: whole-company, own currency, fiscal periods mapped to calendar periods; Japanese filers give half-years, not quarters). Scope, currency and period must be matched to the market before use.`
+            : "Competitors were requested but no filed revenue was collected (missing SEC_USER_AGENT/EDINET_API_KEY/DART_API_KEY, unknown code or nothing filed before asOf).")]
+      : []),
     need("comparableRevenueShare", has((c) => c.kind === "market_share" && c.measure === "revenue") ? "candidate_only" : "missing",
       "Company revenue share within the same product scope, quarter and currency as the market figure. Volume/shipment shares are not revenue shares."),
     need("growthAssumptions", has((c) => c.kind === "growth_rate") ? "candidate_only" : "missing",

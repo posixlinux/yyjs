@@ -11,7 +11,7 @@ import { evaluateAutoStrategy } from "../src/strategy/auto.js";
 const TICKER = "005930";
 const ASOF = "2026-06-30";
 const DECISION_AT = "2026-06-30T09:00:00+09:00"; // KST; asOf's end-of-day-equivalent decision instant
-const HORIZON = ["2026Q3", "2026Q4", "2027Q1", "2027Q2"];
+const HORIZON = ["2026Q2"]; // the quarter in progress at DECISION_AT
 
 const DOC: EvidenceDocument = {
   id: "d1",
@@ -19,8 +19,8 @@ const DOC: EvidenceDocument = {
   url: "https://dart.fss.or.kr/r/1",
   publishedAt: "2025-12-06",
   text:
-    "2026년 2분기 실제 판매량 10개, 평균단가 100원, 변동비 60원, 고정비 100원. " +
-    "2026Q3~2027Q2 연결 기준 보통주 희석 컨센서스 EPS 7원. " +
+    "2026년 1분기 실제 판매량 10개, 평균단가 100원, 변동비 60원, 고정비 100원. " +
+    "2026Q2 연결 기준 보통주 희석 컨센서스 EPS 7원. " +
     "실적발표 예정일 2026-08-10.",
 };
 const realSource = (knownAt = "2025-12-06T00:00:00+09:00") => ({ title: "doc", url: DOC.url, kind: "filing" as const, knownAt });
@@ -45,7 +45,7 @@ const forecastRaw = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 const cite = (fieldPath: string, quote: string, quotedNumber: string, doc = DOC): Citation => ({ fieldPath, documentId: doc.id, url: doc.url, publishedAt: doc.publishedAt, evidenceQuote: quote, quotedNumber });
-const HORIZON_QUOTE = "2026Q3~2027Q2 연결 기준 보통주 희석 컨센서스 EPS 7원";
+const HORIZON_QUOTE = "2026Q2 연결 기준 보통주 희석 컨센서스 EPS 7원";
 
 function runPipeline(rawStrategy: unknown, citations: Citation[], docs: EvidenceDocument[] = [DOC]) {
   const extraction = verifyStrategyDraft(ASOF, docs, citations, { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null, ...(rawStrategy as Record<string, unknown>) });
@@ -66,7 +66,7 @@ function runPipeline(rawStrategy: unknown, citations: Citation[], docs: Evidence
 
 describe("end-to-end: basic-EPS consensus must never be accepted as common_diluted", () => {
   it("rejects the reported fabrication -- '보통주 기본 EPS' quoted as the horizon basis -- all the way through to the auto-strategy result", () => {
-    const basicText = "2026Q3~2027Q2 연결 보통주 기본 EPS 컨센서스 7원.";
+    const basicText = "2026Q2 연결 보통주 기본 EPS 컨센서스 7원.";
     const basicDoc: EvidenceDocument = { ...DOC, id: "basic", text: basicText };
     const citations = [cite("currentConsensus.epsPerShare", basicText, "7", basicDoc), cite("currentConsensus.horizonQuarters", basicText, "7", basicDoc)];
     const src = { title: "d", url: basicDoc.url, kind: "filing" as const, knownAt: `${basicDoc.publishedAt}T00:00:00+09:00` };
@@ -111,10 +111,10 @@ describe("end-to-end: a malformed optional funding block never destroys a valid 
     expect(extraction.unavailable).toContainEqual(expect.objectContaining({ field: "forecast", code: "FUNDING_ASSUMPTION_SOURCE_INVALID" }));
 
     expect(result.bridge).not.toBeNull();
-    // OP = 10*(100-60)-100 = 300; pretax = 300 + (-10) = 290; tax = 290*0.2 = 58; net = 232; eps = 232/100 = 2.32/quarter x 4
-    expect(result.bridge!.ntmEpsKRW).toBeCloseTo(9.28, 5);
+    // OP = 10*(100-60)-100 = 300; pretax = 300 + (-10) = 290; tax = 290*0.2 = 58; net = 232; eps = 232/100 = 2.32 for the one quarter
+    expect(result.bridge!.ntmEpsKRW).toBeCloseTo(2.32, 5);
     expect(result.risk).toBeNull(); // funding stripped -> risk unavailable, never fabricated as zero
     expect(result.missing).toContainEqual(expect.objectContaining({ field: "funding" }));
-    expect(result.status).toBe("insufficient_data"); // no consensus/catalyst supplied in this scenario
+    expect(result.status).toBe("estimate_only"); // no consensus/catalyst supplied in this scenario
   });
 });

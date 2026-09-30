@@ -1,12 +1,14 @@
-import { parseQuarter, quarterEnd, quarterOfDate } from "../domain/time.js";
 import { classifySecurity } from "../domain/security.js";
 import { AppError } from "../errors.js";
 import { DEFAULT_HYPOTHESIS_PARAMS, DEFAULT_RISK_PARAMS, StrategyConfigSchema, type RiskPolicy, type StrategyConfig } from "./config.js";
 import { computeForecastBridge, type ForecastBridge } from "./earnings.js";
 import { computeCompanyRisk, type CompanyRisk } from "./risk.js";
 import { evaluateOne, type CandidateEvaluation } from "./screen.js";
-import { CandidateInputSchema, type Catalyst, type ConsensusSnapshot, type EarningsForecastSnapshot, type StrategySource } from "./schema.js";
-import { epoch, seoulDateOf } from "./time.js";
+import { SingleQuarterCandidateInputSchema, type Catalyst, type ConsensusSnapshot, type EarningsForecastSnapshot, type StrategySource } from "./schema.js";
+import { epoch, seoulDateOf, singleQuarterHorizon } from "./time.js";
+import type { DailyClose, QuarterlyActual, QuarterlyConsensus } from "../collection/types.js";
+import { compareQuarterlyConsensus, type QuarterlyConsensusComparison } from "./quarterly-consensus.js";
+import { computeNextQuarterPrice, type NextQuarterPrice } from "./price-target.js";
 
 // Automatic single-candidate strategy path (see docs/STRATEGY.md "Automatic connection"): turns whatever the
 // intelligence module could verify (src/intelligence/strategyVerify.ts) for ONE ticker into the same deterministic
@@ -16,11 +18,17 @@ import { epoch, seoulDateOf } from "./time.js";
 // note: "Supply feeBpsPerSide... explicitly"). This path only answers "is this one candidate eligible and what do its
 // own numbers look like", which does not depend on capital at all (see evaluateOne).
 //
+// Short-term horizon: this path estimates exactly ONE quarter on its own -- the quarter that just ended (results
+// still unpublished) or the one in progress -- because it serves trades held for three months at most. It does not
+// need four quarters of forecast or consensus; the four-quarter horizon stays exclusive to the manual
+// /v1/strategy/* API. The single-quarter estimate is a result in itself ("estimate_only") even when no consensus
+// or catalyst could be verified.
+//
 // Every forecast is validated for identity/scope/horizon/temporal provenance BEFORE any bridge or risk number is
 // computed or displayed: a forecast for the wrong ticker, a security that fails the KOSPI-common-stock filter, or a
-// horizon that is not exactly "the four calendar quarters starting right after the decision quarter" must never
-// produce a labelled "next four quarters" bridge. This check runs unconditionally, independent of whether consensus
-// or a catalyst were extracted at all (company membership must never be gated behind consensus availability).
+// horizon that is not exactly one of those two quarters must never produce a bridge. This check runs
+// unconditionally, independent of whether consensus or a catalyst were extracted at all (company membership must
+// never be gated behind consensus availability).
 
 export type AutoStrategyDropReason = { field: string; code: string; message: string };
 
@@ -49,6 +57,10 @@ export type AutoStrategyInput = {
   mode: "live" | "retrospective_research";
   forecast: EarningsForecastSnapshot | null;
   currentConsensus: ConsensusSnapshot | null;
+  quarterlyConsensus?: QuarterlyConsensus[];
+  /** Reported quarterly EPS and daily closes (Naver) for the PER-hold next-quarter price; optional. */
+  quarterlyActuals?: QuarterlyActual[];
+  dailyCloses?: DailyClose[];
   priorConsensus: ConsensusSnapshot | null;
   catalyst: Catalyst | null;
   unavailable: AutoStrategyDropReason[]; // why any of the above is null (from intelligence verification)
@@ -57,7 +69,8 @@ export type AutoStrategyInput = {
 };
 
 export type AutoStrategyResult = {
-  status: "eligible" | "ineligible" | "insufficient_data";
+  /** "estimate_only": a verified single-quarter estimate exists, but no cited consensus/catalyst to judge it against. */
+  status: "eligible" | "ineligible" | "estimate_only" | "insufficient_data";
   mode: "live" | "retrospective_research";
   decisionAt: string;
   /** When the underlying forecast/consensus/catalyst extraction actually ran (server clock, never model-supplied). */
@@ -68,6 +81,9 @@ export type AutoStrategyResult = {
   bridge: ForecastBridge | null;
   risk: CompanyRisk | null;
   evaluation: CandidateEvaluation | null; // full screen()-style eligibility, only when all four pieces are present and mutually consistent
+  quarterlyConsensus: QuarterlyConsensusComparison[];
+  /** Fair price for the estimated quarter at the base quarter's market P/E (reference only, never an eligibility input). */
+  nextQuarterPrice?: NextQuarterPrice;
   missing: AutoStrategyDropReason[];
   notes: string[];
   // The validated inputs themselves (null if never extracted or dropped by identity validation), so a consumer (the
@@ -103,6 +119,9 @@ function collectAssumptions(forecast: EarningsForecastSnapshot): AutoStrategyAss
   return refs;
 }
 
+/** The short-term path never looks further ahead than about three months. */
+const MAX_HOLDING_DAYS = 92;
+
 /** Portfolio-shaped fields (fees/slippage/tax/capital/maxHoldings/maxWeightPerHolding) are structurally required by
  * StrategyConfigSchema but never read by evaluateOne(); placeholders here are never surfaced (see module note above). */
 function placeholderConfig(risk: RiskPolicy): StrategyConfig {
@@ -114,6 +133,7 @@ function placeholderConfig(risk: RiskPolicy): StrategyConfig {
     slippageBpsPerSide: 0,
     sellTaxBps: 0,
     initialCapitalKRW: 1,
+    catalystMaxDaysAhead: MAX_HOLDING_DAYS,
     risk,
   });
 }
@@ -131,8 +151,9 @@ function validateForecastIdentity(ticker: string, forecast: EarningsForecastSnap
 
   const decisionDate = seoulDateOf(decisionAt);
   const forecastQuarters = forecast.quarters.map((q) => q.quarter);
-  if (parseQuarter(forecastQuarters[0]!) !== quarterOfDate(decisionDate) + 1) add("FORECAST_HORIZON_NOT_NEXT_FOUR", `forecast must start the calendar quarter immediately after the decision date ${decisionDate}, not ${forecastQuarters[0]}`);
-  for (const q of forecast.quarters) if (quarterEnd(parseQuarter(q.quarter)) <= decisionDate) add("FORECAST_QUARTER_NOT_FUTURE", `forecast quarter ${q.quarter} does not end after the decision date ${decisionDate}`);
+  const allowed = singleQuarterHorizon(decisionDate);
+  if (forecastQuarters.length !== 1 || (forecastQuarters[0] !== allowed.previous && forecastQuarters[0] !== allowed.current))
+    add("FORECAST_HORIZON_NOT_SINGLE_QUARTER", `forecast must cover exactly one quarter, ${allowed.previous} (just ended) or ${allowed.current} (in progress on ${decisionDate}), not [${forecastQuarters.join(", ")}]`);
   if (epoch(forecast.generatedAt) > epoch(decisionAt)) add("FORECAST_GENERATED_AFTER_DECISION", "forecast generatedAt is after decisionAt");
 
   // Core source provenance must be known BEFORE the forecast was generated -- same rule screen.ts applies once a
@@ -195,7 +216,7 @@ export function evaluateAutoStrategy(input: AutoStrategyInput): AutoStrategyResu
       forecast = null;
     }
   }
-  if (!input.forecast) missing.push({ field: "forecast", code: "FORECAST_UNAVAILABLE", message: "no verified next-four-quarter earnings forecast was extracted" });
+  if (!input.forecast) missing.push({ field: "forecast", code: "FORECAST_UNAVAILABLE", message: "no verified single-quarter earnings estimate was extracted" });
 
   // Optional liquidity/funding blocks are time-validated and, if ungrounded, dropped on their own -- BEFORE the
   // bridge/risk below are computed -- so a bad block can never mask an otherwise-valid core earnings forecast, and
@@ -207,6 +228,8 @@ export function evaluateAutoStrategy(input: AutoStrategyInput): AutoStrategyResu
   }
 
   const bridge = forecast ? computeForecastBridge(forecast) : null;
+  const quarterlyConsensus = compareQuarterlyConsensus(input.ticker, input.quarterlyConsensus ?? [], bridge, input.decisionAt);
+  const nextQuarterPrice = computeNextQuarterPrice({ bridge, quarterlyActuals: input.quarterlyActuals ?? [], dailyCloses: input.dailyCloses ?? [] });
   const riskPolicy: RiskPolicy = { ...DEFAULT_RISK_PARAMS, minimumCashBufferKRW: input.minimumCashBufferKRW };
   if (!input.cashBufferConfigured) notes.push("risk.minimumCashBufferKRW is not configured on this server (STRATEGY_MIN_CASH_BUFFER_KRW); funding-gap checks use 0, so only literally negative projected cash counts as a gap.");
 
@@ -223,24 +246,25 @@ export function evaluateAutoStrategy(input: AutoStrategyInput): AutoStrategyResu
     }
   } else if (forecast) missing.push({ field: "funding", code: "FUNDING_UNAVAILABLE", message: "no verified investment/working-capital/debt funding plan was extracted; funding risk is unavailable" });
 
-  if (!input.currentConsensus) missing.push({ field: "currentConsensus", code: "CONSENSUS_UNAVAILABLE", message: "no verified current consensus with a matching four-quarter horizon and real publication provenance was found" });
-  if (!input.priorConsensus) missing.push({ field: "priorConsensus", code: "CONSENSUS_UNAVAILABLE", message: "no verified prior consensus with a matching four-quarter horizon and real publication provenance was found" });
+  if (!input.currentConsensus) missing.push({ field: "currentConsensus", code: "CONSENSUS_UNAVAILABLE", message: "no verified current consensus for the estimated quarter with real publication provenance was found" });
+  if (!input.priorConsensus) missing.push({ field: "priorConsensus", code: "CONSENSUS_UNAVAILABLE", message: "no verified prior consensus for the estimated quarter with real publication provenance was found" });
   if (!input.catalyst) missing.push({ field: "catalyst", code: "CATALYST_UNAVAILABLE", message: "no verified, sourced upcoming catalyst (earnings release/guidance/disclosure) was found" });
 
   let evaluation: CandidateEvaluation | null = null;
   if (forecast && input.currentConsensus && input.priorConsensus && input.catalyst) {
-    const candidate = CandidateInputSchema.safeParse({ ticker: input.ticker, evidenceMode: "forward" as const, forecast, currentConsensus: input.currentConsensus, priorConsensus: input.priorConsensus, catalyst: input.catalyst });
-    if (candidate.success) evaluation = evaluateOne(candidate.data, placeholderConfig(riskPolicy), input.decisionAt);
+    const candidate = SingleQuarterCandidateInputSchema.safeParse({ ticker: input.ticker, evidenceMode: "forward" as const, forecast, currentConsensus: input.currentConsensus, priorConsensus: input.priorConsensus, catalyst: input.catalyst });
+    if (candidate.success) evaluation = evaluateOne(candidate.data, placeholderConfig(riskPolicy), input.decisionAt, "single_quarter");
     else {
       notes.push("Extracted forecast/consensus/catalyst did not form a consistent candidate bundle.");
       missing.push({ field: "candidate", code: "CANDIDATE_SCHEMA_INVALID", message: candidate.error.issues[0]?.message ?? "candidate bundle failed validation" });
     }
   }
 
-  const status: AutoStrategyResult["status"] = evaluation ? (evaluation.eligible ? "eligible" : "ineligible") : "insufficient_data";
+  if (bridge) notes.push(`Single-quarter estimate for ${bridge.quarters[0]!.quarter}, built for a holding period of at most about three months; it is not a four-quarter or annual forecast.`);
+  const status: AutoStrategyResult["status"] = evaluation ? (evaluation.eligible ? "eligible" : "ineligible") : bridge ? "estimate_only" : "insufficient_data";
   return {
     status, mode: input.mode, decisionAt: input.decisionAt, generatedAt: forecast?.generatedAt ?? null, independentlyAudited: false,
-    bridge, risk, evaluation, missing, notes,
+    bridge, risk, evaluation, quarterlyConsensus, nextQuarterPrice, missing, notes,
     forecast, currentConsensus: input.currentConsensus, priorConsensus: input.priorConsensus, catalyst: input.catalyst,
     assumptions: forecast ? collectAssumptions(forecast) : [],
   };

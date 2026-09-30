@@ -1,7 +1,7 @@
 import type { HttpClient } from "./http.js";
 import { classifySecurity, describeRejections } from "../domain/security.js";
 import { CollectionError, issue } from "./types.js";
-import type { CollectionIssue, NewsItem, QuoteEvidence, ReferenceMetric } from "./types.js";
+import type { CollectionIssue, DailyClose, NewsItem, QuoteEvidence, QuarterlyActual, ReferenceMetric, QuarterlyConsensus } from "./types.js";
 import { asRecord, clip, kstDate, naverDateTime, parseAmount, plainText, str } from "./text.js";
 import type { AsOf } from "./text.js";
 
@@ -14,6 +14,9 @@ export interface NaverResult {
   exchangeVerified: boolean;
   quote: QuoteEvidence | null;
   referenceMetrics: ReferenceMetric[];
+  quarterlyConsensus: QuarterlyConsensus[];
+  quarterlyActuals: QuarterlyActual[];
+  dailyCloses: DailyClose[];
   news: NewsItem[];
   issues: CollectionIssue[];
 }
@@ -30,7 +33,7 @@ interface NaverCtx {
 export const normalizeTitle = (t: string): string => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
 export async function collectNaver(c: NaverCtx): Promise<NaverResult> {
-  const out: NaverResult = { name: null, exchangeVerified: false, quote: null, referenceMetrics: [], news: [], issues: [] };
+  const out: NaverResult = { name: null, exchangeVerified: false, quote: null, referenceMetrics: [], quarterlyConsensus: [], quarterlyActuals: [], dailyCloses: [], news: [], issues: [] };
   const get = (path: string) => c.http.json(`${API}${path}`, { headers: HEADERS, ttlMs: c.ttlMs });
 
   // 1. basic: exact ticker + KOSPI verification gate everything else.
@@ -75,7 +78,7 @@ export async function collectNaver(c: NaverCtx): Promise<NaverResult> {
   }
 
   // 2. integration snapshot (current values only) and 3. news run independently.
-  const [ref, news] = await Promise.allSettled([collectReference(c, get), collectNews(c, get)]);
+  const [ref, news, consensus, prices] = await Promise.allSettled([collectReference(c, get), collectNews(c, get), collectQuarterlyConsensus(c, get), collectDailyCloses(c, get)]);
   if (ref.status === "fulfilled") {
     out.referenceMetrics = ref.value.metrics;
     out.issues.push(...ref.value.issues);
@@ -84,7 +87,105 @@ export async function collectNaver(c: NaverCtx): Promise<NaverResult> {
     out.news = news.value.items;
     out.issues.push(...news.value.issues);
   } else out.issues.push(toIssue("news_failed", news.reason));
+  if (consensus.status === "fulfilled") {
+    out.quarterlyConsensus = consensus.value.items;
+    out.quarterlyActuals = consensus.value.actuals;
+    out.issues.push(...consensus.value.issues);
+  } else out.issues.push({ ...toIssue("consensus_failed", consensus.reason), severity: "warning" });
+  if (prices.status === "fulfilled") {
+    out.dailyCloses = prices.value.items;
+    out.issues.push(...prices.value.issues);
+  } else out.issues.push({ ...toIssue("price_history_failed", prices.reason), severity: "warning" });
   return out;
+}
+
+/** Naver's finance table displays statement amounts in KRW 100 million and EPS in KRW per share.
+ * Select only columns explicitly marked Y; a future-looking date alone is not a consensus marker.
+ * The endpoint does not declare consolidated/basic/diluted scope, so preserve that uncertainty. */
+export function parseQuarterlyConsensus(raw: unknown, ticker: string, observedAt: string): QuarterlyConsensus[] {
+  const body = asRecord(raw);
+  const info = asRecord(body?.financeInfo);
+  if (body?.itemCode !== ticker || info?.itemCode !== ticker || body?.financePeriodType !== "quarter" || !Array.isArray(info.trTitleList) || !Array.isArray(info.rowList))
+    throw new CollectionError("invalid_response", "Naver quarterly finance response has invalid ticker, period or table");
+  const rows = info.rowList.map(asRecord);
+  const value = (title: string, key: string, multiplier: number) => {
+    const matches = rows.filter((r) => r?.title === title);
+    if (matches.length !== 1) return null;
+    const cell = asRecord(asRecord(matches[0]?.columns)?.[key]);
+    const n = parseAmount(cell?.value);
+    const result = n === null ? null : n * multiplier;
+    return result !== null && Number.isFinite(result) && Math.abs(result) <= 1e18 ? result : null;
+  };
+  const items: QuarterlyConsensus[] = [];
+  const keys = info.trTitleList.map(asRecord);
+  for (const col of keys.slice(0, 20)) {
+    const key = str(col?.key);
+    if (col?.isConsensus !== "Y" || !/^\d{4}(03|06|09|12)$/.test(key) || keys.filter((k) => k?.key === key).length !== 1) continue;
+    const item: QuarterlyConsensus = {
+      ticker, quarter: `${key.slice(0, 4)}Q${Number(key.slice(4)) / 3}`,
+      revenueKRW: value("매출액", key, 1e8), operatingProfitKRW: value("영업이익", key, 1e8),
+      netIncomeKRW: value("당기순이익", key, 1e8), epsKRW: value("EPS", key, 1),
+      scope: "provider_default", epsBasis: "unspecified", observedAt,
+      sourceUrl: `${API}/stock/${ticker}/finance/quarter`,
+    };
+    if ([item.revenueKRW, item.operatingProfitKRW, item.netIncomeKRW, item.epsKRW].some((n) => n !== null)) items.push(item);
+  }
+  return items.sort((a, b) => a.quarter.localeCompare(b.quarter));
+}
+
+/** Reported quarters (columns explicitly marked N) with a parseable EPS, from the same table as the consensus. */
+export function parseQuarterlyActuals(raw: unknown, ticker: string, observedAt: string): QuarterlyActual[] {
+  const body = asRecord(raw);
+  const info = asRecord(body?.financeInfo);
+  if (body?.itemCode !== ticker || info?.itemCode !== ticker || body?.financePeriodType !== "quarter" || !Array.isArray(info.trTitleList) || !Array.isArray(info.rowList))
+    throw new CollectionError("invalid_response", "Naver quarterly finance response has invalid ticker, period or table");
+  const eps = info.rowList.map(asRecord).filter((r) => r?.title === "EPS");
+  if (eps.length !== 1) return [];
+  const keys = info.trTitleList.map(asRecord);
+  const out: QuarterlyActual[] = [];
+  for (const col of keys.slice(0, 20)) {
+    const key = str(col?.key);
+    if (col?.isConsensus !== "N" || !/^\d{4}(03|06|09|12)$/.test(key) || keys.filter((k) => k?.key === key).length !== 1) continue;
+    const v = parseAmount(asRecord(asRecord(eps[0]?.columns)?.[key])?.value);
+    if (v === null || !Number.isFinite(v) || Math.abs(v) > 1e9) continue;
+    out.push({ ticker, quarter: `${key.slice(0, 4)}Q${Number(key.slice(4)) / 3}`, epsKRW: v, scope: "provider_default", epsBasis: "unspecified", observedAt, sourceUrl: `${API}/stock/${ticker}/finance/quarter` });
+  }
+  return out.sort((a, b) => a.quarter.localeCompare(b.quarter));
+}
+
+async function collectQuarterlyConsensus(c: NaverCtx, get: (p: string) => Promise<unknown>) {
+  if (Date.parse(c.nowIso) > c.asOf.cutoffMs)
+    return { items: [], actuals: [], issues: [issue("naver", "consensus_snapshot_after_asOf", "분기 컨센서스·실적 표는 현재 스냅샷이므로 과거 기준일에 소급 적용하지 않습니다.", "info")] };
+  const raw = await get(`/stock/${c.ticker}/finance/quarter`);
+  const items = parseQuarterlyConsensus(raw, c.ticker, c.nowIso);
+  const actuals = parseQuarterlyActuals(raw, c.ticker, c.nowIso);
+  return { items, actuals, issues: items.length ? [] : [issue("naver", "quarterly_consensus_unavailable", "공급자가 컨센서스로 표시한 분기 추정치가 없습니다.", "info")] };
+}
+
+const PRICE_PAGE_SIZE = 60; // Naver's largest accepted page size
+const PRICE_MAX_PAGES = 3; // ~180 sessions: enough for the quarter before a forecast quarter up to two quarters back
+const PRICE_LOOKBACK_DAYS = 200;
+
+/** Daily closes on or before asOf, newest first. Live runs only (a historical asOf would need pages back from today). */
+async function collectDailyCloses(c: NaverCtx, get: (p: string) => Promise<unknown>): Promise<{ items: DailyClose[]; issues: CollectionIssue[] }> {
+  if (Date.parse(c.nowIso) > c.asOf.cutoffMs) return { items: [], issues: [] };
+  const oldest = kstDate(c.asOf.cutoffMs - PRICE_LOOKBACK_DAYS * 86_400_000);
+  const byDate = new Map<string, number>();
+  for (let page = 1; page <= PRICE_MAX_PAGES; page++) {
+    const rows = await get(`/stock/${c.ticker}/price?pageSize=${PRICE_PAGE_SIZE}&page=${page}`);
+    if (!Array.isArray(rows)) throw new CollectionError("invalid_response", "Naver daily price response is not a list");
+    let earliest = "9999-12-31";
+    for (const r of rows.map(asRecord)) {
+      const date = str(r?.localTradedAt);
+      const close = parseAmount(str(r?.closePrice));
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || close === null || close <= 0) continue;
+      if (date < earliest) earliest = date;
+      if (date <= c.asOf.dateKst) byDate.set(date, close);
+    }
+    if (rows.length < PRICE_PAGE_SIZE || earliest < oldest) break;
+  }
+  const items = [...byDate.entries()].sort((a, b) => b[0].localeCompare(a[0])).map(([date, closeKRW]) => ({ date, closeKRW }));
+  return { items, issues: items.length ? [] : [issue("naver", "price_history_unavailable", "일별 시세를 가져오지 못했습니다.", "warning")] };
 }
 
 const toIssue = (code: string, e: unknown): CollectionIssue =>
@@ -206,7 +307,7 @@ export async function collectNaverSearch(
   const seen = new Set<string>();
   const seenTitles = new Set<string>();
   const headers = { accept: "application/json", "X-Naver-Client-Id": creds.id, "X-Naver-Client-Secret": creds.secret };
-  for (const q of queries.slice(0, 5)) {
+  for (const q of queries.slice(0, 6)) {
     const query = q.replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 100);
     if (!query) continue;
     try {

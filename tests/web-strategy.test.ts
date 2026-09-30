@@ -171,6 +171,58 @@ async function load() {
 }
 
 describe("public/app.js strategyAuto rendering", () => {
+  it("shows one quarter of public consensus without EPS strategy inputs or a forecast", async () => {
+    const { context } = await load();
+    const render = context.renderStrategyAuto as (sa: unknown) => StubNode;
+    const node = render({ status: "insufficient_data", mode: "live", quarterlyConsensus: [{
+      consensus: { quarter: "2026Q4", revenueKRW: 1e12, operatingProfitKRW: -1e8, netIncomeKRW: null, epsKRW: 123,
+        observedAt: "2026-10-01T01:00:00Z", sourceUrl: "https://m.stock.naver.com/api/stock/005930/finance/quarter" },
+      status: "consensus_only", revenue: null, operatingProfit: null, note: "같은 분기 전망 없음" }], notes: [], missing: [] });
+    const text = allText(node);
+    expect(text).toContain("분기 컨센서스");
+    expect(text).toContain("2026Q4");
+    expect(text).toContain("123원");
+    expect(text).toContain("1조원");
+    expect(text).toContain("EPS(참고)");
+    expect(text).not.toContain("조회 가능한 분기 컨센서스가 없습니다");
+    expect(findByHref(node, "/finance/quarter")).not.toBeNull();
+  });
+
+  it("presents a single-quarter estimate as a finished result, labelled with its quarter, when no consensus exists", async () => {
+    const { context } = await load();
+    const render = context.renderStrategyAuto as (sa: unknown) => StubNode;
+    const text = allText(render({ status: "estimate_only", mode: "live", notes: [], missing: [], quarterlyConsensus: [], risk: null,
+      bridge: { ntmEpsKRW: 1234, quarters: [{ quarter: "2026Q4", revenueKRW: 1e12, operatingProfitKRW: 1e11, epsKRW: 1234 }] } }));
+    expect(text).toContain("한 분기 실적 추정(단기, 최장 3개월)");
+    expect(text).toContain("추정 완료");
+    expect(text).toContain("2026Q4 추정 EPS");
+    expect(text).not.toContain("4개 분기");
+  });
+
+  it("shows the quarterly funding table and both scenarios when risk is available", async () => {
+    const { context } = await load();
+    const render = context.renderStrategyAuto as (sa: unknown) => StubNode;
+    const text = allText(render({ status: "insufficient_data", mode: "live", notes: [], missing: [],
+      risk: { base: { minimumQuarterBoundaryCashKRW: 100, peakAdditionalFundingRequiredKRW: 0,
+        quarters: [{ quarter: "2026Q4", openingCashKRW: 100, capexKRW: 80, deltaWorkingCapitalKRW: 5, debtPrincipalDueKRW: 25, endingCashKRW: 232, additionalFundingRequiredKRW: 0 }] },
+        stress: { minimumQuarterBoundaryCashKRW: -30, peakAdditionalFundingRequiredKRW: 30 } } }));
+    expect(text).toContain("자금 상태(기본 시나리오)");
+    expect(text).toContain("하방 시나리오");
+    expect(text).toContain("설비·무형자산 투자");
+    expect(text).toContain("운전자본 증가");
+    expect(text).toContain("2026Q4");
+    expect(text).not.toContain("자금 계획을 확보하지 못했습니다");
+  });
+
+  it("shows the concrete missing funding input beside the unavailable message", async () => {
+    const { context } = await load();
+    const render = context.renderStrategyAuto as (sa: unknown) => StubNode;
+    const node = render({ status: "insufficient_data", mode: "live", risk: null,
+      missing: [{ field: "funding", code: "FUNDING_INPUT_MISSING", message: "차입 만기 자료가 없습니다." }] });
+    const textOutsideDetails = (n: StubNode): string => n.tagName === "details" ? "" : [n.textContent, ...n.children.map(textOutsideDetails)].join(" ");
+    expect(textOutsideDetails(node)).toContain("차입 만기 자료가 없습니다.");
+  });
+
   it("shows a plain Korean analysis-only title, generatedAt, mode, and a plain-Korean 'no independent audit' notice (no raw dev fields)", async () => {
     const { context } = await load();
     const renderStrategyAuto = context.renderStrategyAuto as (sa: unknown) => StubNode;
@@ -272,6 +324,55 @@ describe("public/app.js strategyAuto rendering", () => {
 });
 
 describe("public/app.js job polling", () => {
+  it.each(["completed", "partial", "failed"])("patches only progress nodes and fills the result container at %s", async (terminal) => {
+    const { context, elements, fetchImpl } = await load();
+    elements.ticker.value = "005930";
+    const delays: number[] = [];
+    context.setTimeout = (fn: () => void, delay: number) => { delays.push(delay); fn(); return 0; };
+    const replace = elements.out.replaceChildren;
+    let renders = 0;
+    elements.out.replaceChildren = (...nodes) => { renders++; replace(...nodes); };
+    let polls = 0;
+    let waitingNode: StubNode | undefined;
+    let contentNode: StubNode | undefined;
+    let hintNode: StubNode | undefined;
+    let resultRenders = 0;
+    let clock = 1_000_000;
+    context.Date = { now: () => clock };
+    fetchImpl.current = async (url: string) => {
+      if (url === "/v1/analyses") return new Response(JSON.stringify({ statusUrl: "/v1/analyses/job1", status: "queued" }));
+      expect(renders).toBe(1);
+      waitingNode ??= elements.out.children[0];
+      expect(elements.out.children[0]).toBe(waitingNode);
+      if (!contentNode) {
+        contentNode = elements.out.children[1];
+        hintNode = contentNode.children[0];
+        const replaceResult = contentNode.replaceChildren;
+        contentNode.replaceChildren = (...nodes) => { resultRenders++; replaceResult(...nodes); };
+      }
+      expect(elements.out.children[1]).toBe(contentNode);
+      expect(contentNode.children[0]).toBe(hintNode);
+      expect(resultRenders).toBe(0);
+      expect(allText(waitingNode!)).toContain(polls === 0 ? "대기 중" : "진행 중");
+      expect(allText(waitingNode!)).toContain(`${polls * 15}초`);
+      expect(elements.go.disabled).toBe(true);
+      polls++;
+      clock += 15_000;
+      return new Response(JSON.stringify({ status: polls < 4 ? "running" : terminal, request: { ticker: "005930" },
+        ...(terminal === "failed" && polls === 4 ? { error: { code: "JOB_TIMEOUT", message: "Timed out" } } : {}) }));
+    };
+    await elements.form._listeners.submit[0]({ preventDefault() {} });
+    expect(polls).toBe(4);
+    expect(delays).toEqual([15000, 15000, 15000, 15000]);
+    expect(renders).toBe(1);
+    expect(resultRenders).toBe(1);
+    expect(elements.out.children[0]).toBe(waitingNode);
+    expect(elements.out.children[1]).toBe(contentNode);
+    expect(allText(waitingNode!)).toContain("60초");
+    expect(elements.go.disabled).toBe(false);
+    if (terminal === "failed") expect(allText(elements.out)).toContain("JOB_TIMEOUT");
+  });
+
   it("keeps polling through queued/running past the old 900-iteration (~30 min) cap until a terminal status arrives", async () => {
     const { elements, fetchCalls, fetchImpl } = await load();
     elements.ticker.value = "005930";

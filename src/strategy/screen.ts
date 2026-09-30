@@ -9,7 +9,7 @@ import { configDigest, StrategyConfigSchema } from "./config.js";
 import { computeForecastBridge, type ForecastBridge } from "./earnings.js";
 import { computeDiagnostic, gapPct, revisionPct, type DiagnosticResult } from "./expectations.js";
 import { CandidateInputSchema, isoDateTime, type CandidateInput } from "./schema.js";
-import { seoulDateOf, daysBetweenInstants, epoch } from "./time.js";
+import { seoulDateOf, daysBetweenInstants, epoch, singleQuarterHorizon } from "./time.js";
 
 // Screening/ranking (STRATEGY_SPEC.md "Expectations and catalyst" + "Fixed experiment configuration"). Pure and
 // deterministic: given already-resolved candidate bundles (the caller/service layer resolves journal IDs first) and
@@ -65,8 +65,10 @@ export type ScreenResult = {
 const reason = (code: string, message: string): EligibilityReason => ({ code, message });
 
 /** Exported for the automatic single-candidate path (strategy/auto.ts): eligibility/gap/revision/risk only, never
- * portfolio weight (that is computed later in screen() below, which needs real, explicitly configured capital). */
-export function evaluateOne(c: CandidateInput, config: StrategyConfig, decisionAt: string): CandidateEvaluation {
+ * portfolio weight (that is computed later in screen() below, which needs real, explicitly configured capital).
+ * `horizon` is "next_four" for the manual API; the automatic short-term path passes "single_quarter" (one quarter,
+ * either the one just ended or the one in progress -- see singleQuarterHorizon). */
+export function evaluateOne(c: CandidateInput, config: StrategyConfig, decisionAt: string, horizon: "next_four" | "single_quarter" = "next_four"): CandidateEvaluation {
   const reasons: EligibilityReason[] = [];
   const add = (code: string, message: string) => reasons.push(reason(code, message));
 
@@ -79,13 +81,19 @@ export function evaluateOne(c: CandidateInput, config: StrategyConfig, decisionA
   const forecastQuarters = c.forecast.quarters.map((q) => q.quarter);
   const currentHorizon = c.currentConsensus.horizonQuarters;
   const priorHorizon = c.priorConsensus.horizonQuarters;
-  if (JSON.stringify(currentHorizon) !== JSON.stringify(forecastQuarters)) add("HORIZON_MISMATCH", "current consensus horizon does not exactly match the forecast's four quarters");
-  if (JSON.stringify(priorHorizon) !== JSON.stringify(forecastQuarters)) add("ROLLING_HORIZON_CHANGED", "prior consensus horizon does not exactly match the forecast's four quarters (rolling horizon change)");
+  if (JSON.stringify(currentHorizon) !== JSON.stringify(forecastQuarters)) add("HORIZON_MISMATCH", "current consensus horizon does not exactly match the forecast's quarters");
+  if (JSON.stringify(priorHorizon) !== JSON.stringify(forecastQuarters)) add("ROLLING_HORIZON_CHANGED", "prior consensus horizon does not exactly match the forecast's quarters (rolling horizon change)");
 
   const decisionDate = seoulDateOf(decisionAt);
-  if (parseQuarter(forecastQuarters[0]!) !== quarterOfDate(decisionDate) + 1)
-    add("FORECAST_HORIZON_NOT_NEXT_FOUR", "Forecast must start in the calendar quarter immediately after the KST decision quarter");
-  for (const q of c.forecast.quarters) if (quarterEnd(parseQuarter(q.quarter)) <= decisionDate) add("FORECAST_QUARTER_NOT_FUTURE", `forecast quarter ${q.quarter} does not end strictly after the decision date ${decisionDate}`);
+  if (horizon === "single_quarter") {
+    const allowed = singleQuarterHorizon(decisionDate);
+    if (forecastQuarters.length !== 1 || (forecastQuarters[0] !== allowed.previous && forecastQuarters[0] !== allowed.current))
+      add("FORECAST_HORIZON_NOT_SINGLE_QUARTER", `Forecast must be exactly one quarter: ${allowed.previous} (just ended) or ${allowed.current} (in progress at the KST decision date)`);
+  } else {
+    if (parseQuarter(forecastQuarters[0]!) !== quarterOfDate(decisionDate) + 1)
+      add("FORECAST_HORIZON_NOT_NEXT_FOUR", "Forecast must start in the calendar quarter immediately after the KST decision quarter");
+    for (const q of c.forecast.quarters) if (quarterEnd(parseQuarter(q.quarter)) <= decisionDate) add("FORECAST_QUARTER_NOT_FUTURE", `forecast quarter ${q.quarter} does not end strictly after the decision date ${decisionDate}`);
+  }
 
   if (epoch(c.forecast.generatedAt) > epoch(decisionAt)) add("FORECAST_GENERATED_AFTER_DECISION", "forecast generatedAt is after decisionAt");
   for (const q of c.forecast.quarters)

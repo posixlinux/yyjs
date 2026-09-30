@@ -1,6 +1,6 @@
 // Public evidence collection types. Everything here is *untrusted evidence*, never instructions.
 
-export type ProviderName = "naver" | "naver-search" | "dart";
+export type ProviderName = "naver" | "naver-search" | "dart" | "sec" | "edinet";
 export type ProviderStatus = "ok" | "partial" | "failed" | "not_configured";
 
 export interface CollectionIssue {
@@ -19,26 +19,29 @@ export interface CollectPublicEvidenceInput {
   ticker: string;
   /** YYYY-MM-DD (inclusive through end of that day, KST) or an ISO timestamp with timezone. */
   asOf: string;
+  /** Optional competitors to compare, KR/US/JP only: "KR:000660" (DART), "US:MU" (SEC EDGAR), "JP:8035" (EDINET). Max 6. */
+  competitors?: string[];
 }
 
 export interface CollectionOptions {
   fetch?: typeof fetch;
-  /** Defaults to process.env. Read: DART_API_KEY, NAVER_CLIENT_ID, NAVER_CLIENT_SECRET. */
+  /** Defaults to process.env. Read: DART_API_KEY, NAVER_CLIENT_ID, NAVER_CLIENT_SECRET, SEC_USER_AGENT, EDINET_API_KEY. */
   env?: Record<string, string | undefined>;
   now?: () => Date;
   signal?: AbortSignal;
   timeoutMs?: number; // per request, default 15000
   maxResponseBytes?: number; // per response, default 20 MiB
   maxDecompressedBytes?: number; // per ZIP total, default 64 MiB
-  maxRequests?: number; // per collection call, default 40
+  maxRequests?: number; // per collection call, default 48
   maxNewsPages?: number; // default 3, hard cap 3
-  maxArticles?: number; // Naver article bodies fetched (n.news.naver.com only), default 3, clamped 0..5
+  maxArticles?: number; // Naver article bodies fetched (n.news.naver.com only), default 5, clamped 0..5
   maxFilings?: number; // default 8, clamped 1..8
   maxDocuments?: number; // filing documents downloaded, default 4, clamped 0..8
   cacheTtlMs?: number; // naver / DART JSON, default 60s
   corpCodeTtlMs?: number; // default 24h
   documentTtlMs?: number; // default 1h
-  /** Product-market queries for the optional Naver Open API news search (max 5). */
+  competitorTtlMs?: number; // competitor filings/facts, default 6h
+  /** Replaces the default Naver Open API search queries (outlook/growth/share + product markets; max 6). */
   productQueries?: string[];
 }
 
@@ -69,6 +72,38 @@ export interface ReferenceMetric {
   usableAsModelInput: false;
   retrievedAt: string;
   sourceUrl: string;
+}
+
+/** One provider-marked quarterly estimate, independent of the stricter four-quarter diluted-EPS strategy. */
+export interface QuarterlyConsensus {
+  ticker: string;
+  quarter: string;
+  revenueKRW: number | null;
+  operatingProfitKRW: number | null;
+  netIncomeKRW: number | null;
+  epsKRW: number | null;
+  scope: "provider_default";
+  epsBasis: "unspecified";
+  /** Observation time, NOT the publication/update time of the underlying analyst reports. */
+  observedAt: string;
+  sourceUrl: string;
+}
+
+/** One reported (non-consensus) quarter from the same Naver quarterly finance table. EPS in KRW per share. */
+export interface QuarterlyActual {
+  ticker: string;
+  quarter: string;
+  epsKRW: number;
+  scope: "provider_default";
+  epsBasis: "unspecified";
+  observedAt: string;
+  sourceUrl: string;
+}
+
+/** One daily close (KRX session date, KST) from Naver's daily price list. */
+export interface DailyClose {
+  date: string;
+  closeKRW: number;
 }
 
 export interface NewsItem {
@@ -236,6 +271,43 @@ export interface DerivedQuarter {
   }[];
 }
 
+export type CompetitorMarket = "KR" | "US" | "JP";
+
+/** One reported (or derived) revenue period of a competitor, exactly as filed: no FX, no scaling, no calendarisation. */
+export interface CompetitorPeriod {
+  /** 3 = quarter, 6 = half-year, 12 = fiscal year. */
+  months: 3 | 6 | 12;
+  periodStart: string | null;
+  periodEnd: string;
+  /** Filer's own label, e.g. "FY2026 Q3", "2026 반기", "2025年度 中間". */
+  fiscalLabel: string;
+  /** Calendar period holding most of it: "2026Q2", "2026H1" or "2026". */
+  calendarPeriod: string;
+  /** "exact" when periodEnd is within 7 days of that calendar period's end. */
+  calendarAlignment: "exact" | "approximate";
+  currency: string;
+  revenue: number;
+  /** "derived": FY minus the other periods of the same fiscal year (Q4 or H2); never a direct filing value. */
+  basis: "reported" | "derived";
+  consolidated: boolean | null;
+  /** Filing (receipt/submission) date, KST calendar date on or before asOf. */
+  filedDate: string;
+  form: string;
+  sourceUrl: string;
+  /** The revenue element/account used (e.g. us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax, 매출액). */
+  concept: string;
+}
+
+export interface CompetitorEvidence {
+  market: CompetitorMarket;
+  /** Local code: KRX ticker, US ticker or TSE securities code. */
+  code: string;
+  name: string | null;
+  system: "DART" | "SEC EDGAR" | "EDINET";
+  /** Newest first. */
+  periods: CompetitorPeriod[];
+}
+
 export type RequiredInputStatus =
   | "missing"
   | "candidate_only"
@@ -259,7 +331,8 @@ export interface PublicEvidence {
   /** The collector never asserts that a valuation model can run from this evidence alone. */
   modelReady: false;
   untrustedContentNotice: string;
-  providers: { naver: ProviderReport; naverSearch: ProviderReport; dart: ProviderReport };
+  /** `competitors` is present only when competitors were requested (one report per requested market). */
+  providers: { naver: ProviderReport; naverSearch: ProviderReport; dart: ProviderReport; competitors?: Partial<Record<CompetitorMarket, ProviderReport>> };
   issues: CollectionIssue[];
   company: {
     name: string | null;
@@ -270,6 +343,11 @@ export interface PublicEvidence {
   market: {
     quote: QuoteEvidence | null;
     referenceMetrics: ReferenceMetric[];
+    quarterlyConsensus?: QuarterlyConsensus[];
+    /** Reported quarterly EPS (live snapshot only; absent for a historical asOf). */
+    quarterlyActuals?: QuarterlyActual[];
+    /** Daily closes on or before asOf, newest first (live runs only; about 8 months). */
+    dailyCloses?: DailyClose[];
     news: NewsItem[];
     searchNews: NewsItem[];
   };
@@ -284,6 +362,8 @@ export interface PublicEvidence {
     /** Exchange disclosures (IR/earnings schedule, guidance, preliminary results). Absent in older snapshots. */
     disclosures?: ExchangeDisclosure[];
   };
+  /** Competitors' filed revenue (KR/US/JP disclosure systems). Absent when none were requested. */
+  competitors?: CompetitorEvidence[];
   requiredInputs: RequiredInput[];
 }
 

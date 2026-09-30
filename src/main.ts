@@ -9,6 +9,8 @@ import { Service } from "./service.js";
 import { StrategyService } from "./strategy/service.js";
 
 const config = loadConfig();
+if (!config.capabilities.dartConfigured)
+  console.warn("[config] DART_API_KEY is not set: DART filings/statements will not be collected (0 filings) and no valuation can be produced. Put it in .env and restart.");
 const service = new Service(
   { manual: new LocalStore(config.dataDir, false), demo: new LocalStore(config.demoDir, true) },
   config,
