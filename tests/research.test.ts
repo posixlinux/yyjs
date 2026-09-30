@@ -163,7 +163,7 @@ describe("POST /v1/analyses (public default)", () => {
     expect(r.missingInputs).toEqual([]); // resolved: collector gaps stay visible under evidence.requiredInputs
     expect(r.evidence.requiredInputs).toHaveLength(1);
     expect(r.valuation.status).toBe("available");
-    expect(r.analysis.targetQuarter).toBe("2026Q2");
+    expect(r.analysis.targetQuarter).toBe("2026Q1");
     expect(r.analysis.scenarios.map((s: any) => s.scenario)).toEqual(["bear", "base", "bull"]);
     expect(r.analysis.scenarios[1].valuation.targetPriceKRW).toBeGreaterThan(0);
     expect(r.research).toMatchObject({ status: "accepted", providers: { claude: { status: "ok" }, agy: { status: "ok" } }, narrativeReviewed: true, crossChecked: true });

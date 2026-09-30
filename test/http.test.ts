@@ -26,7 +26,7 @@ describe("HTTP happy path", () => {
     const res = await analyse(app, { ticker: "111110", asOf: AS_OF });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body).toMatchObject({ mode: "manual", targetQuarter: "2026Q2", modelVersion: expect.any(String) });
+    expect(body).toMatchObject({ mode: "manual", targetQuarter: "2026Q1", modelVersion: expect.any(String) });
     expect(body.scenarios.map((s: any) => s.scenario)).toEqual(["bear", "base", "bull"]);
     expect(body.scenarios[1].valuation.status).toBe("available");
     expect(body.limitations.length).toBeGreaterThan(3);
@@ -60,7 +60,7 @@ describe("demo vs manual", () => {
       expect(b.dataQuality.synthetic).toBe(true);
       expect(b.dataQuality.warnings.join(" ")).toContain("SYNTHETIC");
       expect(b.companyName).toContain("가상");
-      expect(b.targetQuarter).toBe("2026Q4");
+      expect(b.targetQuarter).toBe("2026Q3"); // results reported through 2026Q2
     }
   });
 

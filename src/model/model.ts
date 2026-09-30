@@ -1,6 +1,6 @@
 import { SCENARIOS, type Dataset, type Scenario } from "../domain/schema.js";
 import { formatQuarter, parseQuarter, quarterEnd, quarterOfDate } from "../domain/time.js";
-import { coverage, fxRate, marketOf, MAX_QUARTERS_TO_TARGET, ROUNDING_TOLERANCE, shareAnchor, walkSources } from "../domain/validate.js";
+import { coverage, fxRate, marketOf, MAX_QUARTERS_BEFORE_ASOF, ROUNDING_TOLERANCE, shareAnchor, targetQuarterIndex, walkSources } from "../domain/validate.js";
 import { AppError } from "../errors.js";
 import { adjustEstimatedMarkets, groundedness, listEstimates, observedStructures } from "../domain/market-structure.js";
 
@@ -64,14 +64,14 @@ export function projectMarket(p: {
 export function analyze(input: Dataset, asOf: string) {
   // Estimated market totals below the identified players are lifted first; the lift is reported in dataQuality.
   const { dataset: ds, adjustments } = adjustEstimatedMarkets(input);
-  const target = quarterOfDate(asOf) + 1;
+  const target = targetQuarterIndex(ds, asOf);
   const cov = coverage(ds);
   const bridge = ds.earningsBridge.value;
   const residualQuarters = target - parseQuarter(ds.financials.quarter);
   const anchors = ds.products.map((p) => ({ p, a: shareAnchor(ds, p)! }));
 
   // A competitor's share is anchored at its latest quarter shared with the market series, and only if that quarter is
-  // as recent as any other input may be (MAX_QUARTERS_TO_TARGET); an older or non-overlapping series is left out of
+  // as recent as any other input may be (MAX_QUARTERS_BEFORE_ASOF); an older or non-overlapping series is left out of
   // the market structure (its revenue falls into "others") and reported, instead of projecting a years-old share.
   const competitorAnchors = new Map<string, { quarter: string; revenue: number; estimate?: unknown }>();
   const competitorWarnings: string[] = [];
@@ -81,8 +81,8 @@ export function analyze(input: Dataset, asOf: string) {
     const quarters = new Set(m.observations.map((o) => o.quarter));
     const anchor = c.revenue.filter((r) => quarters.has(r.quarter) && r.currency === m.currency).sort((x, y) => parseQuarter(y.quarter) - parseQuarter(x.quarter))[0];
     if (!anchor) competitorWarnings.push(`Competitor ${c.id} has no revenue in ${m.id}'s quarters and currency; it is left out of the market structure.`);
-    else if (target - parseQuarter(anchor.quarter) > MAX_QUARTERS_TO_TARGET)
-      competitorWarnings.push(`Competitor ${c.id}'s latest share (${anchor.quarter}) is more than ${MAX_QUARTERS_TO_TARGET} quarters before ${formatQuarter(target)}; it is left out of the market structure.`);
+    else if (quarterOfDate(asOf) - parseQuarter(anchor.quarter) > MAX_QUARTERS_BEFORE_ASOF)
+      competitorWarnings.push(`Competitor ${c.id}'s latest share (${anchor.quarter}) is more than ${MAX_QUARTERS_BEFORE_ASOF} quarters before asOf's quarter (${formatQuarter(quarterOfDate(asOf))}); it is left out of the market structure.`);
     else competitorAnchors.set(c.id, anchor);
   }
 

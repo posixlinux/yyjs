@@ -4,7 +4,7 @@ import type { Issue } from "../errors.js";
 import { adjustEstimatedMarkets, playerSum } from "./market-structure.js";
 
 // Evidence-quality limits (documented in README).
-export const MAX_QUARTERS_TO_TARGET = 4; // latest market/financial/share observation may be at most 4 quarters before target
+export const MAX_QUARTERS_BEFORE_ASOF = 3; // latest market/financial/share observation may be at most 3 quarters before asOf's quarter
 export const MAX_QUOTE_AGE_DAYS = 14;
 export const MAX_FX_AGE_DAYS = 30;
 export const MAX_SHARES_AGE_DAYS = 200;
@@ -30,6 +30,19 @@ export function shareAnchor(ds: Dataset, p: Product) {
   if (!common) return undefined;
   const marketRevenue = byQ.get(common.quarter)!;
   return { quarter: common.quarter, productRevenue: common.revenue, marketRevenue, share: common.revenue / marketRevenue };
+}
+
+/**
+ * The quarter the model projects: the first quarter whose company results are not yet reported (the one after
+ * financials.quarter), kept within the quarter that just ended and the quarter in progress at asOf. A quarter that
+ * just ended is usually still unreported for several weeks, so it is the target rather than being skipped. The target
+ * is also always after every market's latest observation, so it is a projection, never an observed quarter.
+ */
+export function targetQuarterIndex(ds: Dataset, asOf: string): number {
+  const current = quarterOfDate(asOf);
+  const afterReported = parseQuarter(ds.financials.quarter) + 1;
+  const afterObserved = Math.max(...ds.markets.map((m) => parseQuarter(m.observations.at(-1)!.quarter) + 1));
+  return Math.min(current, Math.max(current - 1, afterReported, afterObserved));
 }
 
 /** Share of company revenue (financials quarter) explained by the registered products, in KRW. */
@@ -198,7 +211,7 @@ export function validateAsOf(input: Dataset, asOf: string): Issue[] {
   const ds = adjustEstimatedMarkets(input).dataset;
   const issues: Issue[] = [];
   const add = (code: string, path: string, message: string) => issues.push({ code, path, message });
-  const target = quarterOfDate(asOf) + 1;
+  const current = quarterOfDate(asOf);
 
   for (const { path, source } of walkSources(ds)) {
     if (source.publishedAt > asOf) add("FUTURE_EVIDENCE", `${path}.publishedAt`, `source "${source.title}" published ${source.publishedAt} is after asOf ${asOf}`);
@@ -216,7 +229,7 @@ export function validateAsOf(input: Dataset, asOf: string): Issue[] {
   const period = (path: string, q: string, what: string) => {
     const idx = parseQuarter(q);
     if (quarterEnd(idx) > asOf) add("FUTURE_EVIDENCE", path, `${what} ${q} has not ended by asOf ${asOf}`);
-    else if (target - idx > MAX_QUARTERS_TO_TARGET) add("STALE_EVIDENCE", path, `${what} ${q} is more than ${MAX_QUARTERS_TO_TARGET} quarters before target`);
+    else if (current - idx > MAX_QUARTERS_BEFORE_ASOF) add("STALE_EVIDENCE", path, `${what} ${q} is more than ${MAX_QUARTERS_BEFORE_ASOF} quarters before asOf's quarter`);
   };
   period("financials.quarter", ds.financials.quarter, "financials");
   ds.markets.forEach((m, i) => {

@@ -73,8 +73,8 @@ describe("financial review fixes: model output", () => {
     expect(m.qoqPct).toBeCloseTo(20, 9);
     expect(m.yoyPct).toBeCloseTo(50, 9);
     const p = a.scenarios[1].products[0];
-    expect(p.marketVsLatestObservedPct).toBeCloseTo((1.1 ** 0.5 - 1) * 100, 9); // projection vs observed, labelled separately
-    expect(p.marketYoYPct).toBeCloseTo(((1.2 * 1.1 ** 0.5) / 1 - 1) * 100, 9); // target 2026Q2 vs observed 2025Q2 (1e9)
+    expect(p.marketVsLatestObservedPct).toBeCloseTo((1.1 ** 0.25 - 1) * 100, 9); // projection vs observed, labelled separately
+    expect(p.marketYoYPct).toBeCloseTo(((1.2 * 1.1 ** 0.25) / 1 - 1) * 100, 9); // target 2026Q1 vs observed 2025Q1 (1e9)
   });
 
   it("YoY of observed data is null with fewer than 5 quarters", () => {
