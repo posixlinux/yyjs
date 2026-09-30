@@ -502,6 +502,18 @@ describe("provider failures", () => {
     expect(r.providers.claude.message).not.toContain("비밀");
   });
 
+  it("a reply holding two fenced JSON objects is not BAD_JSON: the last schema-valid one is used", async () => {
+    const two = "```json\n" + JSON.stringify(proposal()) + "\n```\n\nCorrected:\n\n```json\n" + JSON.stringify(proposal()) + "\n```";
+    const r = await run(ok(JSON.stringify({ subtype: "success", result: two })));
+    expect(r.providers.claude.code).toBe("OK");
+  });
+
+  it("a schema-valid object followed by a non-matching one still uses the valid one", async () => {
+    const text = "```json\n" + JSON.stringify(proposal()) + '\n{"note":"a brace } in a string"}\n```';
+    const r = await run(ok(JSON.stringify({ subtype: "success", result: text })));
+    expect(r.providers.claude.code).toBe("OK");
+  });
+
   it("claude draft TIMEOUT falls back to a healthy agy for the draft, and claude is never called again as auditor in that run", async () => {
     const seen: RunRequest[] = [];
     const r = await analyzeEvidence(
