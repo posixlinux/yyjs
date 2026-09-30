@@ -162,6 +162,7 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
   const result: AnalysisResult = {
     status: "unavailable",
     dataset: null,
+    provisionalDataset: null,
     missingFields: [],
     narrative: null,
     citations: [],
@@ -239,6 +240,7 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
   const verified = verifyProposal(input.asOf, input.ticker, input.documents, draft);
   issues.push(...verified.issues);
   result.citations = verified.citations;
+  result.provisionalDataset = verified.provisionalDataset;
 
   // 1b. Strategy: a SEPARATE call (strategyPrompt / StrategyProposalSchema), started now and run alongside the audit
   //     below, so the earnings-gap-auto/v1 extraction is never an optional afterthought of the long Dataset draft.

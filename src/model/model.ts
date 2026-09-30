@@ -1,6 +1,6 @@
 import { SCENARIOS, type Dataset, type Scenario } from "../domain/schema.js";
 import { formatQuarter, parseQuarter, quarterEnd, quarterOfDate } from "../domain/time.js";
-import { coverage, fxRate, marketOf, ROUNDING_TOLERANCE, shareAnchor, walkSources } from "../domain/validate.js";
+import { coverage, fxRate, marketOf, MAX_QUARTERS_TO_TARGET, ROUNDING_TOLERANCE, shareAnchor, walkSources } from "../domain/validate.js";
 import { AppError } from "../errors.js";
 import { adjustEstimatedMarkets, groundedness, listEstimates, observedStructures } from "../domain/market-structure.js";
 
@@ -70,6 +70,22 @@ export function analyze(input: Dataset, asOf: string) {
   const residualQuarters = target - parseQuarter(ds.financials.quarter);
   const anchors = ds.products.map((p) => ({ p, a: shareAnchor(ds, p)! }));
 
+  // A competitor's share is anchored at its latest quarter shared with the market series, and only if that quarter is
+  // as recent as any other input may be (MAX_QUARTERS_TO_TARGET); an older or non-overlapping series is left out of
+  // the market structure (its revenue falls into "others") and reported, instead of projecting a years-old share.
+  const competitorAnchors = new Map<string, { quarter: string; revenue: number; estimate?: unknown }>();
+  const competitorWarnings: string[] = [];
+  for (const c of ds.competitors ?? []) {
+    const m = ds.markets.find((x) => x.id === c.marketId);
+    if (!m) continue;
+    const quarters = new Set(m.observations.map((o) => o.quarter));
+    const anchor = c.revenue.filter((r) => quarters.has(r.quarter) && r.currency === m.currency).sort((x, y) => parseQuarter(y.quarter) - parseQuarter(x.quarter))[0];
+    if (!anchor) competitorWarnings.push(`Competitor ${c.id} has no revenue in ${m.id}'s quarters and currency; it is left out of the market structure.`);
+    else if (target - parseQuarter(anchor.quarter) > MAX_QUARTERS_TO_TARGET)
+      competitorWarnings.push(`Competitor ${c.id}'s latest share (${anchor.quarter}) is more than ${MAX_QUARTERS_TO_TARGET} quarters before ${formatQuarter(target)}; it is left out of the market structure.`);
+    else competitorAnchors.set(c.id, anchor);
+  }
+
   const scenarios = SCENARIOS.map((sc: Scenario) => {
     const products = anchors.map(({ p, a }) => {
       const m = marketOf(ds, p)!;
@@ -95,7 +111,7 @@ export function analyze(input: Dataset, asOf: string) {
       const raw = (ds.competitors ?? [])
         .filter((c) => c.marketId === m.id)
         .flatMap((c) => {
-          const anchor = c.revenue.filter((r) => byQ.has(r.quarter) && r.currency === m.currency).sort((x, y) => parseQuarter(y.quarter) - parseQuarter(x.quarter))[0];
+          const anchor = competitorAnchors.get(c.id);
           if (!anchor) return [];
           const share0 = anchor.revenue / byQ.get(anchor.quarter)!;
           return [{ c, anchor, share0, share: clamp(share0 + (c.shareDelta?.value[sc] ?? 0), 0, 1) }];
@@ -192,6 +208,7 @@ export function analyze(input: Dataset, asOf: string) {
   if (estimates.length)
     warnings.push(`${estimates.length} of ${ground.total} revenue inputs (${((1 - ground.groundedRatio) * 100).toFixed(0)}%) are ESTIMATES inferred from other data, not read from a source; the valuation inherits their uncertainty.`);
   for (const a of adjustments) warnings.push(a.message);
+  warnings.push(...competitorWarnings);
   if (ds.synthetic) warnings.push("SYNTHETIC DEMO DATA: fictional fixtures, not real prices, shares or market research.");
 
   const seen = new Set<string>();
@@ -251,6 +268,7 @@ export function analyze(input: Dataset, asOf: string) {
       "Market share is revenue share within the same global product scope, quarter and currency; volume shares must not be used.",
       "All FX conversion uses the single dated rate in the dataset; historical FX drift between quarters is not modelled.",
       "Residual (non-product) revenue is grown at a constant rate without seasonality; taxes are not credited on pre-tax losses.",
+      "Pre-tax income is operating profit plus the stated net interest only; equity-method results and other non-operating gains/losses are not modelled.",
       "Share count must be diluted COMMON shares only. Earnings allocated to preferred classes (dividends AND any participation) must be supplied explicitly as preferredClaimsKRW with a rationale; the model does not derive capital-class rights, so a wrong or omitted value silently overstates common EPS.",
       "Output quality is bounded by the cited sources. Global product market revenue is rarely machine-readable: public collection surfaces candidates and news, dual LLM review can only accept figures that are quoted from supplied documents, and otherwise the market inputs must be supplied manually (POST /v1/datasets).",
       "Observed quarters are ended-quarter actuals; the target quarter is a projection (nowcast), never an observation.",

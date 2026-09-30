@@ -1,9 +1,9 @@
 import type { PublicEvidence } from "../collection/types.js";
 import { DatasetSchema, type Dataset } from "../domain/schema.js";
 import { seoulToday } from "../domain/time.js";
-import { validateAsOf, validateStatic } from "../domain/validate.js";
+import { relaxDataset } from "../domain/relax.js";
 import { classifySecurity, describeRejections } from "../domain/security.js";
-import { AppError, type Issue } from "../errors.js";
+import { AppError } from "../errors.js";
 import type { AnalysisResult, EvidenceInput } from "../intelligence/types.js";
 import { sanitize } from "../intelligence/runner.js";
 import { analyze } from "../model/model.js";
@@ -27,7 +27,9 @@ export type ResearchDeps = {
   strategyMinimumCashBufferKRW?: number;
 };
 
-type Reason = { code: string; message: string; details?: unknown };
+/** blocking: no valuation is produced. warning: the valuation is still produced, but reported as provisional. */
+type Severity = "blocking" | "warning";
+type Reason = { code: string; severity: Severity; message: string; details?: unknown };
 type MissingInput = { source: "collector" | "intelligence" | "gate"; field: string; status?: string; detail?: string };
 
 const ROUTES: Record<JobKind, string> = { analysis: "/v1/analyses", research: "/v1/research" };
@@ -172,23 +174,28 @@ export class ResearchService {
       const notes: string[] = [];
       const today = seoulToday(this.deps.now());
 
-      if (ev.company.exchange !== "KOSPI") reasons.push({ code: "EXCHANGE_UNVERIFIED", message: "KOSPI listing could not be verified by Naver or DART; no valuation is produced" });
+      // Gate policy: a price is produced whenever the proposed dataset is usable by construction (parsed, right company,
+      // nothing dated after asOf, no double counting or unit/currency mix-up). Every weaker concern -- unverified
+      // exchange/quote, a provider failure, an unconfirmed or uncited number, a stale input, a repaired field -- is kept
+      // as a "warning" reason next to the price, and the valuation is graded "provisional" instead of "verified".
+      const block = (code: string, message: string, details?: unknown) => reasons.push({ code, severity: "blocking", message, ...(details !== undefined && { details }) });
+      const warn = (code: string, message: string, details?: unknown) => reasons.push({ code, severity: "warning", message, ...(details !== undefined && { details }) });
+
+      if (ev.company.exchange !== "KOSPI") warn("EXCHANGE_UNVERIFIED", "KOSPI listing could not be verified by Naver or DART; the valuation relies on the dataset's own KOSPI claim");
       if (!ev.market.quote)
-        reasons.push(
-          asOf < today
-            ? { code: "HISTORICAL_QUOTE_UNAVAILABLE", message: `asOf ${asOf} is before today (${today}); Naver only serves the latest quote snapshot, so no dated quote exists for that date. Use today's date or a manual dataset.` }
-            : { code: "QUOTE_MISSING", message: "No usable Naver quote was collected" },
-        );
+        asOf < today
+          ? warn("HISTORICAL_QUOTE_UNAVAILABLE", `asOf ${asOf} is before today (${today}); Naver only serves the latest quote snapshot, so no dated quote exists for that date. The dataset's quote (from the documents) is used unverified; use today's date or a manual dataset for a verified quote.`)
+          : warn("QUOTE_MISSING", "No usable Naver quote was collected; the dataset's quote (from the documents) is used unverified");
       else if (asOf < today) notes.push(`Quote is Naver's latest snapshot traded ${ev.market.quote.tradedAt}, retrieved after asOf ${asOf}; it is used only because no later trade preceded the cutoff.`);
 
       let research: AnalysisResult | null = null;
-      if (built.documents.length === 0) reasons.push({ code: "NO_EVIDENCE_DOCUMENTS", message: "No attributable evidence documents were collected; models were not invoked" });
+      if (built.documents.length === 0) block("NO_EVIDENCE_DOCUMENTS", "No attributable evidence documents were collected; models were not invoked");
       else {
         try {
           research = await this.deps.intelligence({ ticker, asOf, documents: built.documents }, { signal });
         } catch (e) {
           if (signal.aborted) throw e;
-          reasons.push({ code: "INTELLIGENCE_ERROR", message: this.msg(e) });
+          block("INTELLIGENCE_ERROR", this.msg(e));
         }
       }
 
@@ -198,24 +205,28 @@ export class ResearchService {
         // deterministic check is still used, and the missing cross-check is reported prominently.
         const singleModel = research.status === "single_model";
         const expired = new Set(research.unavailable.map((u) => u.provider));
-        for (const p of Object.values(research.providers)) if (p.status !== "ok" && !expired.has(p.provider)) reasons.push({ code: `PROVIDER_${p.status.toUpperCase()}`, message: `${p.provider}: ${p.code} - ${p.message}` });
+        for (const p of Object.values(research.providers)) if (p.status !== "ok" && !expired.has(p.provider)) warn(`PROVIDER_${p.status.toUpperCase()}`, `${p.provider}: ${p.code} - ${p.message}`);
         for (const u of research.unavailable)
           notes.push(`${u.provider} 사용 불가(${u.code}) — ${u.skippedWithoutCall ? "만료가 확인되어 호출하지 않고 건너뛰었습니다" : "호출했으나 만료되어 사용하지 않았습니다"}${singleModel ? ` (교차검증 없이 ${u.provider === "claude" ? "agy" : "claude"} 단일 모델 결과)` : ""}. 재사용 가능 시각(추정): ${u.retryAfter}`);
-        if ((research.status !== "accepted" && !singleModel) || !research.dataset) {
-          reasons.push({ code: "RESEARCH_NOT_ACCEPTED", message: "Model review did not produce an accepted dataset", details: research.audit.issues.map((i) => i.code) });
-        } else {
-          const checked = this.checkDataset(research.dataset, ticker, asOf, ev);
+        const reviewed = (research.status === "accepted" || singleModel) && research.dataset ? research.dataset : null;
+        const proposed = reviewed ?? research.provisionalDataset ?? null;
+        if (!proposed) block("RESEARCH_NOT_ACCEPTED", "Model review did not produce a usable dataset", research.audit.issues.map((i) => i.code));
+        else {
+          if (!reviewed)
+            warn("RESEARCH_PROVISIONAL", "The model review did not accept the dataset; it is valued provisionally because it passed the hard checks (right company, nothing after asOf, schema). See details and research.audit.issues.", research.audit.issues.map((i) => ({ code: i.code, path: i.path })));
+          const checked = this.checkDataset(proposed, ticker, asOf, ev);
           reasons.push(...checked.reasons);
-          if (!checked.reasons.length) {
+          if (checked.dataset && !reasons.some((r) => r.severity === "blocking")) {
             try {
-              analysis = analyze(research.dataset, asOf);
+              analysis = analyze(checked.dataset, asOf);
             } catch (e) {
-              reasons.push({ code: e instanceof AppError ? e.code : "MODEL_FAILED", message: this.msg(e) });
+              block(e instanceof AppError ? e.code : "MODEL_FAILED", this.msg(e));
             }
           }
         }
       }
-      if (reasons.length) analysis = null; // never a valuation next to unresolved problems
+      if (reasons.some((r) => r.severity === "blocking")) analysis = null; // never a valuation next to a blocking problem
+      const provisional = reasons.some((r) => r.severity === "warning");
 
       // Top-level valuation status mirrors the real scenario valuations (non-positive common earnings => unavailable).
       const scenarioStatus = analysis ? Object.fromEntries(analysis.scenarios.map((s) => [s.scenario, s.valuation.status])) : null;
@@ -223,9 +234,10 @@ export class ResearchService {
       const valuation = {
         status: !analysis ? "unavailable" : availableCount === analysis.scenarios.length ? "available" : availableCount > 0 ? "partial" : "unavailable",
         scenarios: scenarioStatus,
+        grade: analysis ? (provisional ? "provisional" : "verified") : null,
       };
       if (analysis && valuation.status !== "available")
-        reasons.push({ code: "VALUATION_UNAVAILABLE", message: "One or more scenarios have non-positive common-share earnings, so their P/E valuation is unavailable (see analysis.scenarios[].valuation)", details: scenarioStatus });
+        reasons.push({ code: "VALUATION_UNAVAILABLE", severity: "warning", message: "One or more scenarios have non-positive common-share earnings, so their P/E valuation is unavailable (see analysis.scenarios[].valuation)", details: scenarioStatus });
 
       // A fully resolved analysis does not advertise the collector's pre-extraction gaps as still missing
       // (they stay visible in evidence.requiredInputs).
@@ -296,20 +308,29 @@ export class ResearchService {
     };
   }
 
-  /** Deterministic gates on a dataset proposed by the models. Never persists it. */
-  private checkDataset(raw: Dataset, ticker: string, asOf: string, ev: PublicEvidence): { reasons: Reason[] } {
+  /**
+   * Deterministic gates on a dataset proposed by the models. Never persists it. Repairs what is repairable (quote
+   * replaced by the collected one, series order, unfinished quarters, share bounds, residual assumptions) and returns
+   * the dataset to value, with blocking reasons (no valuation) and warnings (provisional valuation).
+   */
+  private checkDataset(raw: Dataset, ticker: string, asOf: string, ev: PublicEvidence): { dataset: Dataset | null; reasons: Reason[] } {
     const reasons: Reason[] = [];
     const parsed = DatasetSchema.safeParse(raw);
-    if (!parsed.success) return { reasons: [{ code: "DATASET_SCHEMA_INVALID", message: "Proposed dataset failed schema validation", details: parsed.error.issues.slice(0, 20).map((i) => ({ path: i.path.join("."), message: i.message })) }] };
-    const ds = parsed.data;
-    if (ds.company.ticker !== ticker) reasons.push({ code: "DATASET_TICKER_MISMATCH", message: `Dataset is for ${ds.company.ticker}, request was ${ticker}` });
-    if (ds.synthetic) reasons.push({ code: "DATASET_SYNTHETIC", message: "Synthetic datasets are never valid for public analysis" });
+    if (!parsed.success) return { dataset: null, reasons: [{ code: "DATASET_SCHEMA_INVALID", severity: "blocking", message: "Proposed dataset failed schema validation", details: parsed.error.issues.slice(0, 20).map((i) => ({ path: i.path.join("."), message: i.message })) }] };
+    let ds = parsed.data;
+    if (ds.company.ticker !== ticker) reasons.push({ code: "DATASET_TICKER_MISMATCH", severity: "blocking", message: `Dataset is for ${ds.company.ticker}, request was ${ticker}` });
+    if (ds.synthetic) reasons.push({ code: "DATASET_SYNTHETIC", severity: "blocking", message: "Synthetic datasets are never valid for public analysis" });
     const quote = ev.market.quote;
-    if (quote && (ds.quote.priceKRW !== quote.close || ds.quote.asOf !== kstDate(quote.tradedAt)))
-      reasons.push({ code: "DATASET_QUOTE_MISMATCH", message: `Dataset quote ${ds.quote.priceKRW} @ ${ds.quote.asOf} differs from the collected Naver quote ${quote.close} traded ${kstDate(quote.tradedAt)} (KST)` });
-    const issues: Issue[] = [...validateStatic(ds), ...validateAsOf(ds, asOf)];
-    if (issues.length) reasons.push({ code: "DATA_VALIDATION_FAILED", message: `${issues.length} static/as-of validation issue(s) in the proposed dataset`, details: issues.slice(0, 50) });
-    return { reasons };
+    if (quote && (ds.quote.priceKRW !== quote.close || ds.quote.asOf !== kstDate(quote.tradedAt))) {
+      const tradedOn = kstDate(quote.tradedAt);
+      reasons.push({ code: "DATASET_QUOTE_REPLACED", severity: "warning", message: `Dataset quote ${ds.quote.priceKRW} @ ${ds.quote.asOf} differed from the collected Naver quote ${quote.close} traded ${tradedOn} (KST); the collected quote is used` });
+      ds = { ...ds, quote: { priceKRW: quote.close, asOf: tradedOn, source: { title: "Naver 증권 시세", url: quote.sourceUrl, publishedAt: tradedOn } } };
+    }
+    const relaxed = relaxDataset(ds, asOf);
+    if (relaxed.repairs.length) reasons.push({ code: "DATASET_REPAIRED", severity: "warning", message: `${relaxed.repairs.length} field(s) of the proposed dataset were repaired by the server`, details: relaxed.repairs });
+    if (relaxed.hard.length) reasons.push({ code: "DATA_VALIDATION_FAILED", severity: "blocking", message: `${relaxed.hard.length} blocking validation issue(s) in the proposed dataset`, details: [...relaxed.hard, ...relaxed.soft].slice(0, 50) });
+    else if (relaxed.soft.length) reasons.push({ code: "DATA_VALIDATION_WARNINGS", severity: "warning", message: `${relaxed.soft.length} non-blocking validation issue(s); the valuation is provisional`, details: relaxed.soft.slice(0, 50) });
+    return { dataset: relaxed.dataset, reasons };
   }
 }
 

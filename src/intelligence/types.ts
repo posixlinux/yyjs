@@ -71,21 +71,27 @@ export const CitationSchema = z.object({
 });
 export type Citation = z.infer<typeof CitationSchema>;
 
-const shortList = z.array(z.string().max(500)).max(50);
+// Free prose from a model (notes, disagreements, summaries) is display text: an over-long entry or list is truncated,
+// never a reason to reject the whole reply (a 501-character disagreement used to fail the audit as SCHEMA_INVALID).
+// Fields that are matched verbatim (fieldPath, evidenceQuote, quotedNumber) keep their strict limits.
+export const clip = (s: string, max: number): string => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
+const prose = (max: number) => z.string().transform((s) => clip(s, max));
+const proseList = (maxItem: number, maxItems: number) => z.array(prose(maxItem)).transform((a) => a.slice(0, maxItems));
+const shortList = proseList(500, 50);
 
 export const ProposalSchema = z.object({
   dataset: z.unknown().nullable(), // validated separately with DatasetSchema for precise issues
   missingFields: shortList,
   narrative: z.object({
-    product: z.string().max(4000),
-    industry: z.string().max(4000),
-    marketSizing: z.string().max(4000).optional(), // how the market size was obtained / inferred
-    competition: z.string().max(4000).optional(), // main competitors and how their sizes add up to the market
+    product: prose(4000),
+    industry: prose(4000),
+    marketSizing: prose(4000).optional(), // how the market size was obtained / inferred
+    competition: prose(4000).optional(), // main competitors and how their sizes add up to the market
   }),
   citations: z.array(CitationSchema).max(300),
   assumptions: z
-    .array(z.object({ fieldPath: z.string().max(200), statement: z.string().max(500), rationale: z.string().max(500) }))
-    .max(60),
+    .array(z.object({ fieldPath: z.string().max(200), statement: prose(500), rationale: prose(500) }))
+    .transform((a) => a.slice(0, 60)),
   limitations: shortList,
 });
 export type Proposal = z.infer<typeof ProposalSchema>;
@@ -105,7 +111,7 @@ export type StrategyProposal = z.infer<typeof StrategyProposalSchema>;
 
 export const FundingProposalSchema = z.object({
   funding: SingleQuarterFundingPlanSchema.nullable(),
-  missingFields: z.array(z.string().trim().min(1).max(500)).max(30),
+  missingFields: z.array(z.string().trim().min(1).transform((s) => clip(s, 500))).transform((a) => a.slice(0, 30)),
 }).refine((r) => r.funding !== null || r.missingFields.length > 0, "explain missing funding inputs when funding is null");
 
 export const AuditSchema = z.object({
@@ -115,18 +121,18 @@ export const AuditSchema = z.object({
       z.object({
         fieldPath: z.string().max(200),
         verdict: z.enum(["confirmed", "rejected", "unverifiable"]),
-        note: z.string().max(500).optional(),
+        note: prose(500).optional(),
       }),
     )
     .max(400),
   // Verdicts on ESTIMATED inputs (market size, product/competitor revenue inferred instead of read from a source).
   estimateReviews: z
-    .array(z.object({ fieldPath: z.string().max(200), verdict: z.enum(["reasonable", "unreasonable", "unverifiable"]), note: z.string().max(500).optional() }))
+    .array(z.object({ fieldPath: z.string().max(200), verdict: z.enum(["reasonable", "unreasonable", "unverifiable"]), note: prose(500).optional() }))
     .max(100)
     .default([]),
   disagreements: shortList,
   missingFields: shortList,
-  summary: z.string().max(4000),
+  summary: prose(4000),
 });
 export type Audit = z.infer<typeof AuditSchema>;
 
@@ -218,7 +224,13 @@ export type StrategyExtraction = {
 
 export type AnalysisResult = {
   status: AnalysisStatus; // accepted => dataset non-null and approved by both providers; single_model => see AnalysisStatus
-  dataset: Dataset | null; // never synthetic; null means no valuation may be produced
+  dataset: Dataset | null; // never synthetic; null means no verified valuation may be produced
+  /**
+   * The draft's dataset when it only failed SOFT checks (unconfirmed/uncited numbers, audit disagreement, audit not
+   * approved or failed, ...). Parsed, never synthetic, right ticker, nothing dated after asOf. The server may value it
+   * as a PROVISIONAL result with every concern reported (research/service.ts); absent/null when unusable.
+   */
+  provisionalDataset?: Dataset | null;
   missingFields: string[];
   narrative: Proposal["narrative"] | null; // Korean; unreviewed unless status=accepted
   citations: Citation[]; // only citations that passed verification

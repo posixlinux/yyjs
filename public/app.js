@@ -199,6 +199,9 @@ function renderAnalysis(a, valuation) {
     )));
   return section(`가치 계산 — 목표 분기 ${a.targetQuarter || ""}`,
     el("p", { class: "small", text: `현재가 ${won(a.facts && a.facts.quote && a.facts.quote.priceKRW)} 기준 · 밸류에이션 상태: ${valuation ? valuation.status : "-"}` }),
+    valuation && valuation.grade === "provisional"
+      ? el("div", { class: "box warn" }, el("strong", { text: "잠정 가격: " }), "일부 검증을 통과하지 못했거나 서버가 보정한 입력으로 계산했습니다. 아래 '주의 사항'을 확인하세요.")
+      : null,
     table,
     el("p", { class: "small", text: "목표가는 (다음 분기 EPS × 4) × 시나리오 PER 이며 실제 주가 예측이 아닌 밸류에이션 프록시입니다." }),
     (a.dataQuality && a.dataQuality.warnings || []).length ? el("ul", { class: "plain" }, a.dataQuality.warnings.map((w) => el("li", { text: w }))) : null,
@@ -370,7 +373,11 @@ function renderJob(job, startedAt) {
     if (r.note) kids.push(el("p", { class: "hint", text: r.note }));
 
     const reasons = r.partialReasons || [];
-    if (reasons.length) kids.push(section("가치 산정이 되지 않은 이유", el("ul", { class: "plain" }, reasons.map((x) => el("li", {}, el("strong", { text: `${x.code} ` }), x.message)))));
+    const blocking = reasons.filter((x) => x.severity !== "warning");
+    const warnings = reasons.filter((x) => x.severity === "warning");
+    const reasonList = (xs) => el("ul", { class: "plain" }, xs.map((x) => el("li", {}, el("strong", { text: `${x.code} ` }), x.message)));
+    if (blocking.length) kids.push(section("가치 산정이 되지 않은 이유", reasonList(blocking)));
+    if (warnings.length) kids.push(section("주의 사항 (가격은 산출됨)", reasonList(warnings)));
     (r.notes || []).forEach((n) => kids.push(el("p", { class: "small", text: n })));
 
     const rep = renderReport(r.report);
