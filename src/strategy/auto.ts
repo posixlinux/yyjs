@@ -34,14 +34,15 @@ export type AutoStrategyDropReason = { field: string; code: string; message: str
 
 /** One explicit, source-linked assumption backing the forecast (a segment/bridge/funding `assumptions` object),
  * surfaced so a consumer (the web UI) can render exactly which numbers rest on an LLM-authored estimate rather than
- * an observed fact -- and never mistake one for the other. `isModelEstimate`/`independentlyAudited` are always these
+ * an observed fact -- and never mistake one for the other. `isModelEstimate` is true except for a statement-derived funding plan; `independentlyAudited` is always these
  * literal values here: unlike the product-market Dataset path, this automatic strategy path never runs the estimate
  * through a second-model audit (see AutoStrategyResult.independentlyAudited). */
 export type AutoStrategyAssumptionRef = {
   fieldPath: string; // e.g. "forecast.quarters[0].segments[0].assumptions", "forecast.funding.assumptions"
   rationale: string;
   source: StrategySource;
-  isModelEstimate: true;
+  /** false only for the funding plan derived deterministically from DART statements (fundingOrigin below). */
+  isModelEstimate: boolean;
   independentlyAudited: false;
 };
 
@@ -66,6 +67,14 @@ export type AutoStrategyInput = {
   unavailable: AutoStrategyDropReason[]; // why any of the above is null (from intelligence verification)
   minimumCashBufferKRW: number;
   cashBufferConfigured: boolean;
+  /** Who authored forecast.funding: the model (verified by strategyVerify.ts) or research/service.ts deriving it
+   * from the collected consolidated statements (strategy/funding-derive.ts). Defaults to "model". */
+  fundingOrigin?: "model" | "derived_from_filings";
+  /** Explanations attached by the caller, e.g. why the model plan was replaced by the statement-derived one. */
+  notes?: string[];
+  /** Statement-derived plans only: current (<=12 months) debt and the part assumed due in the quarter, so the
+   * all-current-debt-due-now, no-refinancing bound is computed next to the base/stress scenarios. */
+  noRefinancing?: { currentDebtKRW: number; assumedPrincipalDueKRW: number };
 };
 
 export type AutoStrategyResult = {
@@ -97,16 +106,20 @@ export type AutoStrategyResult = {
    * entirely from `forecast` (already present above) -- a purely additive convenience field, never a new source of
    * truth; consumers that don't read it lose nothing. */
   assumptions?: AutoStrategyAssumptionRef[];
+  /** Conservative bound: every current borrowing falls due in the forecast quarter with no refinancing. */
+  noRefinancingBound?: { currentDebtKRW: number; assumedPrincipalDueKRW: number; baseEndingCashKRW: number; stressEndingCashKRW: number; baseAdditionalFundingRequiredKRW: number; stressAdditionalFundingRequiredKRW: number } | null;
+  /** Origin of the funding plan behind `risk`; null when no plan survived. */
+  fundingOrigin?: "model" | "derived_from_filings" | null;
 };
 
 /** Flattens every explicit `assumptions` object off a verified forecast (segment/bridge/funding), each already
  * proven (by strategyVerify.ts) to be grounded in a real supplied document -- never a free-floating claim. Labels
  * every entry as an LLM estimate, not independently audited: this automatic path never claims a model-authored
  * assumption is an observed fact or has been re-checked by a second model. */
-function collectAssumptions(forecast: EarningsForecastSnapshot): AutoStrategyAssumptionRef[] {
+function collectAssumptions(forecast: EarningsForecastSnapshot, fundingFromFilings = false): AutoStrategyAssumptionRef[] {
   const refs: AutoStrategyAssumptionRef[] = [];
   const add = (fieldPath: string, a: { rationale: string; source: StrategySource } | undefined) => {
-    if (a) refs.push({ fieldPath, rationale: a.rationale, source: a.source, isModelEstimate: true, independentlyAudited: false });
+    if (a) refs.push({ fieldPath, rationale: a.rationale, source: a.source, isModelEstimate: !(fundingFromFilings && fieldPath.startsWith("forecast.funding")), independentlyAudited: false });
   };
   forecast.quarters.forEach((q, qi) => {
     add(`forecast.quarters[${qi}].bridgeAssumptions`, q.bridgeAssumptions);
@@ -201,7 +214,7 @@ function dropUngroundedOptionalBlocks(forecast: EarningsForecastSnapshot, decisi
 }
 
 export function evaluateAutoStrategy(input: AutoStrategyInput): AutoStrategyResult {
-  const notes: string[] = [];
+  const notes: string[] = [...(input.notes ?? [])];
   const missing: AutoStrategyDropReason[] = [...input.unavailable];
   if (input.mode === "retrospective_research")
     notes.push(`Historical request: evaluated as of ${seoulDateOf(input.decisionAt)}, not today. This is retrospective research using evidence available by that date, not a live current signal.`);
@@ -246,6 +259,18 @@ export function evaluateAutoStrategy(input: AutoStrategyInput): AutoStrategyResu
     }
   } else if (forecast) missing.push({ field: "funding", code: "FUNDING_UNAVAILABLE", message: "no verified investment/working-capital/debt funding plan was extracted; funding risk is unavailable" });
 
+  let noRefinancingBound: AutoStrategyResult["noRefinancingBound"] = null;
+  if (risk && input.noRefinancing && input.fundingOrigin === "derived_from_filings") {
+    const extra = input.noRefinancing.currentDebtKRW - input.noRefinancing.assumedPrincipalDueKRW;
+    const baseEnd = risk.base.endingCashKRW - extra;
+    const stressEnd = risk.stress.endingCashKRW - extra;
+    noRefinancingBound = {
+      ...input.noRefinancing, baseEndingCashKRW: baseEnd, stressEndingCashKRW: stressEnd,
+      baseAdditionalFundingRequiredKRW: Math.max(0, riskPolicy.minimumCashBufferKRW - baseEnd),
+      stressAdditionalFundingRequiredKRW: Math.max(0, riskPolicy.minimumCashBufferKRW - stressEnd),
+    };
+  }
+
   if (!input.currentConsensus) missing.push({ field: "currentConsensus", code: "CONSENSUS_UNAVAILABLE", message: "no verified current consensus for the estimated quarter with real publication provenance was found" });
   if (!input.priorConsensus) missing.push({ field: "priorConsensus", code: "CONSENSUS_UNAVAILABLE", message: "no verified prior consensus for the estimated quarter with real publication provenance was found" });
   if (!input.catalyst) missing.push({ field: "catalyst", code: "CATALYST_UNAVAILABLE", message: "no verified, sourced upcoming catalyst (earnings release/guidance/disclosure) was found" });
@@ -266,6 +291,8 @@ export function evaluateAutoStrategy(input: AutoStrategyInput): AutoStrategyResu
     status, mode: input.mode, decisionAt: input.decisionAt, generatedAt: forecast?.generatedAt ?? null, independentlyAudited: false,
     bridge, risk, evaluation, quarterlyConsensus, nextQuarterPrice, missing, notes,
     forecast, currentConsensus: input.currentConsensus, priorConsensus: input.priorConsensus, catalyst: input.catalyst,
-    assumptions: forecast ? collectAssumptions(forecast) : [],
+    assumptions: forecast ? collectAssumptions(forecast, input.fundingOrigin === "derived_from_filings") : [],
+    fundingOrigin: forecast?.funding ? (input.fundingOrigin ?? "model") : null,
+    noRefinancingBound,
   };
 }

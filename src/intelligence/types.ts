@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Dataset } from "../domain/schema.js";
 import type { Issue } from "../errors.js";
-import { SingleQuarterFundingPlanSchema, type Catalyst, type ConsensusSnapshot, type EarningsForecastSnapshot } from "../strategy/schema.js";
+import { type Catalyst, type ConsensusSnapshot, type EarningsForecastSnapshot } from "../strategy/schema.js";
 import { StrategyDraftSchema } from "./strategyVerify.js";
 
 // ---- input ----------------------------------------------------------------
@@ -109,8 +109,10 @@ export const StrategyProposalSchema = z.object({
 });
 export type StrategyProposal = z.infer<typeof StrategyProposalSchema>;
 
+// `funding` is parsed by verifyStrategyDraft (strategyVerify.ts), not here: a strict-schema miss in one field used to
+// reject the WHOLE reply as FUNDING_CALL_FAILED, hiding which field was wrong. It is now reported field by field.
 export const FundingProposalSchema = z.object({
-  funding: SingleQuarterFundingPlanSchema.nullable(),
+  funding: z.unknown().nullable().transform((v) => v ?? null),
   missingFields: z.array(z.string().trim().min(1).transform((s) => clip(s, 500))).transform((a) => a.slice(0, 30)),
 }).refine((r) => r.funding !== null || r.missingFields.length > 0, "explain missing funding inputs when funding is null");
 

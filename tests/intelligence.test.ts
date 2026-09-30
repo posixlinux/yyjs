@@ -319,6 +319,31 @@ describe("automatic funding completion", () => {
     expect(b.strategy.forecast?.funding).toBeDefined();
   });
 
+  it("keeps a completion whose rationale is longer than the display limit (the prompt asks for formulas and account names)", async () => {
+    const plan = fundingPlan();
+    const long = "기초 현금=반기말 현금및현금성자산, CF 6개월 누적÷2 산식과 계정명·숫자 기재. ".repeat(40);
+    plan.assumptions = { ...plan.assumptions, rationale: long };
+    plan.quarters[0]!.otherOperatingCashFlowRationale = long;
+    const base = withStrategy(reply());
+    const runner: Runner = async (r) => isFundingPrompt(r) ? replyAs(r, { funding: plan, missingFields: [] }) : base(r);
+    const r = await analyzeEvidence(input([FUNDING_DOC]), opts(runner));
+    expect(r.strategy.unavailable).toEqual([]);
+    expect(r.strategy.forecast?.funding?.assumptions.rationale.length).toBeLessThanOrEqual(1000);
+    expect(r.strategy.forecast?.funding?.quarters[0]!.otherOperatingCashFlowRationale.length).toBeLessThanOrEqual(500);
+  });
+
+  it("reports the exact schema problem of a completion instead of failing the whole call", async () => {
+    const plan = fundingPlan();
+    plan.quarters[0]!.capexKRW = -80; // DART shows purchases as negative in some filings
+    const base = withStrategy(reply());
+    const runner: Runner = async (r) => isFundingPrompt(r) ? replyAs(r, { funding: plan, missingFields: [] }) : base(r);
+    const r = await analyzeEvidence(input([FUNDING_DOC]), opts(runner));
+    expect(r.strategy.forecast).not.toBeNull();
+    expect(r.strategy.forecast?.funding).toBeUndefined();
+    expect(r.strategy.unavailable.map((u) => u.code)).not.toContain("FUNDING_CALL_FAILED");
+    expect(r.strategy.unavailable).toContainEqual(expect.objectContaining({ code: "FUNDING_SCHEMA_INVALID", message: expect.stringContaining("capexKRW") }));
+  });
+
   it("does not call completion when the strategy already contains a valid funding plan", async () => {
     const initial = reply();
     Object.assign(initial.strategy.forecast, { funding: fundingPlan() });

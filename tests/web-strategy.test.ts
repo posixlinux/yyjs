@@ -216,6 +216,28 @@ describe("public/app.js strategyAuto rendering", () => {
     expect(text).not.toContain("자금 계획을 확보하지 못했습니다");
   });
 
+  it("labels a statement-derived funding plan as a disclosed-statement derivation, not a model estimate", async () => {
+    const { context } = await load();
+    const render = context.renderStrategyAuto as (sa: unknown) => StubNode;
+    const node = render({ status: "estimate_only", mode: "live", missing: [], fundingOrigin: "derived_from_filings",
+      notes: ["자금 계획은 모델 초안이 아니라 2025 Q3 연결 재무제표(기말 2025-09-30, 접수번호 20251113000661)에서 결정론적으로 파생했습니다."],
+      risk: { base: { minimumQuarterBoundaryCashKRW: 100, peakAdditionalFundingRequiredKRW: 0,
+        quarters: [{ quarter: "2025Q4", openingCashKRW: 100, capexKRW: 80, deltaWorkingCapitalKRW: 5, debtPrincipalDueKRW: 25, endingCashKRW: 232, additionalFundingRequiredKRW: 0 }] },
+        stress: { minimumQuarterBoundaryCashKRW: 50, peakAdditionalFundingRequiredKRW: 0 } },
+      noRefinancingBound: { currentDebtKRW: 400, assumedPrincipalDueKRW: 100, baseEndingCashKRW: -68, stressEndingCashKRW: -150, baseAdditionalFundingRequiredKRW: 68, stressAdditionalFundingRequiredKRW: 150 },
+      assumptions: [{ fieldPath: "forecast.funding.assumptions", rationale: "[공시 재무제표 결정론적 파생, 모델 추정 아님] 기초 현금=...",
+        source: { title: "DART 연결 재무제표", url: "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20251113000661", kind: "filing", knownAt: "2025-11-13T00:00:00+09:00" },
+        isModelEstimate: false, independentlyAudited: false }] });
+    const text = allText(node);
+    expect(text).toContain("DART 연결 재무제표(재무상태표·현금흐름표 누적액)에서 결정론적으로 파생");
+    expect(text).toContain("공시 재무제표 기반 결정론적 파생 가정(모델 추정 아님)");
+    expect(text).toContain("모델 추정치·공시 파생 가정");
+    expect(text).toContain("접수번호 20251113000661");
+    expect(text).toContain("차환 없음 보수적 경우");
+    expect(text).toContain("4개 분기 균등 도래 가정");
+    expect(text).not.toContain("자금 계획을 확보하지 못했습니다");
+  });
+
   it("shows the concrete missing funding input beside the unavailable message", async () => {
     const { context } = await load();
     const render = context.renderStrategyAuto as (sa: unknown) => StubNode;

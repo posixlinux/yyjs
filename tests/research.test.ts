@@ -1221,6 +1221,50 @@ describe("strategyAuto: automatic earnings-gap-auto/v1 connection on POST /v1/an
       expect(sa.status).toBe("ineligible");
       expect(sa.generatedAt).toBeDefined();
       expect(sa.independentlyAudited).toBe(false);
+      // No 2025-12-31 statement exists on 2026-01-15, so no statement-derived plan either -- with the exact reason.
+      expect(sa.missing).toContainEqual(expect.objectContaining({ field: "funding", code: "FUNDING_OPENING_BALANCE_UNAVAILABLE" }));
+    });
+
+    // Regression: the model's funding completion is rejected (or returns null), although the consolidated BS/CF
+    // were collected and sent to it. risk used to stay null; it is now derived from those statements, end to end.
+    it("connects real collected consolidated statements to strategyAuto.risk when the model funding plan is rejected", async () => {
+      const real: StatementSet = JSON.parse(await readFile(new URL("./fixtures/dart-012450-2025Q3-cfs.json", import.meta.url), "utf8"));
+      const ev = evidence({ filings: { list: [filing(real.rceptNo, "2025-11-13", "Q3", "2025-09-30")], statements: [real] } });
+      const src = () => ({ title: "DART", url: real.receiptUrl, kind: "filing", knownAt: "2025-11-13T00:00:00+09:00" });
+      const forecast = { ...draftForecast(), company: { ...draftForecast().company, source: src() },
+        quarters: [{ ...quarterOf("2025Q4"), segments: [{ ...segment(), source: src(), assumptions: { isAssumption: true, rationale: "3분기 기반", source: src() } }],
+          bridgeAssumptions: { isAssumption: true, rationale: "가정 유지", source: src() } }] };
+      const draft = { ...strategyDraft(), citations: [], strategy: { forecast, currentConsensus: null, priorConsensus: null, catalyst: null } };
+      let fundingCalls = 0;
+      const runner: Runner = async (r) => {
+        if (isAuditPrompt(r)) return agyOut(auditOf());
+        if ([r.stdin, ...r.args].some((a) => a.includes("누락된 투자·운전자본·차입 자금 계획만 보완"))) {
+          fundingCalls++;
+          return claudeOut({ funding: null, missingFields: ["분기 D&A와 차입 만기 스케줄이 공시되지 않았습니다."] });
+        }
+        return claudeOut(draft);
+      };
+      const intelligence = (input: EvidenceInput, o: { signal: AbortSignal }) => analyzeEvidence(input, { ...runnerOpts(runner), now: () => NOW, signal: o.signal });
+      const { app } = await setup({}, NOW, { collect: async () => ev, intelligence });
+      const { body } = await poll(app, (await submit(app, { ticker: "111110" })).json().statusUrl);
+      const sa = body.result.strategyAuto;
+      expect(fundingCalls).toBe(1);
+      expect(sa.bridge.quarters[0].quarter).toBe("2025Q4");
+      expect(sa.risk).not.toBeNull();
+      expect(sa.fundingOrigin).toBe("derived_from_filings");
+      expect(sa.risk.base.quarters[0].openingCashKRW).toBe(4_244_476_069_000);
+      expect(sa.risk.base.quarters[0].capexKRW).toBeCloseTo((873_772_782_000 + 191_369_077_000) / 3, 0);
+      expect(sa.risk.stress.endingCashKRW).toBeLessThan(sa.risk.base.endingCashKRW);
+      // no-refinancing bound: all current (<=12m) borrowings due in this quarter
+      expect(sa.noRefinancingBound.currentDebtKRW).toBe(7_569_521_034_000);
+      expect(sa.noRefinancingBound.baseEndingCashKRW).toBeCloseTo(sa.risk.base.endingCashKRW - 7_569_521_034_000 * 3 / 4, 0);
+      expect(sa.noRefinancingBound.stressAdditionalFundingRequiredKRW).toBeGreaterThanOrEqual(sa.noRefinancingBound.baseAdditionalFundingRequiredKRW);
+      expect(sa.missing.filter((m: any) => m.field === "funding")).toEqual([]);
+      expect(sa.notes.join(" ")).toContain("[FUNDING_INPUT_MISSING] 분기 D&A와 차입 만기 스케줄이 공시되지 않았습니다.");
+      expect(sa.notes.join(" ")).toContain("결정론적으로 파생");
+      const fundingRefs = sa.assumptions.filter((a: any) => a.fieldPath.startsWith("forecast.funding"));
+      expect(fundingRefs).toHaveLength(2);
+      expect(fundingRefs.every((a: any) => a.isModelEstimate === false && a.source.url === real.receiptUrl)).toBe(true);
     });
   });
 });

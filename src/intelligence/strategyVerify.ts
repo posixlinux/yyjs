@@ -191,6 +191,27 @@ function isFinancialSector(name: string | undefined, sector: string | undefined)
   return FINANCIAL_SECTOR_RE.test(name ?? "") || FINANCIAL_SECTOR_RE.test(sector ?? "");
 }
 
+// Rationale fields are display prose, and the funding prompt asks for formulas, account names and numbers in them.
+// Over-long prose is truncated (same policy as `prose` in types.ts) instead of discarding the whole plan; numeric and
+// structural fields are never touched.
+function clipFundingProse(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null) return raw;
+  const clipAt = (v: unknown, max: number) => (typeof v === "string" && v.length > max ? `${v.slice(0, max - 1)}…` : v);
+  const clipAssumptions = (a: unknown) => (typeof a === "object" && a !== null ? { ...a, rationale: clipAt((a as Record<string, unknown>).rationale, 1000) } : a);
+  const plan = raw as Record<string, unknown>;
+  return {
+    ...plan,
+    ...("assumptions" in plan && { assumptions: clipAssumptions(plan.assumptions) }),
+    ...(Array.isArray(plan.quarters) && {
+      quarters: plan.quarters.map((q) => (typeof q === "object" && q !== null ? {
+        ...q,
+        ...("assumptions" in q && { assumptions: clipAssumptions((q as Record<string, unknown>).assumptions) }),
+        ...("otherOperatingCashFlowRationale" in q && { otherOperatingCashFlowRationale: clipAt((q as Record<string, unknown>).otherOperatingCashFlowRationale, 500) }),
+      } : q)),
+    }),
+  };
+}
+
 // Core (never-optional) forecast fields -- identity, segments, bridge inputs -- are what the EPS bridge is actually
 // computed from: any invalid core field nulls the whole forecast, same as before. Liquidity/funding are OPTIONAL
 // enrichments the bridge itself does not depend on (risk/sizing consumes them, degrading to "unavailable" when
@@ -246,7 +267,7 @@ function verifyForecast(raw: unknown, docs: EvidenceDocument[], docsById: Map<st
   // it never re-nulls the core forecast that already passed.
   const optionalDrops: StrategyDropReason[] = [];
   if (rawFunding !== undefined && rawFunding !== null) {
-    const fp = SingleQuarterFundingPlanSchema.safeParse(rawFunding);
+    const fp = SingleQuarterFundingPlanSchema.safeParse(clipFundingProse(rawFunding));
     if (fp.success) f.funding = fp.data;
     else optionalDrops.push(drop("funding", "FUNDING_SCHEMA_INVALID", fp.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).slice(0, 5).join("; ")));
   }

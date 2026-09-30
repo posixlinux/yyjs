@@ -11,6 +11,7 @@ import { buildReport } from "./report.js";
 import { buildDocuments, kstDate, summarizeEvidence, type BuiltDocuments } from "./evidence.js";
 import { JobManager, type Job, type JobKind, type JobLimits, type JobOutcome, type Work } from "./jobs.js";
 import { evaluateAutoStrategy } from "../strategy/auto.js";
+import { deriveFundingPlan } from "../strategy/funding-derive.js";
 
 export type Collector = (input: { ticker: string; asOf: string; competitors?: string[] }, opts: { signal: AbortSignal }) => Promise<PublicEvidence>;
 /** `signal` aborts running CLI children (job timeout / server close). */
@@ -267,18 +268,45 @@ export class ResearchService {
       // date's end-of-day (KST) instead, so a retrospective run is never displayed as a live current judgement.
       const live = asOf === today;
       const decisionAt = live ? this.deps.now().toISOString() : `${asOf}T23:59:59+09:00`;
+      // Funding risk used to exist only when the model's own funding plan survived its strict schema/source checks,
+      // so one rejected reply left risk=null although the consolidated BS/CF behind it had been collected. When no
+      // verified model plan exists, derive one deterministically from those statements (strategy/funding-derive.ts):
+      // the model's failure reasons are kept as notes, and a derivation that is impossible is reported explicitly.
+      let strategyForecast = research?.strategy.forecast ?? null;
+      let strategyUnavailable = research?.strategy.unavailable ?? [{ field: "all", code: "NO_MODEL_DRAFT", message: "no model draft was produced for this analysis (see partialReasons)" }];
+      let fundingOrigin: "model" | "derived_from_filings" = "model";
+      let noRefinancing: { currentDebtKRW: number; assumedPrincipalDueKRW: number } | undefined;
+      const strategyNotes: string[] = [];
+      if (strategyForecast && !strategyForecast.funding && strategyForecast.quarters.length === 1) {
+        const derived = deriveFundingPlan(ev.filings.statements, built.documents, strategyForecast.quarters[0]!.quarter, [...ev.filings.excerpts, ...ev.filings.tables]);
+        const isFunding = (u: { field: string; code: string }) => u.field === "funding" || u.code.startsWith("FUNDING_") || u.code === "INVALID_DEBT_SCHEDULE";
+        if (derived.status === "derived") {
+          strategyForecast = { ...strategyForecast, funding: derived.plan };
+          fundingOrigin = "derived_from_filings";
+          noRefinancing = derived.noRefinancing;
+          const modelReasons = strategyUnavailable.filter(isFunding);
+          strategyUnavailable = strategyUnavailable.filter((u) => !isFunding(u));
+          strategyNotes.push(`자금 계획은 모델 초안이 아니라 ${derived.statement.period} 연결 재무제표(기말 ${derived.statement.periodEnd}, 접수번호 ${derived.statement.rceptNo})에서 결정론적으로 파생했습니다. ${derived.limitations.join(" ")}`);
+          if (modelReasons.length) strategyNotes.push(`모델 자금 계획을 쓰지 않은 이유: ${modelReasons.map((u) => `[${u.code}] ${u.message}`).join(" / ")}`);
+        } else {
+          strategyUnavailable = [...strategyUnavailable, { field: "funding", code: derived.code, message: derived.message }];
+        }
+      }
       const strategyAuto = evaluateAutoStrategy({
         ticker,
         decisionAt,
         mode: live ? "live" : "retrospective_research",
-        forecast: research?.strategy.forecast ?? null,
+        forecast: strategyForecast,
+        fundingOrigin,
+        noRefinancing,
+        notes: strategyNotes,
         currentConsensus: research?.strategy.currentConsensus ?? null,
         quarterlyConsensus: ev.market.quarterlyConsensus ?? [],
         quarterlyActuals: ev.market.quarterlyActuals ?? [],
         dailyCloses: ev.market.dailyCloses ?? [],
         priorConsensus: research?.strategy.priorConsensus ?? null,
         catalyst: research?.strategy.catalyst ?? null,
-        unavailable: research?.strategy.unavailable ?? [{ field: "all", code: "NO_MODEL_DRAFT", message: "no model draft was produced for this analysis (see partialReasons)" }],
+        unavailable: strategyUnavailable,
         minimumCashBufferKRW: this.deps.strategyMinimumCashBufferKRW ?? 0,
         cashBufferConfigured: this.deps.strategyMinimumCashBufferKRW !== undefined,
       });

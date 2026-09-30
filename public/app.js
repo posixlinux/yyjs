@@ -240,7 +240,7 @@ function renderAssumption(a) {
   const srcNode = src.url ? safeLink(src.url, src.title || src.url) : document.createTextNode(src.title || src.manualReference || "출처 미상");
   return el("li", {},
     el("strong", { text: `${humanizeFieldPath(a.fieldPath)}: ` }), a.rationale,
-    el("div", { class: "small" }, "출처: ", srcNode, " · 모델 추정 · 별도 모델 검토 없음"));
+    el("div", { class: "small" }, "출처: ", srcNode, a.isModelEstimate === false ? " · 공시 재무제표 기반 결정론적 파생 가정(모델 추정 아님)" : " · 모델 추정 · 별도 모델 검토 없음"));
 }
 
 function renderStrategyAuto(sa) {
@@ -309,12 +309,17 @@ function renderStrategyAuto(sa) {
     parts.push(el("p", {}, el("strong", { text: "자금 상태(기본 시나리오): " }),
       `분기 경계 최저 현금 ${big(b.minimumQuarterBoundaryCashKRW)}, 추가 자금 필요액 ${big(b.peakAdditionalFundingRequiredKRW)}`));
     parts.push(el("p", { class: "small", text: `하방 시나리오: 분기 경계 최저 현금 ${big(sa.risk.stress.minimumQuarterBoundaryCashKRW)}, 추가 자금 필요액 ${big(sa.risk.stress.peakAdditionalFundingRequiredKRW)}` }));
-    parts.push(el("p", { class: "small", text: "공시 자료에 근거한 자금 계획 추정치입니다. 분기 중 현금 부족은 계산 범위에 포함되지 않습니다." }));
+    parts.push(el("p", { class: "small", text: sa.fundingOrigin === "derived_from_filings"
+      ? "자금 계획 출처: 모델 자금 계획을 확보하지 못해 수집된 DART 연결 재무제표(재무상태표·현금흐름표 누적액)에서 결정론적으로 파생한 가정입니다. 공시된 미래 계획이 아니며 산식·한계는 아래 '근거로 쓰인 가정'에 있습니다. 분기 중 현금 부족은 계산 범위에 포함되지 않습니다."
+      : "공시 자료에 근거한 자금 계획 추정치(모델 작성, 출처 검증)입니다. 분기 중 현금 부족은 계산 범위에 포함되지 않습니다." }));
     const fundingRows = b.quarters.map((q) => el("tr", {}, el("td", { text: q.quarter }),
       ...[q.openingCashKRW, q.capexKRW, q.deltaWorkingCapitalKRW, q.debtPrincipalDueKRW, q.endingCashKRW, q.additionalFundingRequiredKRW].map((n) => el("td", { text: big(n) }))));
     parts.push(el("div", { class: "tablewrap" }, el("table", {},
       el("thead", {}, el("tr", {}, ...["분기", "기초 현금", "설비·무형자산 투자", "운전자본 증가", "차입 상환", "기말 현금", "추가 자금 필요"].map((text) => el("th", { text })))),
       el("tbody", {}, fundingRows))));
+    const nr = sa.noRefinancingBound;
+    if (nr)
+      parts.push(el("p", { class: "small", text: `차환 없음 보수적 경우: 1년 내 만기 차입 ${big(nr.currentDebtKRW)}이 이번 분기에 전액 도래하면(위 표는 4개 분기 균등 도래 가정 ${big(nr.assumedPrincipalDueKRW)}) 기말 현금 기본 ${big(nr.baseEndingCashKRW)}, 하방 ${big(nr.stressEndingCashKRW)}, 추가 자금 필요액 기본 ${big(nr.baseAdditionalFundingRequiredKRW)}, 하방 ${big(nr.stressAdditionalFundingRequiredKRW)}` }));
   } else {
     parts.push(el("p", { class: "small", text: "자금 위험을 계산할 수 있는 검증된 자금 계획을 확보하지 못했습니다." }));
     const fundingReasons = (sa.missing || []).filter((m) => m.field === "funding" || m.code.startsWith("FUNDING_") || m.code === "INVALID_DEBT_SCHEDULE");
@@ -330,7 +335,7 @@ function renderStrategyAuto(sa) {
   }
 
   if ((sa.assumptions || []).length)
-    parts.push(el("details", {}, el("summary", { text: `근거로 쓰인 가정 ${sa.assumptions.length}건 (모두 모델 추정치, 출처 연결)` }),
+    parts.push(el("details", {}, el("summary", { text: `근거로 쓰인 가정 ${sa.assumptions.length}건 (${sa.assumptions.every((a) => a.isModelEstimate !== false) ? "모두 모델 추정치" : "모델 추정치·공시 파생 가정"}, 출처 연결)` }),
       el("ul", { class: "plain" }, sa.assumptions.map(renderAssumption))));
 
   if ((sa.missing || []).length)
