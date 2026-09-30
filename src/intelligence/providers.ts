@@ -134,19 +134,49 @@ const parseEnvelope = (raw: string): unknown => {
   }
 };
 
-/** Pull a JSON object out of model text: tolerate ```json fences and leading/trailing prose. */
-export const extractJson = (text: string): unknown => {
-  const t = text.trim();
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(t)?.[1] ?? t;
-  for (const candidate of [fenced, fenced.slice(fenced.indexOf("{"), fenced.lastIndexOf("}") + 1)]) {
-    try {
-      return JSON.parse(candidate);
-    } catch {
-      /* try next */
+const tryParse = (s: string): unknown => {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return undefined;
+  }
+};
+
+/** Every balanced top-level {...} span in `s`, in order (string- and escape-aware, so braces inside strings don't count). */
+const objectSpans = (s: string): string[] => {
+  const out: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (c === "\\") i++;
+      else if (c === '"') inStr = false;
+    } else if (c === '"') {
+      if (depth > 0) inStr = true;
+    } else if (c === "{") {
+      if (depth++ === 0) start = i;
+    } else if (c === "}" && depth > 0 && --depth === 0) {
+      out.push(s.slice(start, i + 1));
     }
   }
-  return undefined;
+  return out;
 };
+
+/** Every JSON object parsable out of model text, in order: the whole (unfenced) reply, the first-"{"..last-"}" slice,
+ * then each balanced top-level object. The last covers replies holding more than one object (e.g. two ```json blocks,
+ * or an answer followed by a restated/corrected one), where a single JSON.parse fails with "non-whitespace after JSON". */
+export const extractJsonCandidates = (text: string): unknown[] => {
+  const t = text.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(t)?.[1] ?? t;
+  const whole = tryParse(fenced) ?? tryParse(fenced.slice(fenced.indexOf("{"), fenced.lastIndexOf("}") + 1));
+  if (whole !== undefined) return [whole];
+  return objectSpans(t).map(tryParse).filter((v) => v !== undefined);
+};
+
+/** Pull a JSON object out of model text: tolerate ```json fences and leading/trailing prose. */
+export const extractJson = (text: string): unknown => extractJsonCandidates(text)[0];
 
 /** Shape-only description of a reply that held no parsable JSON (never its content): enough to tell a reply cut off
  * mid-object (starts with "{", no closing "}", "Unterminated string" / "Unexpected end") from prose or a syntax slip. */
@@ -160,8 +190,11 @@ export const badJsonDetail = (text: string): string => {
     parseError = sanitize(String((e as Error)?.message ?? e).replace(/\s*\(line \d+ column \d+\)/g, "").replace(/,? ".*is not valid JSON$/s, ""), undefined, 100);
   }
   const shape = `replyChars=${t.length} startsWithBrace=${body.startsWith("{")} endsWithBrace=${body.endsWith("}")} fenced=${t.startsWith("```")}`;
-  const truncated = body.startsWith("{") && !body.endsWith("}") ? " -- the reply looks cut off mid-object (output length limit?)" : "";
-  return `${shape}${parseError ? ` parseError=${JSON.stringify(parseError)}` : ""}${truncated}`;
+  const hint =
+    body.startsWith("{") && !body.endsWith("}") ? " -- the reply looks cut off mid-object (output length limit?)"
+    : /after JSON/i.test(parseError) ? " -- a complete object was followed by more content (several objects or trailing text), none of which parsed alone"
+    : "";
+  return `${shape}${parseError ? ` parseError=${JSON.stringify(parseError)}` : ""}${hint}`;
 };
 
 // Claude Code ends a turn that hits its output-token cap with this text as a "successful" result (no is_error), so
@@ -281,9 +314,11 @@ async function callProviderInner<S extends z.ZodType>(
     const env = provider === "claude" ? claudeEnvelope(result.stdout) : agyEnvelope(result.stdout);
     if ("code" in env) return { ...fail(provider, env.code, env.message, t0), cooldownMs: env.cooldownMs };
 
-    const json = extractJson(env.text);
-    if (json === undefined) return fail(provider, "BAD_JSON", `${provider} reply did not contain a JSON object (${badJsonDetail(env.text)})`, t0);
-    const parsed = schema.safeParse(json);
+    const candidates = extractJsonCandidates(env.text);
+    if (candidates.length === 0) return fail(provider, "BAD_JSON", `${provider} reply did not contain a JSON object (${badJsonDetail(env.text)})`, t0);
+    // Several objects: the last one that fits the schema is the model's final answer (it may have restated/corrected it).
+    const results = candidates.map((c) => schema.safeParse(c));
+    const parsed = results.findLast((r) => r.success) ?? results[0];
     if (!parsed.success) {
       const first = parsed.error.issues[0];
       return fail(provider, "SCHEMA_INVALID", `${provider} reply failed schema validation at ${sanitize(first?.path.join(".") || "(root)", undefined, 80)}: ${sanitize(first?.message ?? "", undefined, 100)}`, t0);
