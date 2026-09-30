@@ -270,7 +270,7 @@ export function analyze(input: Dataset, asOf: string) {
       "Residual (non-product) revenue is grown at a constant rate without seasonality; taxes are not credited on pre-tax losses.",
       "Pre-tax income is operating profit plus the stated net interest only; equity-method results and other non-operating gains/losses are not modelled.",
       "Share count must be diluted COMMON shares only. Earnings allocated to preferred classes (dividends AND any participation) must be supplied explicitly as preferredClaimsKRW with a rationale; the model does not derive capital-class rights, so a wrong or omitted value silently overstates common EPS.",
-      "Output quality is bounded by the cited sources. Global product market revenue is rarely machine-readable: public collection surfaces candidates and news, dual LLM review can only accept figures that are quoted from supplied documents, and otherwise the market inputs must be supplied manually (POST /v1/datasets).",
+      "Output quality is bounded by the cited sources. Global product market revenue is rarely machine-readable: public collection surfaces candidates and news, dual LLM review can only accept figures that are quoted from supplied documents, and otherwise market inputs are inferred as flagged estimates (see the report).",
       "Observed quarters are ended-quarter actuals; the target quarter is a projection (nowcast), never an observation.",
     ],
   };

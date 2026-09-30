@@ -86,7 +86,7 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 
 ## 부족 입력 (`requiredInputs`)
 
-`quarterlyGlobalMarketRevenue`, `competitorRevenue`(경쟁사를 요청한 경우만), `comparableRevenueShare`, `growthAssumptions`, `productCoverage`, `companyQuarterlyFinancials`, `fxToKrw`, `dilutedCommonShares`, `noncontrollingInterestAndNetInterestAndTax`, `valuationMultiple`, `currentQuote` 각각에 `missing | candidate_only | reference_only | available_unverified`와 설명을 붙인다. `fxToKrw`, `dilutedCommonShares`는 이 모듈이 절대 채우지 않는다. 핵심 모델은 이 목록을 사용자에게 그대로 전달하거나 수동 데이터셋(`POST /v1/datasets`)으로 채워야 한다.
+`quarterlyGlobalMarketRevenue`, `competitorRevenue`(경쟁사를 요청한 경우만), `comparableRevenueShare`, `growthAssumptions`, `productCoverage`, `companyQuarterlyFinancials`, `fxToKrw`, `dilutedCommonShares`, `noncontrollingInterestAndNetInterestAndTax`, `valuationMultiple`, `currentQuote` 각각에 `missing | candidate_only | reference_only | available_unverified`와 설명을 붙인다. `fxToKrw`, `dilutedCommonShares`는 이 모듈이 절대 채우지 않는다. 핵심 모델은 이 목록을 사용자에게 그대로 전달하고, 모델 초안이 채운 값은 추정 표시와 함께 `result.research.draftDataset`에 남는다.
 
 ## 이슈 코드 (일부)
 

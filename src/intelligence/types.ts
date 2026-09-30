@@ -233,6 +233,8 @@ export type AnalysisResult = {
    * as a PROVISIONAL result with every concern reported (research/service.ts); absent/null when unusable.
    */
   provisionalDataset?: Dataset | null;
+  /** The drafting model's dataset exactly as proposed (unvalidated; may violate the schema). Null when no draft was made. */
+  draftDataset?: unknown;
   missingFields: string[];
   narrative: Proposal["narrative"] | null; // Korean; unreviewed unless status=accepted
   citations: Citation[]; // only citations that passed verification

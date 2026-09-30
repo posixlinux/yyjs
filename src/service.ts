@@ -1,12 +1,11 @@
-import { DatasetSchema, type Dataset } from "./domain/schema.js";
+import type { Dataset } from "./domain/schema.js";
 import { seoulToday } from "./domain/time.js";
 import { validateAsOf, validateStatic } from "./domain/validate.js";
-import { classifySecurity } from "./domain/security.js";
 import { AppError, dataError } from "./errors.js";
 import { analyze } from "./model/model.js";
 import type { LocalStore } from "./providers/local.js";
 
-export type Mode = "demo" | "manual";
+export type Mode = "demo";
 
 const summary = (ds: Dataset, mode: Mode) => ({
   ticker: ds.company.ticker,
@@ -19,13 +18,13 @@ const summary = (ds: Dataset, mode: Mode) => ({
 
 export class Service {
   constructor(
-    private stores: { manual: LocalStore; demo: LocalStore },
+    private stores: { demo: LocalStore },
     private opts: { demoEnabled: boolean; now: () => Date },
   ) {}
 
   private store(mode: Mode): LocalStore {
-    if (mode === "demo" && !this.opts.demoEnabled)
-      throw new AppError(400, "DEMO_MODE_DISABLED", "Demo mode is disabled on this server", undefined, "Use mode=manual with an ingested dataset, or set DEMO_MODE_ENABLED=true.");
+    if (!this.opts.demoEnabled)
+      throw new AppError(400, "DEMO_MODE_DISABLED", "Demo mode is disabled on this server", undefined, "Use mode=public, or set DEMO_MODE_ENABLED=true.");
     return this.stores[mode];
   }
 
@@ -35,16 +34,14 @@ export class Service {
       "COMPANY_NOT_FOUND",
       `No ${mode} dataset registered for ticker ${ticker}`,
       { ticker, mode },
-      mode === "manual"
-        ? "Register one with POST /v1/datasets (schema: GET /v1/schema, sample: examples/dataset.example.json). Demo fixtures require mode=demo."
-        : "Demo fixtures exist only for a few fictional profiles; see GET /v1/companies?mode=demo.",
+      "Demo fixtures exist only for a few fictional profiles; see GET /v1/companies. Real companies are analysed with mode=public.",
     );
   }
 
-  async listCompanies(query: string | undefined, mode?: Mode) {
-    const modes: Mode[] = mode ? [mode] : this.opts.demoEnabled ? ["manual", "demo"] : ["manual"];
+  async listCompanies(query: string | undefined) {
+    if (!this.opts.demoEnabled) return [];
     const q = query?.trim().toLowerCase();
-    const out = (await Promise.all(modes.map(async (m) => (await this.store(m).list()).map((d) => summary(d, m))))).flat();
+    const out = (await this.store("demo").list()).map((d) => summary(d, "demo"));
     return out.filter((c) => !q || c.ticker.startsWith(q) || c.name.toLowerCase().includes(q));
   }
 
@@ -69,7 +66,7 @@ export class Service {
     return asOf ?? today;
   }
 
-  /** Synchronous analysis of a stored dataset (demo fixtures or manually ingested). */
+  /** Synchronous analysis of a bundled demo fixture. */
   async analyze(req: { ticker: string; asOf?: string; mode: Mode }) {
     const asOf = this.resolveAsOf(req.asOf);
     const ds = await this.store(req.mode).get(req.ticker);
@@ -77,19 +74,5 @@ export class Service {
     const issues = [...validateStatic(ds), ...validateAsOf(ds, asOf)];
     if (issues.length) throw dataError(issues, `Dataset for ${req.ticker} cannot be used for asOf ${asOf}`);
     return { mode: req.mode, ...analyze(ds, asOf) };
-  }
-
-  /** Validates and atomically persists a real (non-synthetic) dataset; replaces an existing ticker. */
-  async ingest(body: unknown) {
-    const ds = DatasetSchema.parse(body);
-    if (ds.synthetic) throw dataError([{ code: "SYNTHETIC_NOT_ALLOWED", path: "synthetic", message: "synthetic datasets cannot be ingested into the manual store" }]);
-    const issues = [
-      ...classifySecurity({ ticker: ds.company.ticker, names: [ds.company.name], checkTickerSuffix: false }).map((r) => ({ code: "NOT_COMMON_STOCK", path: "company", message: r.message })),
-      ...validateStatic(ds),
-      ...validateAsOf(ds, seoulToday(this.opts.now())).filter((i) => i.code === "FUTURE_EVIDENCE"),
-    ];
-    if (issues.length) throw dataError(issues);
-    const created = await this.stores.manual.put(ds);
-    return { created, ...summary(ds, "manual") };
   }
 }

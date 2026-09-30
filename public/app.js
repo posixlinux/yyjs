@@ -149,6 +149,12 @@ function renderResearch(r) {
   if (n.competition) parts.push(el("div", { class: "box" }, el("strong", { text: "경쟁 구도 " }), n.competition));
   if (r.status === "single_model") parts.push(el("div", { class: "box warn" }, el("strong", { text: "교차검증 없음: " }), "한쪽 모델의 로그인/쿼터가 만료되어 나머지 모델의 결과만 사용했습니다. 인용·숫자·날짜의 결정론적 검사는 모두 적용되었습니다."));
   else if (!r.narrativeReviewed && (n.product || n.industry)) parts.push(el("p", { class: "small", text: "※ 서술은 두 모델의 교차검토를 통과하지 못한 초안입니다." }));
+  const d = r.draftDataset;
+  if (d) {
+    const label = { reviewed: "검토 통과", provisional: "잠정 (소프트 문제만)", rejected: "거부된 원본 초안" }[d.status] || d.status;
+    parts.push(el("details", {}, el("summary", { text: `초안 데이터셋 JSON — ${label}${d.serverRepaired ? ", 서버 보정 적용" : ""}` }),
+      el("pre", { class: "json", text: JSON.stringify(d.dataset, null, 2) })));
+  }
   return section("모델 검토 (Claude + agy)", ...parts);
 }
 

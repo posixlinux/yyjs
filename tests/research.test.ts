@@ -178,7 +178,9 @@ describe("POST /v1/analyses (public default)", () => {
     expect(stmt).toMatchObject({ url: RECEIPT("20251114000001"), publishedAt: "2025-11-14" });
     docs.forEach((d) => expect(EvidenceDocumentSchema.safeParse(d).success).toBe(true));
 
-    // extracted datasets are never auto-persisted as manual data
+    // the draft dataset is returned with the result, but never persisted
+    expect(r.research.draftDataset).toMatchObject({ status: "reviewed", serverRepaired: false, dataset: { company: { ticker: "111110" } } });
+    expect(r.research.draftDataset.dataset).toEqual(makeDataset());
     expect((await app.inject({ url: "/v1/companies/111110" })).statusCode).toBe(404);
     expect(await readFile(path.join(dataDir, "111110.json"), "utf8").catch(() => null)).toBeNull();
     // finite numbers only
@@ -208,7 +210,7 @@ describe("POST /v1/analyses (public default)", () => {
     expect(collect).not.toHaveBeenCalled();
   });
 
-  it("keeps explicit demo/manual synchronous while public is the default", async () => {
+  it("keeps explicit demo synchronous while public is the default; there is no manual mode", async () => {
     const demoNow = new Date("2026-09-28T12:00:00Z");
     const { app } = await setup({}, demoNow, { collect: async () => evidence(), intelligence: async () => accepted(null) });
     const demo = await submit(app, { ticker: "005930", asOf: "2026-09-28", mode: "demo" });
@@ -217,7 +219,8 @@ describe("POST /v1/analyses (public default)", () => {
     const dflt = await submit(app, { ticker: "005930", asOf: "2026-09-28" });
     expect(dflt.statusCode).toBe(202); // default is the async public job, never demo data
     const manual = await submit(app, { ticker: "005930", asOf: "2026-09-28", mode: "manual" });
-    expect(manual.statusCode).toBe(404); // and manual never falls back to demo
+    expect(manual.statusCode).toBe(400);
+    expect(manual.json().error.code).toBe("VALIDATION_ERROR");
   });
 
   it("returns 404 for unknown or wrong-kind job ids and 400 for malformed ids", async () => {
@@ -478,6 +481,21 @@ describe("partial results never carry a valuation", () => {
     expect(body.result.valuation).toMatchObject({ status: "available", grade: "provisional" });
     const reason = body.result.partialReasons.find((r: any) => r.code === "RESEARCH_PROVISIONAL");
     expect(reason).toMatchObject({ severity: "warning", details: [{ code: "AUDIT_UNCONFIRMED", path: "quote.priceKRW" }] });
+    expect(body.result.research.draftDataset).toMatchObject({ status: "provisional", dataset: { company: { ticker: "111110" } } });
+  });
+
+  it("returns the raw draft dataset as rejected when the review produced no usable dataset", async () => {
+    const raw = { ...makeDataset(), quote: { priceKRW: -1 } };
+    const draft = accepted(null, { status: "rejected", draftDataset: raw });
+    const { body } = await partialCase(evidence(), draft);
+    noPrices(body);
+    expect(body.result.partialReasons.map((r: any) => r.code)).toContain("RESEARCH_NOT_ACCEPTED");
+    expect(body.result.research.draftDataset).toEqual({ status: "rejected", serverRepaired: false, dataset: raw });
+  });
+
+  it("reports no draft dataset when the models produced none", async () => {
+    const { body } = await partialCase(evidence(), accepted(null, { status: "unavailable" }));
+    expect(body.result.research.draftDataset).toBeNull();
   });
 
   it("a provider error next to a provisional dataset is a warning, not a block", async () => {
@@ -580,7 +598,7 @@ describe("POST /v1/research (evidence only)", () => {
 // ---- auth --------------------------------------------------------------------------------------------------------
 
 describe("API_KEY protects costly jobs and mutations", () => {
-  it("requires x-api-key for public analyses, research and job results; demo/manual stay open", async () => {
+  it("requires x-api-key for public analyses, research and job results; demo stays open", async () => {
     const t = await setup({ apiKey: "s3cret-key" }, new Date("2026-09-28T12:00:00Z"), { collect: async () => evidence(), intelligence: async () => accepted(null) });
     const key = { "x-api-key": "s3cret-key" };
     expect((await submit(t.app, { ticker: "111110", asOf: "2026-09-28" })).statusCode).toBe(401);
@@ -1072,17 +1090,6 @@ describe("common stock only", () => {
     const { body } = await poll(t.app, (await submit(t.app)).json().statusUrl);
     expect(body).toMatchObject({ status: "failed", error: { code: "NOT_COMMON_STOCK" } });
     expect(intelligence).not.toHaveBeenCalled();
-  });
-
-  it("refuses to ingest a manual dataset for a preferred share, REIT or ETF name", async () => {
-    const { app } = await setup({}, NOW, { collect: vi.fn(), intelligence: vi.fn() });
-    for (const name of ["테스트우선주", "테스트리츠", "KODEX 테스트 ETF"]) {
-      const ds = makeDataset();
-      ds.company.name = name;
-      const res = await app.inject({ method: "POST", url: "/v1/datasets", payload: ds });
-      expect(res.statusCode, name).toBe(422);
-      expect(JSON.stringify(res.json())).toContain("NOT_COMMON_STOCK");
-    }
   });
 });
 

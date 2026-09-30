@@ -256,7 +256,7 @@ function requiredInputs(e: PublicEvidence): RequiredInput[] {
   const need = (field: string, status: RequiredInput["status"], detail: string): RequiredInput => ({ field, status, detail });
   return [
     need("quarterlyGlobalMarketRevenue", has((c) => c.kind === "market_size" && c.basis === "quarterly") ? "candidate_only" : "missing",
-      "Quarterly global product-market revenue (explicit currency and definition). Filing text may give annual or company-defined market sizes; those are never converted to quarterly. Supply via a validated manual dataset."),
+      "Quarterly global product-market revenue (explicit currency and definition). Filing text may give annual or company-defined market sizes; those are never converted to quarterly by the collector."),
     ...(e.competitors
       ? [need("competitorRevenue", e.competitors.length ? "available_unverified" : "missing",
           e.competitors.length

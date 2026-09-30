@@ -14,7 +14,7 @@ async function setup(withStrategy = true) {
   const dataDir = await tmpDir("http");
   let clock = "2026-01-12T00:00:00+09:00";
   const config = { ...loadConfig({}), dataDir, demoDir: dataDir, logLevel: "silent", apiKey: "test-key", now: () => new Date(clock) };
-  const service = new Service({ manual: new LocalStore(dataDir, false), demo: new LocalStore(dataDir, true) }, config);
+  const service = new Service({ demo: new LocalStore(dataDir) }, config);
   const research = new ResearchService(
     { collect: async () => { throw new Error("not used"); }, intelligence: async () => { throw new Error("not used"); }, now: config.now, secrets: config.secrets },
     config.jobs,

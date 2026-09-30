@@ -6,7 +6,7 @@ import { ResearchService } from "../src/research/service.js";
 import { Service } from "../src/service.js";
 
 const config = { ...loadConfig({}), logLevel: "silent" };
-const service = new Service({ manual: new LocalStore(config.dataDir, false), demo: new LocalStore(config.demoDir, true) }, config);
+const service = new Service({ demo: new LocalStore(config.demoDir) }, config);
 const research = new ResearchService(
   {
     collect: (input, { signal }) => collectPublicEvidence(input, { signal, env: { ...process.env, DART_API_KEY: "" } }),

@@ -3,7 +3,7 @@
 KOSPI 상장사 한 곳을 골라 **공시·시세·뉴스 자동 수집 → Claude + agy(Antigravity CLI) 이중 검토 → 결정론적 재무 모델 → 다음 분기말 비관·기본·낙관 시나리오 가격**을 계산하는 로컬 우선(local-first) 서버입니다. 매매·주문·배포 기능은 없습니다.
 
 - Node.js ≥ 22, TypeScript, Fastify, Zod, Vitest
-- **기본 워크플로는 공개 자료 자동 수집(`mode: "public"`)** 입니다: DART 정기보고서/재무제표 + Naver 시세·뉴스. 수동 데이터셋(`manual`)과 가상 데모(`demo`)는 명시적으로 요청할 때만 동작합니다.
+- **기본 워크플로는 공개 자료 자동 수집(`mode: "public"`)** 입니다: DART 정기보고서/재무제표 + Naver 시세·뉴스. 가상 데모(`demo`)는 명시적으로 요청할 때만 동작합니다. 수동 데이터셋 입력 경로는 없습니다.
 - **LLM은 구조화·교차검증만** 합니다. 돈 계산은 순수 TypeScript 모델이 하며, LLM이 만든 값은 문서 인용(원문 구절 + 숫자 대조)과 두 번째 모델의 독립 감사를 통과해야 교차검증된 데이터셋으로 인정됩니다. 한쪽 모델의 로그인/쿼터가 만료되면 그 모델은 호출하지 않고 나머지 모델의 결과만 쓰되(결정론적 검사는 그대로 적용) **교차검증 없음**으로 표시합니다.
 - **가능하면 가격을 계산합니다.** 모델 데이터셋이 교차검증을 통과하지 못해도 *하드 검사*(스키마, 올바른 회사, 합성 아님, asOf 이후 데이터 없음, 이중 계산·연간/분기·통화 혼동 없음)를 통과하면 **잠정 가격**(`valuation.grade: "provisional"`)을 내고, 걸린 모든 검사를 `partialReasons`에 `severity: "warning"`으로 남깁니다. 하드 검사에 걸리거나 데이터셋이 아예 없으면 **가격 없이 partial 결과**(수집 근거, 제품/산업 서술, 부족한 입력, 사유)를 돌려줍니다. 합성 데이터로 조용히 대체하지 않습니다.
 - 결과는 투자 권고가 아니며 `targetPriceKRW`는 **밸류에이션 프록시**(연환산 EPS × PE)이지 실현 주가 예측이 아닙니다. 확률/신뢰도는 제공하지 않습니다.
@@ -50,7 +50,7 @@ npm start                   # 또는 개발용: npm run dev
 - 모델 없이 근거만 확인하려면 agy 로그인 전에도 `POST /v1/research`(evidence-only)를 쓸 수 있습니다.
 - 실제 네트워크 스모크(LLM 미사용): `npm run smoke:public -- 005930` (DART 키가 없으면 Naver만).
 - **분석 대상은 KOSPI 일반주(보통주)만**입니다. 우선주(티커 끝자리 ≠ 0 또는 `…우`/`…2우B` 이름), ETF/ETN(Naver `stockEndType`), 리츠·인프라투융자회사·스팩·선박투자회사(법인명·DART 업종코드 6420x)는 거부합니다.
-  - `POST /v1/analyses`, `POST /v1/research`: 우선주 티커는 네트워크 호출 없이 즉시 **422 `NOT_COMMON_STOCK`**, ETF/리츠 등은 수집 직후 job이 `failed`(`error.code: NOT_COMMON_STOCK`)이며 모델은 호출되지 않습니다. 수동 데이터셋(`POST /v1/datasets`)도 이름이 우선주/리츠/ETF 등이면 422입니다.
+  - `POST /v1/analyses`, `POST /v1/research`: 우선주 티커는 네트워크 호출 없이 즉시 **422 `NOT_COMMON_STOCK`**, ETF/리츠 등은 수집 직후 job이 `failed`(`error.code: NOT_COMMON_STOCK`)이며 모델은 호출되지 않습니다.
   - 이름·티커 규칙에 기반한 **최선 노력(best-effort) 선별**이며 거래소가 부여한 공식 분류가 아닙니다. 새로운 명명 규칙의 상품은 `src/domain/security.ts`에서 보완하세요.
 - `npm run doctor`는 증거 수집(DART 키)과 전체 분석(Claude 또는 agy 로그인, 둘 다면 교차검증)의 준비 상태를 따로 보고합니다.
 
@@ -59,17 +59,16 @@ npm start                   # 또는 개발용: npm run dev
 | 메서드 | 경로 | 설명 |
 |---|---|---|
 | GET | `/health` | 상태, 모델 버전, 작업 큐 통계, 연동 설정 여부(boolean만) |
-| POST | `/v1/analyses` | `{ticker, asOf?, mode?}`. **`mode` 기본 `public` → 비동기 작업 202**. `demo`/`manual`은 동기 200 |
+| POST | `/v1/analyses` | `{ticker, asOf?, mode?}`. **`mode` 기본 `public` → 비동기 작업 202**. `demo`는 동기 200 |
 | GET | `/v1/analyses/:id` | 작업 상태/결과 폴링 (`queued`/`running`/`completed`/`partial`/`failed`) |
 | POST | `/v1/research` | **근거 수집 전용 작업**(Claude/agy 호출 없음, 가치 산정 없음). 202 |
 | GET | `/v1/research/:id` | 근거 수집 작업 폴링 |
-| POST | `/v1/datasets` | 검증된 전체 데이터셋을 원자적으로 저장(수동 경로) |
-| GET | `/v1/companies?query=&mode=` | 등록(수동/데모) 종목 검색 |
-| GET | `/v1/companies/:ticker?mode=` | 등록 종목 프로파일 (기본 `manual`) |
-| GET | `/v1/schema` | 데이터셋 JSON Schema |
+| GET | `/v1/companies?query=` | 데모(가상) 종목 검색 |
+| GET | `/v1/companies/:ticker` | 데모(가상) 종목 프로파일 |
+| GET | `/v1/schema` | 데이터셋 JSON Schema (`result.research.draftDataset.dataset`의 형식) |
 
 - `asOf` 생략 시 **Asia/Seoul 오늘 날짜**. 미래 날짜는 400 `INVALID_AS_OF`.
-- `API_KEY`를 설정하면 **데이터셋 저장, 모든 public 분석/근거 수집 작업 생성 및 그 결과 조회**에 `x-api-key` 헤더가 필요합니다(`demo`/`manual` 동기 분석과 `health`는 제외). `HOST`가 루프백이 아니면 `API_KEY` 없이는 서버가 기동하지 않습니다.
+- `API_KEY`를 설정하면 **모든 public 분석/근거 수집 작업 생성 및 그 결과 조회**와 전략 기록 API에 `x-api-key` 헤더가 필요합니다(`demo` 동기 분석과 `health`는 제외). `HOST`가 루프백이 아니면 `API_KEY` 없이는 서버가 기동하지 않습니다.
 - 작업은 **메모리에만 저장**되어 서버 재시작 시 사라집니다. 완료 후 `RESEARCH_JOB_TTL_MS`(기본 1시간)가 지나면 404 `JOB_NOT_FOUND`.
 - 동일한 진행 중 요청(같은 종류·티커·asOf)은 **중복 제거**되어 같은 `id`를 돌려줍니다(`deduplicated: true`). 실행 중/대기 중 상한을 넘으면 429 `QUEUE_FULL`. 종료(`SIGINT/SIGTERM`) 시 실행 중 작업의 CLI 자식 프로세스를 중단하고 대기 작업은 실패 처리합니다.
 
@@ -99,10 +98,8 @@ curl -s localhost:3000/v1/research/<id>
 curl -s -X POST localhost:3000/v1/analyses -H 'content-type: application/json' \
   -d '{"ticker":"005930","asOf":"2026-09-28","mode":"demo"}'
 
-# 수동 데이터셋 적재 후 동기 분석
-curl -s -X POST localhost:3000/v1/datasets -H 'content-type: application/json' --data @examples/dataset.example.json
-curl -s -X POST localhost:3000/v1/analyses -H 'content-type: application/json' \
-  -d '{"ticker":"123456","asOf":"2026-09-28","mode":"manual"}'
+# 완료된 작업에서 모델이 만든 초안 데이터셋만 꺼내기 (jq 필요)
+curl -s localhost:3000/v1/analyses/<id> | jq '.result.research.draftDataset'
 curl -s localhost:3000/v1/schema
 ```
 
@@ -115,7 +112,7 @@ curl -s localhost:3000/v1/schema
   "createdAt": "…", "startedAt": "…", "finishedAt": "…", "expiresAt": "…",
   "result": {
     "evidence":  { /* 제공자 상태·이슈, 회사(KOSPI 검증), 시세, 뉴스, 공시 목록, 상품/지표 후보, requiredInputs, 모델에 전달한 문서 목록 */ },
-    "research":  { /* Claude/agy 각각의 상태·코드, `crossChecked`, 만료된 모델 목록(`unavailable`), 제품/산업 서술(한국어), 인용, 가정, 불일치, 부족 필드, 감사 결과 */ },
+    "research":  { /* Claude/agy 각각의 상태·코드, `crossChecked`, 만료된 모델 목록(`unavailable`), 제품/산업 서술(한국어), 인용, 가정, 불일치, 부족 필드, 감사 결과, 초안 데이터셋(`draftDataset`, 아래) */ },
     "analysis":  { /* 결정론적 모델 출력(아래 '모델' 참고). partial 이면 null */ },
     "valuation": { "status": "available | partial | unavailable", "scenarios": { "bear": "available", … }, "grade": "verified | provisional | null" },
     "partialReasons": [ { "code", "severity": "blocking | warning", "message", "details?" } ],
@@ -134,7 +131,19 @@ curl -s localhost:3000/v1/schema
 - `blocking`(가격 없음): `NO_EVIDENCE_DOCUMENTS`, `INTELLIGENCE_ERROR`, `RESEARCH_NOT_ACCEPTED`(쓸 수 있는 데이터셋 없음), `DATASET_SCHEMA_INVALID`, `DATASET_TICKER_MISMATCH`, `DATASET_SYNTHETIC`, `DATA_VALIDATION_FAILED`(하드 이슈: asOf 이후 데이터, FX/시장/커버리지 누락, 점유율 > 1, 매출 초과·이중 계산, 연간 기준 등), `MODEL_FAILED`.
 - `warning`(잠정 가격): `EXCHANGE_UNVERIFIED`, `QUOTE_MISSING`·`HISTORICAL_QUOTE_UNAVAILABLE`(데이터셋 문서상 시세를 미검증으로 사용), `PROVIDER_ERROR`(Claude/agy 상태는 `research.providers`), `RESEARCH_PROVISIONAL`(감사 미승인·미확인 숫자·인용 누락 등, 상세는 `research.audit.issues`), `DATASET_QUOTE_REPLACED`(수집한 Naver 시세로 교체), `DATASET_REPAIRED`(분기 정렬·중복 제거, 미종료 분기 제거, 점유율 범위 확장, 잔여 매출 가정 추가), `DATA_VALIDATION_WARNINGS`(오래된 근거, 커버리지 부족, 분기 급변 등), `VALUATION_UNAVAILABLE`.
 
-**추출된 데이터셋은 자동 저장하지 않습니다**(수동 저장소 오염 방지). 필요하면 결과를 검토한 뒤 직접 `POST /v1/datasets`로 올리세요.
+**초안 데이터셋 (`result.research.draftDataset`)**: 모델이 작성한 데이터셋을 결과에 그대로 싣습니다(저장하지 않음). 초안이 없으면(모델 미호출·전부 만료 등) `null`입니다.
+
+```jsonc
+"draftDataset": {
+  "status": "reviewed | provisional | rejected",
+  "serverRepaired": false,   // 서버가 분기 정렬·중복 제거 등 보정을 적용했는지(DATASET_REPAIRED)
+  "dataset": { /* GET /v1/schema 형식의 전체 데이터셋 */ }
+}
+```
+
+- `reviewed`: 모델 검토(교차검증 또는 단일 모델)를 통과한 데이터셋. `provisional`: 소프트 문제(미확인·미인용 숫자, 감사 미승인 등)만 있어 잠정 가격에 쓰인 데이터셋. 이 두 경우 `dataset`은 서버 보정 후 **가치 산정에 실제로 들어간 값**입니다(단, 서버 게이트의 차단 사유가 있으면 `analysis`는 `null`).
+- `rejected`: 하드 검사(스키마, 티커, asOf 이후 자료 등)에 실패한 **원본 초안 그대로**입니다. 스키마를 위반할 수 있으며 가치 산정에 쓰이지 않았습니다. 이유는 `research.audit.issues`와 `partialReasons`에 있습니다.
+- 초안의 추정 항목은 각 값의 `estimate`와 `research.estimates`로 구분됩니다.
 
 ## 이중 모델 검토 흐름
 
@@ -143,7 +152,7 @@ curl -s localhost:3000/v1/schema
 3. Claude가 초안(Dataset·서술·인용·가정)을, agy(Gemini 계열 모델)가 같은 원문으로 독립 감사를 수행합니다. **둘 다 성공하고 승인·확인하면** 교차검증된 데이터셋(`accepted`)입니다. 한쪽이 **만료**(쿼터/로그인/CLI 없음)면 그 모델은 호출하지 않고 나머지 모델의 초안만으로 진행하되(`single_model`) 인용·숫자·날짜 검사는 똑같이 통과해야 합니다. 만료가 아닌 감사 실패(타임아웃, 잘못된 응답, 불일치)는 그대로 partial입니다.
 4. 서버가 다시 검사: 스키마, 티커 일치, 실제 KOSPI 검증, 시세(가격·거래일) 일치, 정적·asOf 검증(아래 표). 통과하면 순수 `analyze()`로 계산합니다.
 
-한계: 인용 검증은 "원문에 그 구절이 있고 숫자가 도출된다"까지만 증명하며 의미의 진실성은 증명하지 못합니다. 공시 본문에 글로벌 제품 시장의 분기 매출 시계열이 없더라도(대부분 그렇습니다) 데이터셋 작성이 멈추지 않고, 아래 "추정치와 경쟁사 합계" 규칙에 따라 **추론한 값으로 예측**하되 그 사실을 모든 출력에 표시합니다. 시장조사 자료를 직접 `POST /v1/datasets`로 넣으면 추정 없이 더 정확해집니다.
+한계: 인용 검증은 "원문에 그 구절이 있고 숫자가 도출된다"까지만 증명하며 의미의 진실성은 증명하지 못합니다. 공시 본문에 글로벌 제품 시장의 분기 매출 시계열이 없더라도(대부분 그렇습니다) 데이터셋 작성이 멈추지 않고, 아래 "추정치와 경쟁사 합계" 규칙에 따라 **추론한 값으로 예측**하되 그 사실을 모든 출력에 표시합니다.
 
 ### 한 모델만 동작해도 모든 검사를 마칩니다
 
@@ -214,11 +223,7 @@ Market(T) = Market(L) / s[L의 분기] × (1+gq)^n × s[T의 분기] × c
 
 **관측 vs 예측 구분**: `facts.markets[].observedLatest`는 이미 끝난 분기의 실제 관측치(최신 분기, QoQ, 5분기 이상이면 YoY와 기준 분기)이고, `scenarios[]`는 목표 분기 **예측(nowcast)** 입니다(`marketVsLatestObservedPct`, `marketYoYPct`는 예측값을 관측치와 비교). `facts.productContribution`은 실적 분기 회사 매출 기여도 순위(주요 제품)입니다. 모든 출력 숫자는 유한(finite)함이 검증되며, 입력은 크기 상한으로 오버플로를 막습니다(`MODEL_NON_FINITE` 422).
 
-## 데이터셋 온보딩 (수동 경로)
-
-1. `examples/dataset.example.json`(가상 회사 123456, 전체 필드)을 복사해 `company.ticker`(6자리), `exchange: "KOSPI"`와 모든 값·출처를 실제 조사 값으로 교체합니다. 모든 관측치/가정에는 `source`(`title`, `publishedAt`, `url` 또는 `manualReference`)가 필요하고, `earningsBridge`에는 `rationale`이 필수입니다.
-2. `POST /v1/datasets` → 검증 통과 시 `DATA_DIR/<ticker>.json`에 임시파일→fsync→rename으로 원자적 저장. 실패한 요청은 아무것도 저장하지 않습니다.
-3. `POST /v1/analyses` with `"mode":"manual"`.
+## 데이터셋 구조
 
 구조: `company`, `quote`, `shares{dilutedCommon}`(희석 **보통주**), `fx[]`, `financials{quarter,totalRevenueKRW}`, `markets[]`(≥4개 연속 분기 관측 + 성장/계절성/주기 가정), `products[]`(시장당 1개, 시장과 같은 통화의 분기 매출, 점유율 변화·범위·마진), `residual`, `earningsBridge`(`netInterestKRW`, `effectiveTaxRate`, `noncontrollingShare`, `preferredClaimsKRW`), `valuation.peMultiple`.
 
@@ -248,7 +253,7 @@ Market(T) = Market(L) / s[L의 분기] × (1+gq)^n × s[T의 분기] × c
 - **Naver**: 시세는 **최신 스냅샷**(과거 종가 조회 아님)이라 과거 `asOf`에는 시세가 없어 partial입니다. 뉴스 스니펫/본문만으로는 검증된 예측이 아니며 뉴스는 예측 근거로 취급되지 않습니다.
 - **LLM**: Claude·agy 모두 같은 문서를 읽는 LLM이므로 합의가 곧 진실은 아닙니다. agy는 Google 로그인 개인 한도에 종속되며(2026-09 기준 소진 시 리셋까지 약 17시간), 프롬프트는 argv 한 개로 전달되므로 macOS 인자 한도(약 1MB) 아래로 제한됩니다(900,000바이트 초과 시 `OUTPUT_LIMIT`).
 - FX는 데이터셋의 단일 기준일 환율 하나로 모든 분기를 환산합니다. 잔여 부문은 계절성 없이 일정 성장률로 전개합니다. 인접 분기 3배 초과 변동은 연/분기 혼동으로 간주되어 실제로 급변하는 시장은 거부될 수 있습니다.
-- 작업 큐는 단일 프로세스 메모리(재시작 시 소실)입니다. 수동 저장소는 요청마다 디스크를 읽어 수천 종목 규모에는 색인이 필요합니다.
+- 작업 큐는 단일 프로세스 메모리(재시작 시 소실)입니다.
 - API 메시지는 영어, 문서는 한국어입니다. 상세: `COLLECTION.md`(수집), `INTELLIGENCE.md`(모델 실행·격리), `DATA_SOURCES.md`.
 
 ## 개발

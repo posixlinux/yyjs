@@ -192,7 +192,7 @@ export class ResearchService {
       if (ev.company.exchange !== "KOSPI") warn("EXCHANGE_UNVERIFIED", "KOSPI listing could not be verified by Naver or DART; the valuation relies on the dataset's own KOSPI claim");
       if (!ev.market.quote)
         asOf < today
-          ? warn("HISTORICAL_QUOTE_UNAVAILABLE", `asOf ${asOf} is before today (${today}); Naver only serves the latest quote snapshot, so no dated quote exists for that date. The dataset's quote (from the documents) is used unverified; use today's date or a manual dataset for a verified quote.`)
+          ? warn("HISTORICAL_QUOTE_UNAVAILABLE", `asOf ${asOf} is before today (${today}); Naver only serves the latest quote snapshot, so no dated quote exists for that date. The dataset's quote (from the documents) is used unverified; use today's date for a verified quote.`)
           : warn("QUOTE_MISSING", "No usable Naver quote was collected; the dataset's quote (from the documents) is used unverified");
       else if (asOf < today) notes.push(`Quote is Naver's latest snapshot traded ${ev.market.quote.tradedAt}, retrieved after asOf ${asOf}; it is used only because no later trade preceded the cutoff.`);
 
@@ -208,6 +208,9 @@ export class ResearchService {
       }
 
       let analysis: ReturnType<typeof analyze> | null = null;
+      // The model's draft dataset, always returned so a reviewer can inspect or reuse it. "reviewed": passed the model
+      // review; "provisional": only soft review issues; "rejected": failed hard checks (raw draft, may violate the schema).
+      let draftDataset: { status: "reviewed" | "provisional" | "rejected"; serverRepaired: boolean; dataset: unknown } | null = null;
       if (research) {
         // An expired provider (login/quota) is skipped, not a failure: a single-model dataset that passed every
         // deterministic check is still used, and the missing cross-check is reported prominently.
@@ -218,12 +221,15 @@ export class ResearchService {
           notes.push(`${u.provider} 사용 불가(${u.code}) — ${u.skippedWithoutCall ? "만료가 확인되어 호출하지 않고 건너뛰었습니다" : "호출했으나 만료되어 사용하지 않았습니다"}${singleModel ? ` (교차검증 없이 ${u.provider === "claude" ? "agy" : "claude"} 단일 모델 결과)` : ""}. 재사용 가능 시각(추정): ${u.retryAfter}`);
         const reviewed = (research.status === "accepted" || singleModel) && research.dataset ? research.dataset : null;
         const proposed = reviewed ?? research.provisionalDataset ?? null;
-        if (!proposed) block("RESEARCH_NOT_ACCEPTED", "Model review did not produce a usable dataset", research.audit.issues.map((i) => i.code));
-        else {
+        if (!proposed) {
+          block("RESEARCH_NOT_ACCEPTED", "Model review did not produce a usable dataset", research.audit.issues.map((i) => i.code));
+          if (research.draftDataset != null) draftDataset = { status: "rejected", serverRepaired: false, dataset: research.draftDataset };
+        } else {
           if (!reviewed)
             warn("RESEARCH_PROVISIONAL", "The model review did not accept the dataset; it is valued provisionally because it passed the hard checks (right company, nothing after asOf, schema). See details and research.audit.issues.", research.audit.issues.map((i) => ({ code: i.code, path: i.path })));
           const checked = this.checkDataset(proposed, ticker, asOf, ev);
           reasons.push(...checked.reasons);
+          draftDataset = { status: reviewed ? "reviewed" : "provisional", serverRepaired: checked.reasons.some((r) => r.code === "DATASET_REPAIRED"), dataset: checked.dataset ?? proposed };
           if (checked.dataset && !reasons.some((r) => r.severity === "blocking")) {
             try {
               analysis = analyze(checked.dataset, asOf);
@@ -331,6 +337,7 @@ export class ResearchService {
           crossChecked: research.crossChecked,
           estimates: research.estimates,
           unavailable: research.unavailable,
+          draftDataset, // null when no draft was produced; never persisted
         },
         analysis,
         report: analysis && research ? buildReport(analysis, research) : null,

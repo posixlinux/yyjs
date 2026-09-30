@@ -12,7 +12,7 @@ export const demoDir = path.join(process.cwd(), "data/demo");
 export async function setup(over: Partial<Config> = {}, now = NOW, deps: Partial<ResearchDeps> = {}) {
   const dataDir = await tmpDir("http");
   const config: Config = { ...loadConfig({}), dataDir, demoDir, logLevel: "silent", now: () => now, ...over };
-  const service = new Service({ manual: new LocalStore(dataDir, false), demo: new LocalStore(demoDir, true) }, config);
+  const service = new Service({ demo: new LocalStore(config.demoDir) }, config);
   const research = new ResearchService(
     {
       collect: async () => {
