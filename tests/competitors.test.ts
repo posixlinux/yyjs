@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { deflateRawSync } from "node:zlib";
+import { mkdtempSync, readdirSync, rmSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { createHttp } from "../src/collection/http.js";
 import { collectPublicEvidence, CollectionInputError } from "../src/collection/index.js";
 import { parseCompetitorIds } from "../src/collection/competitors.js";
 import { calendarPeriodOf } from "../src/collection/period.js";
@@ -236,5 +240,59 @@ describe("EDINET (Japan)", () => {
     expect(e.issues.some((i) => i.provider === "edinet" && i.code === "not_jp_domestic")).toBe(true);
     const n = await run(fake(edinetHandler), ["JP:8035"], {});
     expect(n.providers.competitors?.JP?.status).toBe("not_configured");
+  });
+});
+
+describe("persistent filing cache", () => {
+  const dir = () => mkdtempSync(path.join(tmpdir(), "yyjs-cache-"));
+
+  it("serves a stored filing from disk without a request, never stores rejected bodies, and honours the age", async () => {
+    const cacheDir = dir();
+    try {
+      let hits = 0;
+      const f = (async () => (hits++, new Response(hits === 1 ? "ZIPDATA" : "ERROR"))) as unknown as typeof fetch;
+      const client = () => createHttp({ fetch: (async (...a: Parameters<typeof fetch>) => f(...a)) as typeof fetch, timeoutMs: 1000, maxBytes: 1e6, maxRequests: 5, secrets: [], cacheDir });
+      const url = "https://opendart.fss.or.kr/api/document.xml?crtfc_key=SECRET&rcept_no=1";
+      const disk = { key: "dart:document:1", ttlMs: Infinity, validate: (b: Buffer) => b.toString() === "ZIPDATA" };
+      expect((await client().bytes(url, { disk })).toString()).toBe("ZIPDATA");
+      expect((await client().bytes(url, { disk })).toString()).toBe("ZIPDATA"); // new client (no memory cache): disk hit
+      expect(hits).toBe(1);
+      expect(readdirSync(cacheDir).join()).not.toContain("SECRET");
+
+      const rejected = { key: "dart:document:2", ttlMs: Infinity, validate: () => false };
+      await client().bytes(url.replace("=1", "=2"), { disk: rejected });
+      await client().bytes(url.replace("=1", "=2"), { disk: rejected });
+      expect(hits).toBe(3); // an upstream error body is never cached
+
+      const aged = { key: "dart:document:1", ttlMs: 60_000, validate: () => true };
+      const file = path.join(cacheDir, readdirSync(cacheDir).find((n) => n.endsWith(".bin"))!);
+      utimesSync(file, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
+      await client().bytes(url, { disk: aged });
+      expect(hits).toBe(4); // older than its ttl: refetched
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("a second analysis re-uses cached EDINET listings and documents instead of downloading them again", async () => {
+    const cacheDir = dir();
+    try {
+      const go = () => {
+        const f = fake(edinetHandler);
+        return collectPublicEvidence({ ticker: "000660", asOf: ASOF, competitors: ["JP:8035"] }, { fetch: f.fetch, now: NOW, env: { EDINET_API_KEY: EDINET_KEY }, maxArticles: 0, cacheDir }).then((e) => ({ e, f }));
+      };
+      const first = await go();
+      const edinet = (x: typeof first) => x.f.calls.filter((c) => c.url.hostname.includes("edinet"));
+      expect(edinet(first).length).toBeGreaterThan(3);
+      const second = await go();
+      // code list, past-day listings and both reports come from disk; only a listing for today (still growing) is re-read
+      const today = new Date(Date.now() + 9 * 3_600_000).toISOString().slice(0, 10);
+      expect(edinet(second).every((c) => c.url.pathname === "/api/v2/documents.json" && (c.url.searchParams.get("date") ?? "") >= today)).toBe(true);
+      expect(edinet(second).length).toBeLessThanOrEqual(1);
+      expect(second.e.competitors?.[0]?.periods).toEqual(first.e.competitors?.[0]?.periods);
+      expect(readdirSync(cacheDir).join()).not.toContain(EDINET_KEY);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
   });
 });

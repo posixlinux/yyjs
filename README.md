@@ -86,6 +86,10 @@ curl -s -i -X POST localhost:3000/v1/analyses -H 'content-type: application/json
 # 폴링 (완료까지 수 분 걸릴 수 있음)
 curl -s localhost:3000/v1/analyses/<id>
 
+# 경쟁사 공시 매출을 함께 수집 (한국·미국·일본만; 미국은 SEC_USER_AGENT, 일본은 EDINET_API_KEY 필요)
+curl -s -X POST localhost:3000/v1/analyses -H 'content-type: application/json' \
+  -d '{"ticker":"005380","competitors":["KR:000270","US:F","JP:7203"]}'
+
 # 근거만 수집 (LLM 미사용, agy 로그인 전에도 가능)
 curl -s -X POST localhost:3000/v1/research -H 'content-type: application/json' \
   -d '{"ticker":"005930","asOf":"2026-09-28"}'
@@ -235,6 +239,7 @@ Market(T) = Market(L) / s[L의 분기] × (1+gq)^n × s[T의 분기] × c
 ## 데이터 출처와 한계
 
 - **DART**: 정기보고서·재무제표·사업 내용을 제공하지만 글로벌 제품 시장 점유율/시장 규모 시계열은 제공하지 않습니다. 시장 매출은 공시 본문에 회사가 밝힌 경우만 후보로 추출됩니다(연/분기, 출하량/매출을 변환하지 않음).
+- **경쟁사 공시(DART·SEC EDGAR·EDINET)**: 요청의 `competitors`로 지정한 한국·미국·일본 기업의 공시 매출(회사 전체, 원 통화)을 근거 문서로 넘깁니다. 글로벌 비교는 이 세 나라 기업만 하며, 다른 나라 기업은 시장의 "기타"로 묶습니다. 일본은 2024년 이후 반기·연간 공시만 있어 분기 값은 추정(`period_allocation`)입니다. 환율 자료는 수집하지 않으므로 통화가 다르면 환산값은 추정으로 표시됩니다.
 - **Naver**: 시세는 **최신 스냅샷**(과거 종가 조회 아님)이라 과거 `asOf`에는 시세가 없어 partial입니다. 뉴스 스니펫/본문만으로는 검증된 예측이 아니며 뉴스는 예측 근거로 취급되지 않습니다.
 - **LLM**: Claude·agy 모두 같은 문서를 읽는 LLM이므로 합의가 곧 진실은 아닙니다. agy는 Google 로그인 개인 한도에 종속되며(2026-09 기준 소진 시 리셋까지 약 17시간), 프롬프트는 argv 한 개로 전달되므로 macOS 인자 한도(약 1MB) 아래로 제한됩니다(900,000바이트 초과 시 `OUTPUT_LIMIT`).
 - FX는 데이터셋의 단일 기준일 환율 하나로 모든 분기를 환산합니다. 잔여 부문은 계절성 없이 일정 성장률로 전개합니다. 인접 분기 3배 초과 변동은 연/분기 혼동으로 간주되어 실제로 급변하는 시장은 거부될 수 있습니다.

@@ -18,6 +18,8 @@ import type { StrategyService } from "../strategy/service.js";
 const digest = (s: string) => createHash("sha256").update(s).digest();
 const TickerParam = z.object({ ticker: z.string().regex(/^\d{6}$/, "six-digit KOSPI ticker") });
 const IdParam = z.object({ id: z.uuid() });
+// Long-poll: ?wait=<seconds, 0..60> holds a queued/running job's status request until it finishes (or the wait ends).
+const WaitQuery = z.object({ wait: z.coerce.number().int().min(0).max(60).optional() });
 const ModeQuery = z.enum(["demo", "manual"]).optional();
 
 export function buildApp(
@@ -133,7 +135,8 @@ export function buildApp(
 
   app.get("/v1/analyses/:id", async (req) => {
     requireKey(req.headers);
-    return research.getJob(IdParam.parse(req.params).id, "analysis");
+    const { wait } = WaitQuery.parse(req.query);
+    return research.waitJob(IdParam.parse(req.params).id, "analysis", (wait ?? 0) * 1000);
   });
 
   // Evidence-only collection job: never invokes Claude/agy.
@@ -146,7 +149,8 @@ export function buildApp(
 
   app.get("/v1/research/:id", async (req) => {
     requireKey(req.headers);
-    return research.getJob(IdParam.parse(req.params).id, "research");
+    const { wait } = WaitQuery.parse(req.query);
+    return research.waitJob(IdParam.parse(req.params).id, "research", (wait ?? 0) * 1000);
   });
 
   app.post("/v1/datasets", { onRequest: async (req) => requireKey(req.headers) }, async (req, reply) => {

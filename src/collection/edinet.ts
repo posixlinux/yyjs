@@ -31,6 +31,15 @@ export interface EdinetCtx {
   ttlMs: number;
 }
 
+const listOk = (buf: Buffer) => {
+  try {
+    const o = asRecord(JSON.parse(buf.toString("utf8")));
+    return str(asRecord(o?.metadata)?.status) === "200" && Array.isArray(o?.results);
+  } catch {
+    return false;
+  }
+};
+
 type Filer = { edinetCode: string; name: string; nameEn: string; fyEndMonth: number; domestic: boolean };
 type Doc = { docID: string; edinetCode: string; docTypeCode: string; periodStart: string; periodEnd: string; submitDateTime: string; csvFlag: string; withdrawn: boolean; description: string };
 
@@ -118,7 +127,10 @@ export function revenueFromCsv(tsv: string, kind: "FY" | "H1"): { value: number;
 async function listDate(c: EdinetCtx, date: string): Promise<Doc[]> {
   // A past date's listing never changes: memoised (minimal fields only) and shared by every company scanned.
   return c.http.memo(`edinet:list:${date}`, 24 * 3600_000, async () => {
-    const body = asRecord(await c.http.json(`${API}/documents.json?${new URLSearchParams({ date, type: "2", "Subscription-Key": c.key })}`));
+    // A past day's listing is settled (only a rare withdrawal flag changes); today's is still growing.
+    const past = date < new Date(Date.now() + 9 * 3_600_000).toISOString().slice(0, 10);
+    const body = asRecord(await c.http.json(`${API}/documents.json?${new URLSearchParams({ date, type: "2", "Subscription-Key": c.key })}`,
+      past ? { disk: { key: `edinet:list:${date}`, ttlMs: 30 * 86_400_000, validate: listOk } } : {}));
     const status = str(asRecord(body?.metadata)?.status) || str(body?.StatusCode);
     if (status && status !== "200") throw new CollectionError("upstream_error", `EDINET documents.json ${date} status ${status}: ${str(body?.message) || str(asRecord(body?.metadata)?.message)}`.slice(0, 300));
     const results = Array.isArray(body?.results) ? body.results : [];
@@ -132,7 +144,7 @@ async function listDate(c: EdinetCtx, date: string): Promise<Doc[]> {
 export async function collectEdinetRevenue(c: EdinetCtx): Promise<{ evidence: CompetitorEvidence | null; issues: CollectionIssue[] }> {
   const issues: CollectionIssue[] = [];
   const filers = await c.http.memo("edinet:codelist", 24 * 3600_000, async () => {
-    const buf = await c.http.bytes(CODELIST);
+    const buf = await c.http.bytes(CODELIST, { disk: { key: "edinet:codelist", ttlMs: 86_400_000, validate: isZip } });
     if (!isZip(buf)) throw new CollectionError("invalid_response", "EDINET code list is not a ZIP");
     const file = unzip(buf, ZIP, (n) => /\.csv$/i.test(n))[0];
     if (!file) throw new CollectionError("invalid_response", "EDINET code list ZIP has no CSV");
@@ -177,7 +189,9 @@ export async function collectEdinetRevenue(c: EdinetCtx): Promise<{ evidence: Co
     }
     let rev: ReturnType<typeof revenueFromCsv> = null;
     try {
-      const buf = await c.http.bytes(`${API}/documents/${f.doc.docID}?${new URLSearchParams({ type: "5", "Subscription-Key": c.key })}`, { ttlMs: c.ttlMs });
+      const buf = await c.http.bytes(`${API}/documents/${f.doc.docID}?${new URLSearchParams({ type: "5", "Subscription-Key": c.key })}`, {
+        ttlMs: c.ttlMs, disk: { key: `edinet:document:${f.doc.docID}:csv`, ttlMs: Infinity, validate: isZip }, // a submitted document never changes
+      });
       if (!isZip(buf)) throw new CollectionError("upstream_error", `EDINET document ${f.doc.docID} did not return a ZIP (${buf.toString("utf8", 0, 200)})`);
       for (const file of unzip(buf, ZIP, (n) => /XBRL_TO_CSV\/jpcrp.*\.csv$/i.test(n))) {
         rev = revenueFromCsv(new TextDecoder("utf-16le").decode(file.data), f.kind);

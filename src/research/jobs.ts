@@ -34,6 +34,7 @@ export class JobManager {
   private jobs = new Map<string, Job>();
   private queue: { job: Job; work: Work }[] = [];
   private running = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  private waiters = new Map<string, Set<() => void>>();
   private closed = false;
 
   constructor(
@@ -60,6 +61,25 @@ export class JobManager {
     this.sweep();
     const j = this.jobs.get(id);
     return j && j.kind === kind ? j : undefined;
+  }
+
+  /** Resolves when the job reaches a terminal status or after `ms`, whichever comes first (long-poll support). */
+  waitFor(id: string, ms: number): Promise<void> {
+    const job = this.jobs.get(id);
+    if (!job || job.finishedAt !== undefined || ms <= 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      const set = this.waiters.get(id) ?? new Set();
+      this.waiters.set(id, set);
+      const done = () => {
+        clearTimeout(timer);
+        set.delete(done);
+        if (!set.size) this.waiters.delete(id);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      timer.unref();
+      set.add(done);
+    });
   }
 
   expiresAt(job: Job): number | undefined {
@@ -122,6 +142,7 @@ export class JobManager {
     job.status = outcome.status;
     job.outcome = outcome;
     job.finishedAt = this.now();
+    for (const wake of [...(this.waiters.get(job.id) ?? [])]) wake();
   }
 
   private sweep() {

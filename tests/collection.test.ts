@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { deflateRawSync } from "node:zlib";
-import { collectPublicEvidence, CollectionInputError } from "../src/collection/index.js";
+import { collectPublicEvidence, CollectionInputError, cleanProductNames } from "../src/collection/index.js";
 import type { CollectionOptions, PublicEvidence } from "../src/collection/index.js";
 import { createHttp } from "../src/collection/http.js";
 import { unzip } from "../src/collection/zip.js";
@@ -951,6 +951,18 @@ describe("Naver article bodies", () => {
   it("stays backward compatible: item shape without article fields is unchanged when disabled", async () => {
     const e = await run(fake(naverHandler));
     expect(Object.keys(e.market.news[0] ?? {}).sort()).toEqual(["id", "officeName", "origin", "originalUrl", "publishedAt", "snippet", "title", "url"]);
+  });
+});
+
+describe("search-ready product names", () => {
+  it("drops table headers, financial lines, sentence fragments and segment codes (real DART candidates)", () => {
+    const names = (list: string[]) => list.flatMap(cleanProductNames);
+    // 현대차
+    expect(names(["금액", "차량부문", "영업이익", "총 자산", "기타부문", "RV", "소형상용", "내부매출액", "제품", "수 출", "AD&RH부문", "RS부문"])).toEqual(["차량", "RV", "소형상용"]);
+    // 삼성전자
+    expect(names(["DRAM, NAND Flash, 모바일AP 등", "부문간 내부거래 제거 등", "DX 부문", "SDC", "TV, 모니터 등", "제ㆍ상품", "용역 및 기타매출"])).toEqual(["DRAM", "NAND Flash", "모바일AP", "SDC", "TV", "모니터"]);
+    // SK하이닉스, LG화학
+    expect(names(["NAND를 중심으로 하는 메모리 반도체이며", "Foundry 사업도 병행하고 있습니다", "석유화학사업부문", "합성고무 등이 있습니다", "PE"])).toEqual(["석유화학", "PE"]);
   });
 });
 

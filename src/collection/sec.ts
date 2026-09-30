@@ -21,7 +21,15 @@ const CONCEPTS = [
   "SalesRevenueNet",
   "SalesRevenueGoodsNet",
 ];
-const DOMESTIC_FORMS = /^10-[QK]/; // 20-F/40-F filers (foreign private issuers) are not US companies
+const DOMESTIC_FORMS = /^10-[QK]/;
+const jsonObject = (buf: Buffer) => {
+  try {
+    const v: unknown = JSON.parse(buf.toString("utf8"));
+    return !!v && typeof v === "object" && !Array.isArray(v);
+  } catch {
+    return false;
+  }
+}; // 20-F/40-F filers (foreign private issuers) are not US companies
 
 export interface SecCtx {
   ticker: string;
@@ -44,7 +52,7 @@ export async function collectSecRevenue(c: SecCtx): Promise<{ evidence: Competit
   const issues: CollectionIssue[] = [];
   const headers = { "user-agent": c.userAgent, accept: "application/json" };
   const index = await c.http.memo("sec:tickers", 24 * 3600_000, async () => {
-    const raw = asRecord(await c.http.json(TICKERS, { headers }));
+    const raw = asRecord(await c.http.json(TICKERS, { headers, disk: { key: "sec:company_tickers", ttlMs: 86_400_000, validate: jsonObject } }));
     const m = new Map<string, { cik: string; title: string }>();
     for (const v of Object.values(raw ?? {})) {
       const o = asRecord(v);
@@ -58,7 +66,8 @@ export async function collectSecRevenue(c: SecCtx): Promise<{ evidence: Competit
   const hit = index.get(c.ticker);
   if (!hit) throw new CollectionError("ticker_not_found", `US:${c.ticker} is not an SEC-registered ticker`);
 
-  const facts = asRecord(await c.http.json(FACTS(hit.cik), { headers, ttlMs: c.ttlMs }));
+  // companyfacts grows with every 10-Q/10-K; half a day is fresh enough (asOf filtering is by filing date anyway).
+  const facts = asRecord(await c.http.json(FACTS(hit.cik), { headers, ttlMs: c.ttlMs, disk: { key: `sec:companyfacts:${hit.cik}`, ttlMs: 12 * 3_600_000, validate: jsonObject } }));
   const gaap = asRecord(asRecord(facts?.facts)?.["us-gaap"]);
   if (!gaap) throw new CollectionError("no_us_gaap", `US:${c.ticker} has no us-gaap facts (not a US GAAP 10-K/10-Q filer)`);
 

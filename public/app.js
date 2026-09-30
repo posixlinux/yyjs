@@ -362,7 +362,6 @@ function renderJob(job, startedAt) {
     setText(statusBadge, label);
     const badgeClass = `badge ${color}`;
     if (statusBadge.className !== badgeClass) statusBadge.className = badgeClass;
-    setText(elapsed, ` ${Math.round((Date.now() - startedAt) / 1000)}초`);
     setText(title, `${r.evidence?.company?.name || ""} ${job.request?.ticker || ticker} · ${(job.kind || kind) === "research" ? "증거 수집" : "전체 분석"}`.trim());
     if (["queued", "running"].includes(job.status)) return;
     const kids = [];
@@ -386,14 +385,25 @@ function renderJob(job, startedAt) {
     kids.push(el("p", { class: "small", text: "작업은 서버 메모리에만 보관되며 재시작하면 사라집니다." }));
     content.replaceChildren(...kids);
   };
-  update(job);
-  return update;
+  // Elapsed time is computed locally every second and frozen once the terminal response has arrived.
+  const tick = () => setText(elapsed, ` ${Math.round((Date.now() - startedAt) / 1000)}초`);
+  tick();
+  const timer = setInterval(tick, 1000);
+  const updateAndMaybeStop = (job) => {
+    update(job);
+    if (!["queued", "running"].includes(job.status)) { tick(); clearInterval(timer); }
+  };
+  updateAndMaybeStop.stop = () => { tick(); clearInterval(timer); };
+  updateAndMaybeStop(job);
+  return updateAndMaybeStop;
 }
 
 // ---- run ----------------------------------------------------------------------------------------------------------
 
 let running = false;
-const JOB_POLL_INTERVAL_MS = 15_000;
+// Long-poll: the server holds each status request until the job finishes or this many seconds pass, so the result
+// shows up as soon as it exists without fixed-interval polling.
+const JOB_WAIT_SECONDS = 55;
 $("form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   if (running) return;
@@ -410,21 +420,22 @@ $("form").addEventListener("submit", async (ev) => {
   $("go").disabled = true;
   const startedAt = Date.now();
   const out = $("out");
+  let updateJob = null;
   try {
     const started = await api(mode === "research" ? "/v1/research" : "/v1/analyses", { method: "POST", headers: headers(), body: JSON.stringify(mode === "research" ? body : { ...body, mode: "public" }) });
     out.hidden = false;
-    // Render once while waiting. Polls must not replace the DOM (or reset selection/expanded details).
-    const updateJob = renderJob({ ...started, status: started.status || "queued", kind: mode === "research" ? "research" : "analysis", request: body }, startedAt);
-    // No client-side polling ceiling: the server owns job lifetime (per-call/whole-job timeouts), so this follows
+    // Render once while waiting. Status updates must not replace the DOM (or reset selection/expanded details).
+    updateJob = renderJob({ ...started, status: started.status || "queued", kind: mode === "research" ? "research" : "analysis", request: body }, startedAt);
+    // No client-side ceiling: the server owns job lifetime (per-call/whole-job timeouts), so this follows
     // queued/running through to whatever terminal status (completed/partial/failed) the server eventually reports.
     // A job that disappears (evicted after its retention TTL) surfaces as a normal JOB_NOT_FOUND error below.
     for (;;) {
-      await new Promise((r) => setTimeout(r, JOB_POLL_INTERVAL_MS));
-      const job = await api(started.statusUrl, { headers: headers() });
+      const job = await api(`${started.statusUrl}?wait=${JOB_WAIT_SECONDS}`, { headers: headers() });
       updateJob(job);
       if (!["queued", "running"].includes(job.status)) break;
     }
   } catch (e) {
+    updateJob?.stop();
     out.hidden = false;
     out.replaceChildren(el("div", { class: "box bad" }, el("strong", { text: `${e.code || "ERROR"}: ` }), e.message, e.hint ? el("div", { class: "small", text: e.hint }) : null));
   } finally {

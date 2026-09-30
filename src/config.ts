@@ -9,6 +9,8 @@ export type Config = {
   host: string;
   dataDir: string;
   demoDir: string;
+  /** Persistent cache of filing content (DART documents/statements, SEC facts, EDINET documents). */
+  cacheDir: string;
   apiKey?: string;
   demoEnabled: boolean;
   logLevel: string;
@@ -85,6 +87,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port: int(env, "PORT", 3000, 0, 65535),
     host,
     dataDir: path.resolve(env.DATA_DIR || path.join(root, "data/manual")),
+    cacheDir: path.resolve(env.EVIDENCE_CACHE_DIR || path.join(root, "data/cache")),
     demoDir: path.join(root, "data/demo"),
     apiKey,
     demoEnabled: env.DEMO_MODE_ENABLED ? env.DEMO_MODE_ENABLED === "true" : env.NODE_ENV !== "production",

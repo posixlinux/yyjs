@@ -145,6 +145,8 @@ function buildContext() {
       return 0 as unknown as ReturnType<typeof setTimeout>;
     },
     clearTimeout: () => {},
+    setInterval: () => 0,
+    clearInterval: () => {},
     Date,
     Object,
     Math,
@@ -324,11 +326,16 @@ describe("public/app.js strategyAuto rendering", () => {
 });
 
 describe("public/app.js job polling", () => {
-  it.each(["completed", "partial", "failed"])("patches only progress nodes and fills the result container at %s", async (terminal) => {
+  it.each(["completed", "partial", "failed"])("long-polls without fixed delays, patches only progress nodes and fills the result at %s", async (terminal) => {
     const { context, elements, fetchImpl } = await load();
     elements.ticker.value = "005930";
     const delays: number[] = [];
     context.setTimeout = (fn: () => void, delay: number) => { delays.push(delay); fn(); return 0; };
+    // Local elapsed-time ticker: captured so the test drives it like a 1s clock.
+    let ticker: (() => void) | null = null;
+    let cleared = false;
+    context.setInterval = (fn: () => void, ms: number) => { expect(ms).toBe(1000); ticker = fn; return 7; };
+    context.clearInterval = (id: number) => { if (id === 7) cleared = true; };
     const replace = elements.out.replaceChildren;
     let renders = 0;
     elements.out.replaceChildren = (...nodes) => { renders++; replace(...nodes); };
@@ -339,8 +346,10 @@ describe("public/app.js job polling", () => {
     let resultRenders = 0;
     let clock = 1_000_000;
     context.Date = { now: () => clock };
+    const urls: string[] = [];
     fetchImpl.current = async (url: string) => {
       if (url === "/v1/analyses") return new Response(JSON.stringify({ statusUrl: "/v1/analyses/job1", status: "queued" }));
+      urls.push(url);
       expect(renders).toBe(1);
       waitingNode ??= elements.out.children[0];
       expect(elements.out.children[0]).toBe(waitingNode);
@@ -354,21 +363,26 @@ describe("public/app.js job polling", () => {
       expect(contentNode.children[0]).toBe(hintNode);
       expect(resultRenders).toBe(0);
       expect(allText(waitingNode!)).toContain(polls === 0 ? "대기 중" : "진행 중");
-      expect(allText(waitingNode!)).toContain(`${polls * 15}초`);
+      // while the server holds the request, the local clock keeps the elapsed time moving second by second
+      for (let i = 0; i < 20; i++) { clock += 1000; ticker!(); }
+      expect(allText(waitingNode!)).toContain(`${(polls + 1) * 20}초`);
+      expect(cleared).toBe(false);
       expect(elements.go.disabled).toBe(true);
       polls++;
-      clock += 15_000;
       return new Response(JSON.stringify({ status: polls < 4 ? "running" : terminal, request: { ticker: "005930" },
         ...(terminal === "failed" && polls === 4 ? { error: { code: "JOB_TIMEOUT", message: "Timed out" } } : {}) }));
     };
     await elements.form._listeners.submit[0]({ preventDefault() {} });
     expect(polls).toBe(4);
-    expect(delays).toEqual([15000, 15000, 15000, 15000]);
+    expect(urls.every((u) => u === "/v1/analyses/job1?wait=55")).toBe(true);
+    expect(delays).toEqual([]); // no fixed-interval polling
     expect(renders).toBe(1);
     expect(resultRenders).toBe(1);
     expect(elements.out.children[0]).toBe(waitingNode);
     expect(elements.out.children[1]).toBe(contentNode);
-    expect(allText(waitingNode!)).toContain("60초");
+    // frozen at the moment the terminal response arrived: later ticks (if any) must not move it
+    expect(cleared).toBe(true);
+    expect(allText(waitingNode!)).toContain("80초");
     expect(elements.go.disabled).toBe(false);
     if (terminal === "failed") expect(allText(elements.out)).toContain("JOB_TIMEOUT");
   });
@@ -382,7 +396,7 @@ describe("public/app.js job polling", () => {
     let pollCount = 0;
     fetchImpl.current = async (url: string) => {
       if (url === "/v1/research") return new Response(JSON.stringify({ statusUrl: "/v1/research/job1", id: "job1", status: "queued" }), { status: 200 });
-      if (url === "/v1/research/job1") {
+      if (url === "/v1/research/job1?wait=55") {
         pollCount++;
         const status = pollCount >= TOTAL_POLLS ? "completed" : pollCount % 2 === 0 ? "running" : "queued";
         return new Response(JSON.stringify({ id: "job1", status, request: { ticker: "005930" }, result: status === "completed" ? { note: "done" } : undefined }), { status: 200 });
@@ -397,7 +411,7 @@ describe("public/app.js job polling", () => {
 
     expect(prevented).toBe(true);
     expect(pollCount).toBe(TOTAL_POLLS); // proves the loop was not cut off at 900
-    const getCalls = fetchCalls.filter((c) => c.url === "/v1/research/job1");
+    const getCalls = fetchCalls.filter((c) => c.url === "/v1/research/job1?wait=55");
     expect(getCalls.length).toBe(TOTAL_POLLS);
     const outText = allText(elements.out);
     expect(outText).toContain("완료"); // terminal "completed" status rendered

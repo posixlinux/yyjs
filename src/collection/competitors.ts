@@ -45,6 +45,7 @@ export type CompetitorCtx = {
   maxBytes: number;
   signal?: AbortSignal;
   secrets: string[];
+  cacheDir?: string;
   ttlMs: number;
   dart: { key: string; corpCodeTtlMs: number; zip: import("./zip.js").ZipLimits } | null;
   secUserAgent: string | null;
@@ -62,7 +63,7 @@ export async function collectCompetitors(
   const configured: Record<CompetitorMarket, boolean> = { KR: !!c.dart, US: !!c.secUserAgent, JP: !!c.edinetKey };
   const missingKey: Record<CompetitorMarket, string> = { KR: "DART_API_KEY", US: "SEC_USER_AGENT", JP: "EDINET_API_KEY" };
   const http = (m: CompetitorMarket): HttpClient =>
-    createHttp({ fetch: c.fetch, timeoutMs: c.timeoutMs, maxBytes: c.maxBytes, maxRequests: BUDGET[m], secrets: c.secrets, signal: c.signal });
+    createHttp({ fetch: c.fetch, timeoutMs: c.timeoutMs, maxBytes: c.maxBytes, maxRequests: BUDGET[m], secrets: c.secrets, signal: c.signal, cacheDir: c.cacheDir });
 
   const one = async (id: CompetitorId): Promise<CompetitorEvidence | null> => {
     const list = (issuesBy[id.market] ??= []);

@@ -59,6 +59,7 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
     maxRequests: options.maxRequests ?? 48,
     secrets,
     signal: options.signal,
+    cacheDir: options.cacheDir,
   });
 
   const naverP = run("naver", () =>
@@ -80,7 +81,7 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
   // Competitors (KR/US/JP disclosure systems) use their own per-company request budgets; see competitors.ts.
   const competitorsP = competitorIds.length
     ? collectCompetitors(competitorIds, {
-        asOf, fetch: options.fetch ?? fetch, timeoutMs: options.timeoutMs ?? 15_000, maxBytes, signal: options.signal, secrets,
+        asOf, fetch: options.fetch ?? fetch, timeoutMs: options.timeoutMs ?? 15_000, maxBytes, signal: options.signal, secrets, cacheDir: options.cacheDir,
         ttlMs: options.competitorTtlMs ?? 6 * 3600_000,
         dart: dartKey ? { key: dartKey, corpCodeTtlMs: options.corpCodeTtlMs ?? 24 * 3600_000, zip: { maxEntries: 50, maxEntryBytes: options.maxDecompressedBytes ?? 64 * MiB, maxTotalBytes: options.maxDecompressedBytes ?? 64 * MiB } } : null,
         secUserAgent: secUserAgent || null,
@@ -103,7 +104,10 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
   const productNames = usefulProductNames(dart.value?.productCandidates ?? [], 10);
   if (naverId && naverSecret && verified && !notKospi && !notCommon) {
     const queries = options.productQueries?.length ? options.productQueries : expandQueries(name, productNames.slice(0, 3));
-    search = await run("naver-search", () => collectNaverSearch(queries, asOf, http, { id: naverId, secret: naverSecret }, ttlMs));
+    // Company queries (they contain the company name) keep only articles that actually name the company.
+    const names = companyNames([name, dart.value?.name]);
+    const mustMention = (q: string) => (name && q.startsWith(`${name} `) && names.length ? names : null);
+    search = await run("naver-search", () => collectNaverSearch(queries, asOf, http, { id: naverId, secret: naverSecret }, ttlMs, mustMention, normalizeName));
     searchNews = search.value?.items ?? [];
   }
 
@@ -133,7 +137,7 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
   const providers = {
     naver: report(naver, !!nv && (!!nv.quote || nv.news.length > 0 || nv.referenceMetrics.length > 0), [...(nv?.issues ?? []), ...newsIssues, ...articleIssues], secrets),
     // an answered search with zero matches is not a failure
-    naverSearch: report(search, !!search.value && (searchNews.length > 0 || search.value.issues.length === 0), search.value?.issues, secrets),
+    naverSearch: report(search, !!search.value && (searchNews.length > 0 || search.value.issues.every((i) => i.severity !== "error")), search.value?.issues, secrets),
     dart: report(dart, !!dv && (dv.statements.length > 0 || dv.excerpts.length > 0 || dv.filings.length > 0), dv?.issues, secrets),
     ...(cmp && { competitors: Object.fromEntries(Object.entries(cmp.reports).map(([m, r]) => [m, { ...r, issues: r.issues.map((i) => ({ ...i, message: redact(i.message, secrets) })) }])) }),
   };
@@ -181,23 +185,36 @@ function companyNames(raw: (string | null | undefined)[]): string[] {
   return [...new Set(raw.filter((x): x is string => !!x).map(normalizeName).filter((x) => x.length >= 2))];
 }
 
-const GENERIC_PRODUCT = /^(기타|상품|제품|서비스|용역|임대|합계|내수|수출)/;
+const GENERIC_PRODUCT = /^(기타|상품|제품|서비스|용역|임대|합계|소계|내수|수출|해외|국내|공통|구분|계$)/;
+// Table headers and financial line items that the DART table extractor can mistake for product names.
+const NOT_A_PRODUCT = /^(금액|매출|매출액|내부매출|내부매출액|영업이익|영업손실|순이익|당기순이익|총자산|자산|부채|자본|비율|비중|점유율|단가|수량|생산량|판매량|가동률|연결|별도|단위|합계|소계|계)$|내부거래|제거|조정|[%％]/;
+// Sentence fragments ("NAND를 중심으로 하는 메모리 반도체이며") are not names.
+const SENTENCE = /(이며|입니다|습니다|하는|되는|이고|으로|에서|하여|반면|있는|없는|된다|한다)(\s|$)/;
 
-/** First N distinct, non-generic product names (candidates arrive most-recent filing first). */
+/** Search-ready product name: splits "DRAM, NAND Flash 등", drops "등" and segment suffixes ("차량부문" -> "차량"). */
+export function cleanProductNames(raw: string): string[] {
+  return raw
+    .split(/[,，·ㆍ/]/)
+    .map((p) => p.normalize("NFKC").replace(/\s*등\s*$/, "").replace(/\s+/g, " ").trim())
+    .map((p) => ({ p, segment: /(사업)?(부문|사업부)$/.test(p) }))
+    .map(({ p, segment }) => ({ n: p.replace(/\s*(사업)?(부문|사업부)$/, "").trim(), segment }))
+    .filter(({ n, segment }) =>
+      n.length >= 2 && n.length <= 20 && n.split(" ").length <= 3 &&
+      !GENERIC_PRODUCT.test(n.replace(/\s+/g, "")) && !NOT_A_PRODUCT.test(n.replace(/\s+/g, "")) && !SENTENCE.test(n) &&
+      !(segment && /^[A-Za-z&]{1,6}$/.test(n))) // segment codes like "DX 부문", "AD&RH부문"
+    .map(({ n }) => n);
+}
+
+/** First N distinct, search-ready product names (candidates arrive most-recent filing first). */
 function usefulProductNames(candidates: ProductCandidate[], max: number): string[] {
   const out: string[] = [];
   for (const p of candidates) {
-    const n = p.name.trim();
-    if (n.length >= 2 && !GENERIC_PRODUCT.test(n) && !out.some((x) => x.toLowerCase() === n.toLowerCase())) out.push(n);
+    for (const n of cleanProductNames(p.name)) if (!out.some((x) => x.toLowerCase() === n.toLowerCase())) out.push(n);
     if (out.length >= max) break;
   }
-  return out;
+  return out.slice(0, max);
 }
 
-/**
- * Company outlook/growth queries first (the model's growth assumptions are grounded on these, judged conservatively),
- * then the share query and product-market expansions; the Naver search collector caps the total at 6.
- */
 function expandQueries(name: string | null, products: string[]): string[] {
   return [...(name ? [`${name} 전망`, `${name} 성장률`, `${name} 시장 점유율`] : []), ...products.map((p) => `${p} 세계 시장 규모 점유율 성장률`)];
 }
