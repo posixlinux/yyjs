@@ -22,6 +22,9 @@ export const LIMITS = {
 export const DEFAULT_CALL_TIMEOUT_MS = 600_000;
 /** Worst-case sequential CLI calls in one analysis: claude-draft, then (on a claude draft TIMEOUT) agy-draft, then an audit call. */
 export const JOB_MAX_SEQUENTIAL_CALLS = 3;
+/** Default process-wide CLI concurrency: the audit and the separate strategy call of one analysis run in parallel
+ * (2 calls), times the default number of concurrently running research jobs (RESEARCH_MAX_RUNNING=2). */
+export const DEFAULT_MAX_CONCURRENT = 4;
 /** Non-LLM headroom reserved in the outer job budget: evidence collection, queue wait, cleanup. */
 export const JOB_OVERHEAD_MS = 300_000;
 
@@ -156,7 +159,7 @@ export type IntelligenceOptions = {
    *  an unrecognised value is diagnosed (logged) and falls back to the default. Override with INTELLIGENCE_CLAUDE_EFFORT env. */
   claudeEffort?: string;
   timeoutMs?: number; // per CLI call, default DEFAULT_CALL_TIMEOUT_MS (300_000)
-  maxConcurrent?: number; // simultaneous CLI processes across all analyses, default 2
+  maxConcurrent?: number; // simultaneous CLI processes across all analyses, default DEFAULT_MAX_CONCURRENT (4)
   cacheTtlMs?: number; // default 900_000; 0 disables
   cache?: boolean; // default true
   runner?: Runner; // injectable for tests

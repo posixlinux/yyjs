@@ -11,6 +11,7 @@ import { buildEnv, sanitize, Semaphore, spawnRunner } from "./runner.js";
 import {
   AuditSchema,
   DEFAULT_CALL_TIMEOUT_MS,
+  DEFAULT_MAX_CONCURRENT,
   EvidenceInputSchema,
   JOB_MAX_SEQUENTIAL_CALLS,
   JOB_OVERHEAD_MS,
@@ -117,7 +118,7 @@ const resolveOptions = (o: IntelligenceOptions) => {
     model: o.agyModel || AGY_DEFAULT_MODEL,
     effort: undefined, // agy does not support --effort
   };
-  return { claude, agy, maxConcurrent: Number.isFinite(o.maxConcurrent) && o.maxConcurrent! >= 1 ? Math.floor(o.maxConcurrent!) : 2 };
+  return { claude, agy, maxConcurrent: Number.isFinite(o.maxConcurrent) && o.maxConcurrent! >= 1 ? Math.floor(o.maxConcurrent!) : DEFAULT_MAX_CONCURRENT };
 };
 
 const invalid = (message: string, details?: unknown) => new AppError(400, "INTELLIGENCE_INPUT_INVALID", message, details);
@@ -244,7 +245,8 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
   //     result.strategy.unavailable (never issues/providers/status), and a strategy field can be usable even when
   //     the product-market dataset is rejected (and vice versa). Tried on the drafter first (known to work in this
   //     run); the other provider is tried only when the drafter expires or times out on this call.
-  //     With INTELLIGENCE_MAX_CONCURRENT=1 the semaphore serializes it after the audit (one extra call's time).
+  //     Parallelism needs 2 free semaphore slots per analysis (DEFAULT_MAX_CONCURRENT); with
+  //     INTELLIGENCE_MAX_CONCURRENT=1 the semaphore serializes it after the audit (one extra call's time).
   result.narrative = draft.narrative;
   result.assumptions = draft.assumptions;
   result.missingFields = [...draft.missingFields];

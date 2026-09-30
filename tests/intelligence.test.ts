@@ -316,6 +316,22 @@ describe("earnings-gap-auto/v1 automatic strategy extraction (real analyzeEviden
     expect(r.unavailable).toMatchObject([{ provider: "claude", code: "AUTH_REQUIRED" }]);
   });
 
+  it("with the default concurrency the audit and the strategy call run in parallel", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const track = async (reply: RunResult) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight--;
+      return reply;
+    };
+    const runner = route(() => claudeOut(proposal()), () => track(agyOut(audit())), () => track(claudeOut(EMPTY_STRATEGY)));
+    const r = await analyzeEvidence(input([D3, D4]), opts(runner));
+    expect(r.status).toBe("accepted");
+    expect(peak).toBe(2);
+  });
+
   it("a failed strategy call is transient: the result is not cached", async () => {
     let strategyCalls = 0;
     const runner = route(() => claudeOut(proposal()), () => agyOut(audit()), () => (strategyCalls++, { ...ok(""), timedOut: true, exitCode: null }));

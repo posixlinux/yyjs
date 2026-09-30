@@ -88,7 +88,7 @@ rights itself. `preferredDividendsKRW` no longer appears anywhere in this module
 | `agyPath` | `INTELLIGENCE_AGY_PATH` | `~/.local/bin/agy` if present, else `agy` on PATH |
 | `claudeModel` / `agyModel` | `INTELLIGENCE_CLAUDE_MODEL` / `INTELLIGENCE_AGY_MODEL` | Claude CLI default / `gemini-3.8-flash-high` (`agy models` lists the account's models) |
 | `timeoutMs` | `INTELLIGENCE_TIMEOUT_MS` | 300000 per CLI call |
-| `maxConcurrent` | `INTELLIGENCE_MAX_CONCURRENT` | 2 CLI processes process-wide |
+| `maxConcurrent` | `INTELLIGENCE_MAX_CONCURRENT` | 4 CLI processes process-wide (audit + separate strategy call in parallel, × 2 running jobs) |
 | `cache`, `cacheTtlMs` | – | on, 15 min (successes only; provider errors are never cached) |
 | `runner`, `env`, `now` | – | real spawn, `process.env`, `new Date()` (tests inject) |
 | `signal` | – | none |
