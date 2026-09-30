@@ -169,7 +169,7 @@ function renderReport(rep) {
     rows.push(el("tr", {}, el("td", { text: "기타 업체" }), el("td", { text: share(o.others.share) }), el("td", { text: share(pb.others.share) })));
     rows.push(el("tr", {}, el("th", { text: "합계 = 시장 규모" }), el("th", { text: "100%" }), el("th", { text: "100%" })));
     parts.push(el("h3", { text: `업체별 점유 — ${p.marketId} (${p.currency})` }),
-      el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "" }), el("th", { text: `${o.quarter} (최근 확정)` }), el("th", { text: `${rep.valuation.targetQuarter} base 전망` }))), el("tbody", {}, rows))));
+      el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "" }), el("th", { text: `${o.quarter} (최근 확정)` }), el("th", { text: `${rep.valuation.targetQuarter} 전망 (기본 시나리오)` }))), el("tbody", {}, rows))));
   }
   const q = rep.quality;
   if (q.dataGrounding === "low" || q.dataGrounding === "medium")
@@ -183,7 +183,7 @@ function renderReport(rep) {
 function renderAnalysis(a, valuation) {
   if (!a) return null;
   const sc = a.scenarios || [];
-  const th = el("tr", {}, el("th", { text: "" }), ...sc.map((s) => el("th", { text: { bear: "Bear", base: "Base", bull: "Bull" }[s.scenario] || s.scenario })));
+  const th = el("tr", {}, el("th", { text: "" }), ...sc.map((s) => el("th", { text: { bear: "비관", base: "기본", bull: "낙관" }[s.scenario] || s.scenario })));
   const line = (label, f) => el("tr", {}, el("th", { text: label }), ...sc.map((s) => el("td", { text: f(s) })));
   const v = (s) => s.valuation || {};
   const table = el("div", { class: "tablewrap" }, el("table", {},

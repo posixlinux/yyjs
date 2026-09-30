@@ -93,13 +93,13 @@ export function buildReport(a: Analysis, research?: Pick<AnalysisResult, "narrat
   const range = prices.filter((p) => p.targetPriceKRW !== null).map((p) => p.targetPriceKRW!);
   lines.push(
     bp.targetPriceKRW !== null
-      ? `${a.companyName}(${a.ticker}) ${a.targetQuarter} 기준 base 목표가(밸류에이션 프록시) ${money(bp.targetPriceKRW, "KRW")}, 현재가 대비 ${bp.upsidePct! >= 0 ? "+" : ""}${bp.upsidePct!.toFixed(1)}%${range.length > 1 ? ` (bear~bull ${money(Math.min(...range), "KRW")} ~ ${money(Math.max(...range), "KRW")})` : ""}.`
-      : `${a.companyName}(${a.ticker}) ${a.targetQuarter}: base 시나리오의 보통주 귀속이익이 양수가 아니어서 목표가를 산출하지 못했습니다.`,
+      ? `${a.companyName}(${a.ticker}) ${a.targetQuarter} 기준 목표가(기본 시나리오, 밸류에이션 프록시) ${money(bp.targetPriceKRW, "KRW")}, 현재가 대비 ${bp.upsidePct! >= 0 ? "+" : ""}${bp.upsidePct!.toFixed(1)}%${range.length > 1 ? ` (비관~낙관 ${money(Math.min(...range), "KRW")} ~ ${money(Math.max(...range), "KRW")})` : ""}.`
+      : `${a.companyName}(${a.ticker}) ${a.targetQuarter}: 기본 시나리오의 보통주 귀속이익이 양수가 아니어서 목표가를 산출하지 못했습니다.`,
   );
   for (const m of markets) {
     const l = m.latestObserved;
     lines.push(
-      `시장 "${m.name}": 최근 ${l.quarter} 규모 ${money(l.revenue, m.currency)} (${l.estimated ? `추정 — ${l.method}` : "출처에서 확인"}${l.qoqPct !== null ? `, 전분기 대비 ${l.qoqPct >= 0 ? "+" : ""}${l.qoqPct.toFixed(1)}%` : ""}); ${m.projected.quarter} 전망 base ${money(m.projected.base ?? 0, m.currency)}${m.projected.bear && m.projected.bull ? ` (bear ${money(m.projected.bear, m.currency)} ~ bull ${money(m.projected.bull, m.currency)})` : ""}.`,
+      `시장 "${m.name}": 최근 ${l.quarter} 규모 ${money(l.revenue, m.currency)} (${l.estimated ? `추정 — ${l.method}` : "출처에서 확인"}${l.qoqPct !== null ? `, 전분기 대비 ${l.qoqPct >= 0 ? "+" : ""}${l.qoqPct.toFixed(1)}%` : ""}); ${m.projected.quarter} 전망(기본) ${money(m.projected.base ?? 0, m.currency)}${m.projected.bear && m.projected.bull ? ` (비관 ${money(m.projected.bear, m.currency)} ~ 낙관 ${money(m.projected.bull, m.currency)})` : ""}.`,
     );
   }
   for (const p of players) {
@@ -110,7 +110,7 @@ export function buildReport(a: Analysis, research?: Pick<AnalysisResult, "narrat
     );
     const pb = p.projected.base!;
     lines.push(
-      `${a.targetQuarter} base 전망: 회사 ${pct(pb.company.share)}, 경쟁사 ${pb.competitors.map((c) => `${c.name} ${pct(c.share)}`).join(", ") || "없음"}, 기타 ${pct(pb.others.share)} → 합계가 전망 시장 규모와 일치${pb.competitorsScaled ? " (경쟁사 점유율이 남은 몫에 맞게 축소됨)" : ""}.`,
+      `${a.targetQuarter} 전망(기본 시나리오): 회사 ${pct(pb.company.share)}, 경쟁사 ${pb.competitors.map((c) => `${c.name} ${pct(c.share)}`).join(", ") || "없음"}, 기타 ${pct(pb.others.share)} → 합계가 전망 시장 규모와 일치${pb.competitorsScaled ? " (경쟁사 점유율이 남은 몫에 맞게 축소됨)" : ""}.`,
     );
   }
   if (swings.length) lines.push(`경고: 추정한 시장 규모가 전분기 대비 ${swings.map((m) => `${m.name} ${m.latestObserved.qoqPct! >= 0 ? "+" : ""}${m.latestObserved.qoqPct!.toFixed(0)}%`).join(", ")} 변동합니다 — 추정 방법과 단위를 반드시 검토하세요.`);
