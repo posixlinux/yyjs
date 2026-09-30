@@ -1,0 +1,364 @@
+"use strict";
+// All server/evidence text is untrusted: it is only ever inserted with textContent, never as HTML.
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k === "class") n.className = v;
+    else if (k === "text") n.textContent = v;
+    else n.setAttribute(k, v === true ? "" : String(v));
+  }
+  for (const c of kids.flat()) if (c !== null && c !== undefined && c !== false) n.append(c.nodeType ? c : document.createTextNode(String(c)));
+  return n;
+};
+const safeLink = (url, label) => {
+  try {
+    const u = new URL(url);
+    if (u.protocol === "https:") return el("a", { href: u.href, target: "_blank", rel: "noopener noreferrer", text: label });
+  } catch { /* fall through */ }
+  return document.createTextNode(label);
+};
+
+const won = (n) => (typeof n === "number" && Number.isFinite(n) ? `${Math.round(n).toLocaleString("ko-KR")}원` : "-");
+const big = (n) => {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "-";
+  const a = Math.abs(n);
+  const s = n < 0 ? "-" : "";
+  if (a >= 1e12) return `${s}${(a / 1e12).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}조원`;
+  if (a >= 1e8) return `${s}${(a / 1e8).toLocaleString("ko-KR", { maximumFractionDigits: 0 })}억원`;
+  return `${s}${Math.round(a).toLocaleString("ko-KR")}원`;
+};
+const pct = (n) => (typeof n === "number" && Number.isFinite(n) ? `${n >= 0 ? "+" : ""}${n.toFixed(1)}%` : "-");
+
+// ---- API ----------------------------------------------------------------------------------------------------------
+
+let apiKeyRequired = false;
+const headers = () => {
+  const h = { "content-type": "application/json" };
+  const k = $("apiKey").value.trim();
+  if (k) h["x-api-key"] = k;
+  return h;
+};
+async function api(path, init) {
+  const res = await fetch(path, init);
+  let body = null;
+  try { body = await res.json(); } catch { /* non-JSON */ }
+  if (!res.ok) {
+    const e = body && body.error ? body.error : { code: `HTTP_${res.status}`, message: `요청 실패 (HTTP ${res.status})` };
+    throw Object.assign(new Error(e.message), { code: e.code, status: res.status, hint: e.hint });
+  }
+  return body;
+}
+
+// ---- stock picker -------------------------------------------------------------------------------------------------
+
+let debounce;
+let searchSeq = 0;
+async function loadList() {
+  const q = $("q").value.trim();
+  const seq = ++searchSeq;
+  $("listInfo").textContent = "목록을 불러오는 중…";
+  try {
+    const r = await api(`/v1/universe?limit=60${q ? `&query=${encodeURIComponent(q)}` : ""}`);
+    if (seq !== searchSeq) return;
+    const list = $("list");
+    list.replaceChildren(...r.items.map((it) => {
+      const cap = it.marketCapKRW > 0 ? big(it.marketCapKRW) : "";
+      const n = el("div", { class: "item", role: "option", tabindex: "0", "data-ticker": it.ticker, "aria-selected": $("ticker").value === it.ticker },
+        el("span", {}, el("strong", { text: it.name }), " ", el("span", { class: "code", text: it.ticker })),
+        el("span", { class: "cap", text: cap }));
+      return n;
+    }));
+    $("listInfo").textContent = r.total ? `일반주 ${r.total.toLocaleString("ko-KR")}종목 중 ${r.items.length}개 표시 (시가총액 순)` : "검색 결과가 없습니다. 6자리 종목 번호를 직접 입력할 수도 있습니다.";
+  } catch (e) {
+    if (seq !== searchSeq) return;
+    $("list").replaceChildren();
+    $("listInfo").textContent = `목록을 불러오지 못했습니다 (${e.message}). 6자리 종목 번호를 직접 입력하세요.`;
+  }
+}
+const pick = (node) => {
+  if (!node || !node.dataset.ticker) return;
+  $("ticker").value = node.dataset.ticker;
+  for (const n of $("list").children) n.setAttribute("aria-selected", String(n === node));
+};
+$("list").addEventListener("click", (e) => pick(e.target.closest(".item")));
+$("list").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(e.target.closest(".item")); }
+});
+$("q").addEventListener("input", () => {
+  clearTimeout(debounce);
+  const q = $("q").value.trim();
+  if (/^\d{6}$/.test(q)) $("ticker").value = q; // typing a full ticker selects it
+  debounce = setTimeout(loadList, 250);
+});
+
+// ---- rendering ----------------------------------------------------------------------------------------------------
+
+const STATUS = {
+  queued: ["대기 중", ""], running: ["진행 중", ""], completed: ["완료", "ok"], partial: ["부분 결과", "warn"], failed: ["실패", "bad"],
+};
+const PROVIDER = { ok: ["정상", "ok"], error: ["오류", "bad"], skipped: ["건너뜀", "warn"], not_configured: ["미설정", "warn"], partial: ["일부", "warn"], failed: ["실패", "bad"] };
+const badge = (map, key) => { const [t, c] = map[key] || [String(key), ""]; return el("span", { class: `badge ${c}`, text: t }); };
+
+function section(title, ...kids) { return el("div", {}, el("h3", { text: title }), ...kids); }
+
+function renderEvidence(ev) {
+  if (!ev) return null;
+  const quote = ev.quote || (ev.market && ev.market.quote) || null;
+  const news = ev.news || [...((ev.market && ev.market.news) || []), ...((ev.market && ev.market.searchNews) || [])];
+  const filings = (ev.filings && ev.filings.list) || [];
+  const statements = (ev.filings && ev.filings.statements) || [];
+  const parts = [];
+  const company = ev.company || {};
+  parts.push(el("dl", { class: "kv" },
+    el("dt", { text: "회사" }), el("dd", { text: `${company.name || "-"} (${ev.ticker || ""})${company.exchange ? ` · ${company.exchange}` : ""}` }),
+    el("dt", { text: "현재가" }), el("dd", { text: quote ? `${won(quote.close)} (체결 ${quote.tradedAt})` : "수집되지 않음" }),
+    el("dt", { text: "DART 공시" }), el("dd", { text: `정기보고서 ${filings.length}건 · 재무제표 ${statements.length}건` }),
+    el("dt", { text: "뉴스" }), el("dd", { text: `${news.length}건` }),
+  ));
+  const prov = ev.providers || {};
+  parts.push(el("p", { class: "small" }, "수집 상태: ", ...["naver", "dart", "naverSearch"].filter((k) => prov[k]).flatMap((k) => [`${k} `, badge(PROVIDER, prov[k].status), "  "])));
+  const issues = (ev.issues || []).filter((i) => i.severity !== "info");
+  if (issues.length) parts.push(el("ul", { class: "plain" }, issues.slice(0, 8).map((i) => el("li", { text: `[${i.provider}] ${i.code}: ${i.message}` }))));
+  if (filings.length) parts.push(el("details", {}, el("summary", { text: `DART 정기보고서 ${filings.length}건` }),
+    el("ul", { class: "plain" }, filings.map((f) => el("li", {}, safeLink(f.receiptUrl, f.reportName), ` (${f.receivedDate})`)))));
+  if (news.length) parts.push(el("details", {}, el("summary", { text: `뉴스 ${Math.min(news.length, 12)}건` }),
+    el("ul", { class: "plain" }, news.slice(0, 12).map((n) => el("li", {}, safeLink(n.url, n.title), ` (${(n.publishedAt || "").slice(0, 10)}${n.officeName ? `, ${n.officeName}` : ""})`)))));
+  return section("수집된 증거", ...parts);
+}
+
+function renderResearch(r) {
+  if (!r) return null;
+  const parts = [];
+  parts.push(el("p", {}, "검토 결과: ", badge({ accepted: ["교차검증 통과", "ok"], single_model: ["단일 모델 (교차검증 없음)", "warn"], partial: ["부분", "warn"], unavailable: ["사용 불가", "bad"], rejected: ["거부", "bad"] }, r.status)));
+  for (const [name, p] of Object.entries(r.providers || {})) {
+    parts.push(el("p", { class: "small" }, `${name}: `, badge(PROVIDER, p.status), ` ${p.code || ""} ${p.status === "ok" ? "" : "— " + (p.message || "")}`));
+  }
+  const n = r.narrative || {};
+  if (n.product) parts.push(el("div", { class: "box" }, el("strong", { text: "제품 " }), n.product));
+  if (n.industry) parts.push(el("div", { class: "box" }, el("strong", { text: "산업 " }), n.industry));
+  if (n.marketSizing) parts.push(el("div", { class: "box" }, el("strong", { text: "시장 규모 산출 " }), n.marketSizing));
+  if (n.competition) parts.push(el("div", { class: "box" }, el("strong", { text: "경쟁 구도 " }), n.competition));
+  if (r.status === "single_model") parts.push(el("div", { class: "box warn" }, el("strong", { text: "교차검증 없음: " }), "한쪽 모델의 로그인/쿼터가 만료되어 나머지 모델의 결과만 사용했습니다. 인용·숫자·날짜의 결정론적 검사는 모두 적용되었습니다."));
+  else if (!r.narrativeReviewed && (n.product || n.industry)) parts.push(el("p", { class: "small", text: "※ 서술은 두 모델의 교차검토를 통과하지 못한 초안입니다." }));
+  return section("모델 검토 (Claude + agy)", ...parts);
+}
+
+function renderReport(rep) {
+  if (!rep) return null;
+  const parts = [];
+  parts.push(el("ul", { class: "plain" }, rep.lines.map((l) => el("li", { text: l }))));
+  for (const p of rep.players || []) {
+    const o = p.observed;
+    const pb = p.projected.base;
+    const rows = [];
+    const share = (v) => (typeof v === "number" ? `${(v * 100).toFixed(1)}%` : "-");
+    rows.push(el("tr", {}, el("td", { text: `회사${o.company.estimated ? " (추정)" : ""}` }), el("td", { text: share(o.company.share) }), el("td", { text: share(pb.company.share) })));
+    for (const c of o.competitors) {
+      const next = pb.competitors.find((x) => x.name === c.name);
+      rows.push(el("tr", {}, el("td", { text: `${c.name}${c.estimated ? " (추정)" : ""}` }), el("td", { text: share(c.share) }), el("td", { text: share(next && next.share) })));
+    }
+    rows.push(el("tr", {}, el("td", { text: "기타 업체" }), el("td", { text: share(o.others.share) }), el("td", { text: share(pb.others.share) })));
+    rows.push(el("tr", {}, el("th", { text: "합계 = 시장 규모" }), el("th", { text: "100%" }), el("th", { text: "100%" })));
+    parts.push(el("h3", { text: `업체별 점유 — ${p.marketId} (${p.currency})` }),
+      el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "" }), el("th", { text: `${o.quarter} (최근 확정)` }), el("th", { text: `${rep.valuation.targetQuarter} base 전망` }))), el("tbody", {}, rows))));
+  }
+  const q = rep.quality;
+  if (q.dataGrounding === "low" || q.dataGrounding === "medium")
+    parts.unshift(el("div", { class: q.dataGrounding === "low" ? "box bad" : "box warn" }, el("strong", { text: `데이터 근거 수준: ${q.dataGrounding === "low" ? "낮음" : "보통"} ` }), `매출 입력 ${q.totalInputs}개 중 ${q.estimatedInputs}개가 추정치입니다. 아래 수치는 참고용 추정이며 시나리오 범위가 매우 넓을 수 있습니다.`));
+  if (q.estimates && q.estimates.length)
+    parts.push(el("details", {}, el("summary", { text: `추정치 ${q.estimates.length}건 (입력의 ${((1 - q.groundedRatio) * 100).toFixed(0)}%)` }),
+      el("ul", { class: "plain" }, q.estimates.map((e) => el("li", { text: `${e.path} = ${Math.round(e.value).toLocaleString("ko-KR")} ${e.currency} — ${e.method}${e.review ? ` [감사: ${e.review}]` : ""}: ${e.rationale}` })))));
+  return section("분석 보고", ...parts);
+}
+
+function renderAnalysis(a, valuation) {
+  if (!a) return null;
+  const sc = a.scenarios || [];
+  const th = el("tr", {}, el("th", { text: "" }), ...sc.map((s) => el("th", { text: { bear: "Bear", base: "Base", bull: "Bull" }[s.scenario] || s.scenario })));
+  const line = (label, f) => el("tr", {}, el("th", { text: label }), ...sc.map((s) => el("td", { text: f(s) })));
+  const v = (s) => s.valuation || {};
+  const table = el("div", { class: "tablewrap" }, el("table", {},
+    el("thead", {}, th),
+    el("tbody", {},
+      line("귀속 매출", (s) => big(s.totals && s.totals.revenueKRW)),
+      line("영업이익", (s) => big(s.totals && s.totals.operatingProfitKRW)),
+      line("보통주 귀속이익", (s) => big(s.totals && s.totals.commonEarningsKRW)),
+      line("연환산 EPS", (s) => (v(s).status === "available" ? won(v(s).annualizedEpsKRW) : "-")),
+      line("적용 PER", (s) => (v(s).status === "available" ? `${v(s).peMultiple}배` : "-")),
+      line("목표가(프록시)", (s) => (v(s).status === "available" ? won(v(s).targetPriceKRW) : "산출 불가")),
+      line("현재가 대비", (s) => (v(s).status === "available" ? pct(v(s).upsidePct) : "-")),
+    )));
+  return section(`가치 계산 — 목표 분기 ${a.targetQuarter || ""}`,
+    el("p", { class: "small", text: `현재가 ${won(a.facts && a.facts.quote && a.facts.quote.priceKRW)} 기준 · 밸류에이션 상태: ${valuation ? valuation.status : "-"}` }),
+    table,
+    el("p", { class: "small", text: "목표가는 (다음 분기 EPS × 4) × 시나리오 PER 이며 실제 주가 예측이 아닌 밸류에이션 프록시입니다." }),
+    (a.dataQuality && a.dataQuality.warnings || []).length ? el("ul", { class: "plain" }, a.dataQuality.warnings.map((w) => el("li", { text: w }))) : null,
+    el("details", {}, el("summary", { text: "한계" }), el("ul", { class: "plain" }, (a.limitations || []).map((w) => el("li", { text: w })))));
+}
+
+const STRATEGY_STATUS = { eligible: ["적합", "ok"], ineligible: ["부적합", "warn"], insufficient_data: ["데이터 부족", "warn"] };
+const STRATEGY_MODE = { live: ["실시간(오늘 기준)", "ok"], retrospective_research: ["과거 재현(리서치, 실거래 신호 아님)", "warn"] };
+
+// Readable Korean labels for strategy assumption fieldPaths (e.g. "forecast.quarters[0].segments[0].assumptions",
+// "forecast.funding.assumptions") -- these are internal API field paths, not something a non-developer should see.
+const FIELD_PATH_LABEL = {
+  forecast: "전망", quarters: "분기", segments: "세그먼트", funding: "자금계획", assumptions: "가정",
+  revenueKRW: "매출", operatingProfitKRW: "영업이익", commonEarningsKRW: "보통주 귀속이익", epsKRW: "EPS",
+  volume: "판매량", price: "단가", share: "점유율",
+  currentConsensus: "현재 컨센서스", priorConsensus: "이전 컨센서스", epsPerShare: "주당순이익", horizonQuarters: "전망 기간(분기)",
+  catalyst: "촉매", eventAt: "이벤트 시점",
+  risk: "자금 위험", investmentPlan: "투자계획", workingCapital: "운전자본", borrowing: "차입금",
+};
+function humanizeFieldPath(fieldPath) {
+  const labels = String(fieldPath || "").split(".").map((raw) => {
+    const m = /^(\w+)(?:\[(\d+)\])?$/.exec(raw);
+    if (!m) return raw;
+    const [, key, idxStr] = m;
+    const idx = idxStr !== undefined ? Number(idxStr) + 1 : null;
+    if (key === "quarters" && idx) return `${idx}분기`;
+    if (key === "segments" && idx) return `세그먼트 ${idx}`;
+    const label = FIELD_PATH_LABEL[key] || key;
+    return idx ? `${label} ${idx}` : label;
+  });
+  return labels.join(" · ");
+}
+
+function renderAssumption(a) {
+  const src = a.source || {};
+  const srcNode = src.url ? safeLink(src.url, src.title || src.url) : document.createTextNode(src.title || src.manualReference || "출처 미상");
+  return el("li", {},
+    el("strong", { text: `${humanizeFieldPath(a.fieldPath)}: ` }), a.rationale,
+    el("div", { class: "small" }, "출처: ", srcNode, " · 모델 추정 · 별도 모델 검토 없음"));
+}
+
+function renderStrategyAuto(sa) {
+  if (!sa) return null;
+  const parts = [];
+  parts.push(el("p", {}, "상태: ", badge(STRATEGY_STATUS, sa.status), " · ", badge(STRATEGY_MODE, sa.mode)));
+  parts.push(el("p", { class: "small", text: `생성 시각(전망 추출): ${sa.generatedAt || "없음 — 검증된 전망을 추출하지 못했습니다"} · 판단 시각: ${sa.decisionAt}` }));
+  if (sa.mode === "retrospective_research")
+    parts.push(el("div", { class: "box warn", text: "과거 특정 시점 기준의 재현 분석입니다. 오늘의 실시간 판단이 아니며, 매매 지시나 주문이 아닙니다." }));
+  parts.push(el("div", { class: "box warn", text: "모델 추정 · 별도 모델 검토 없음 — 이 자동 신호는 모델이 산출한 추정치이며, 두 번째 모델의 재검증을 받지 않았습니다. 분석 참고용이며 매매 주문이나 지시가 아닙니다." }));
+  (sa.notes || []).forEach((n) => parts.push(el("p", { class: "small", text: n })));
+
+  if (sa.bridge) {
+    parts.push(el("p", {}, el("strong", { text: "다음 4개 분기 합산 EPS: " }), won(sa.bridge.ntmEpsKRW)));
+    const rows = sa.bridge.quarters.map((q) => el("tr", {}, el("td", { text: q.quarter }), el("td", { text: big(q.revenueKRW) }), el("td", { text: big(q.operatingProfitKRW) }), el("td", { text: won(q.epsKRW) })));
+    parts.push(el("div", { class: "tablewrap" }, el("table", {},
+      el("thead", {}, el("tr", {}, el("th", { text: "분기" }), el("th", { text: "매출" }), el("th", { text: "영업이익" }), el("th", { text: "보통주 EPS" }))),
+      el("tbody", {}, rows))));
+  } else {
+    parts.push(el("p", { class: "small", text: "다음 4개 분기 실적 전망을 추출하지 못했습니다." }));
+  }
+
+  if (sa.risk) {
+    const b = sa.risk.base;
+    parts.push(el("p", {}, el("strong", { text: "자금 상태(기본 시나리오): " }),
+      `분기 경계 최저 현금 ${big(b.minimumQuarterBoundaryCashKRW)}, 추가 자금 필요액 ${big(b.peakAdditionalFundingRequiredKRW)}`));
+    if (sa.risk.stress.peakAdditionalFundingRequiredKRW > 0)
+      parts.push(el("p", { class: "small box warn", text: `하방 시나리오에서 추가 자금 ${big(sa.risk.stress.peakAdditionalFundingRequiredKRW)}가 필요합니다.` }));
+  } else {
+    parts.push(el("p", { class: "small", text: "투자·운전자본·차입 자금 계획이 없어 자금 위험을 계산하지 못했습니다." }));
+  }
+
+  if (sa.evaluation && sa.evaluation.eligible) {
+    const e = sa.evaluation;
+    parts.push(el("p", {}, el("strong", { text: "기대 차이(gap): " }), pct(e.gapPct * 100), " · ", el("strong", { text: "수정률(revision): " }), pct(e.revisionPct * 100), " · ", el("strong", { text: "촉매 " }), `${e.catalyst.daysAhead.toFixed(0)}일 후`));
+  } else if (sa.evaluation) {
+    parts.push(el("ul", { class: "plain" }, sa.evaluation.reasons.map((r) => el("li", {}, el("strong", { text: `${r.code} ` }), r.message))));
+  }
+
+  if ((sa.assumptions || []).length)
+    parts.push(el("details", {}, el("summary", { text: `근거로 쓰인 가정 ${sa.assumptions.length}건 (모두 모델 추정치, 출처 연결)` }),
+      el("ul", { class: "plain" }, sa.assumptions.map(renderAssumption))));
+
+  if ((sa.missing || []).length)
+    parts.push(el("details", {}, el("summary", { text: `자동 추출 불가/누락 항목 ${sa.missing.length}건` }),
+      el("ul", { class: "plain" }, sa.missing.map((m) => el("li", {}, el("strong", { text: `${m.field} ` }), `[${m.code}] ${m.message}`)))));
+
+  parts.push(el("p", { class: "small", text: "이 섹션은 실적 전망과 투자(자금) 위험에 대한 분석 참고 자료일 뿐이며, 투자 권고나 매매 주문/지시가 아닙니다. 종목/기간/설정에 따라 자동으로 재계산되며, 자금 여력 관련 임계값은 서버에 설정되지 않은 경우 0으로 처리됩니다." }));
+  return section("실적 전망·투자 위험", ...parts);
+}
+
+function renderJob(job, startedAt) {
+  const out = $("out");
+  out.hidden = false;
+  const r = job.result || {};
+  const elapsed = Math.round((Date.now() - startedAt) / 1000);
+  const kids = [];
+  kids.push(el("div", { class: "head" },
+    el("h2", { text: `${(r.evidence && r.evidence.company && r.evidence.company.name) || ""} ${job.request ? job.request.ticker : ""} · ${job.kind === "research" ? "증거 수집" : "전체 분석"}`.trim() }),
+    el("span", {}, badge(STATUS, job.status), ` ${elapsed}초`)));
+  if (job.status === "queued" || job.status === "running")
+    kids.push(el("p", { class: "hint", text: job.kind === "analysis" ? "공시·시세 수집 후 Claude·agy 검토가 이어집니다. 한쪽이 만료되었으면 자동으로 건너뜁니다. 수 분이 걸릴 수 있습니다…" : "공개 자료를 수집하는 중…" }));
+  if (job.error) kids.push(el("div", { class: "box bad" }, el("strong", { text: `${job.error.code}: ` }), job.error.message));
+  if (r.note) kids.push(el("p", { class: "hint", text: r.note }));
+
+  const reasons = r.partialReasons || [];
+  if (reasons.length) kids.push(section("가치 산정이 되지 않은 이유", el("ul", { class: "plain" }, reasons.map((x) => el("li", {}, el("strong", { text: `${x.code} ` }), x.message)))));
+  (r.notes || []).forEach((n) => kids.push(el("p", { class: "small", text: n })));
+
+  const rep = renderReport(r.report);
+  if (rep) kids.push(rep);
+  const a = renderAnalysis(r.analysis, r.valuation);
+  if (a) kids.push(a);
+  for (const x of [renderStrategyAuto(r.strategyAuto), renderResearch(r.research), renderEvidence(r.evidence)]) if (x) kids.push(x);
+
+  const missing = (r.missingInputs || []).filter((m) => m.status !== "available_unverified");
+  if (missing.length)
+    kids.push(el("details", {}, el("summary", { text: `부족/미검증 입력 ${missing.length}건` }),
+      el("ul", { class: "plain" }, missing.map((m) => el("li", { text: `${m.field}${m.status ? ` [${m.status}]` : ""}${m.detail ? `: ${m.detail}` : ""}` })))));
+  kids.push(el("p", { class: "small", text: "작업은 서버 메모리에만 보관되며 재시작하면 사라집니다." }));
+  out.replaceChildren(...kids);
+}
+
+// ---- run ----------------------------------------------------------------------------------------------------------
+
+let running = false;
+$("form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (running) return;
+  const ticker = $("ticker").value.trim();
+  if (!/^\d{6}$/.test(ticker)) { $("ticker").focus(); return; }
+  const mode = new FormData($("form")).get("mode");
+  const body = { ticker };
+  if ($("asOf").value) body.asOf = $("asOf").value;
+  if (apiKeyRequired) { try { sessionStorage.setItem("yyKey", $("apiKey").value); } catch { /* storage unavailable */ } }
+
+  running = true;
+  $("go").disabled = true;
+  const startedAt = Date.now();
+  const out = $("out");
+  try {
+    const started = await api(mode === "research" ? "/v1/research" : "/v1/analyses", { method: "POST", headers: headers(), body: JSON.stringify(mode === "research" ? body : { ...body, mode: "public" }) });
+    out.hidden = false;
+    // No client-side polling ceiling: the server owns job lifetime (per-call/whole-job timeouts), so this follows
+    // queued/running through to whatever terminal status (completed/partial/failed) the server eventually reports.
+    // A job that disappears (evicted after its retention TTL) surfaces as a normal JOB_NOT_FOUND error below.
+    for (;;) {
+      const job = await api(started.statusUrl, { headers: headers() });
+      renderJob(job, startedAt);
+      if (!["queued", "running"].includes(job.status)) break;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  } catch (e) {
+    out.hidden = false;
+    out.replaceChildren(el("div", { class: "box bad" }, el("strong", { text: `${e.code || "ERROR"}: ` }), e.message, e.hint ? el("div", { class: "small", text: e.hint }) : null));
+  } finally {
+    running = false;
+    $("go").disabled = false;
+  }
+});
+
+(async function init() {
+  try {
+    const h = await api("/health");
+    apiKeyRequired = !!h.apiKeyRequired;
+    $("keyRow").hidden = !apiKeyRequired;
+    if (apiKeyRequired) { try { $("apiKey").value = sessionStorage.getItem("yyKey") || ""; } catch { /* ignore */ } }
+  } catch { /* health unavailable: keep defaults */ }
+  loadList();
+})();

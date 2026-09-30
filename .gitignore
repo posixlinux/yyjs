@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+data/manual/*
+!data/manual/.gitkeep
+*.tmp
+*.log
+.test-tmp/
+.tools/
+tmp/

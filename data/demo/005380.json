@@ -1,0 +1,471 @@
+{
+  "schemaVersion": 1,
+  "synthetic": true,
+  "company": {
+    "ticker": "005380",
+    "name": "현대자동차 (데모·가상 데이터)",
+    "exchange": "KOSPI",
+    "sector": "Automobiles (fictional)",
+    "description": "FICTIONAL demo profile. Numbers are invented to exercise the model and are NOT real prices, share counts, revenues or market research.",
+    "sources": [
+      {
+        "title": "FICTIONAL DEMO company profile",
+        "manualReference": "FICTIONAL DEMO/005380",
+        "publishedAt": "2026-08-20"
+      }
+    ]
+  },
+  "quote": {
+    "priceKRW": 200000,
+    "asOf": "2026-09-25",
+    "source": {
+      "title": "FICTIONAL DEMO dated quote",
+      "manualReference": "FICTIONAL DEMO/005380",
+      "publishedAt": "2026-09-25"
+    }
+  },
+  "shares": {
+    "dilutedCommon": 200000000,
+    "asOf": "2026-06-30",
+    "source": {
+      "title": "FICTIONAL DEMO diluted common share count",
+      "manualReference": "FICTIONAL DEMO/005380",
+      "publishedAt": "2026-08-15"
+    }
+  },
+  "fx": [
+    {
+      "currency": "USD",
+      "krwPerUnit": 1380,
+      "asOf": "2026-09-24",
+      "source": {
+        "title": "FICTIONAL DEMO USD/KRW rate",
+        "manualReference": "FICTIONAL DEMO/005380",
+        "publishedAt": "2026-09-24"
+      }
+    },
+    {
+      "currency": "EUR",
+      "krwPerUnit": 1600,
+      "asOf": "2026-09-24",
+      "source": {
+        "title": "FICTIONAL DEMO EUR/KRW rate",
+        "manualReference": "FICTIONAL DEMO/005380",
+        "publishedAt": "2026-09-24"
+      }
+    }
+  ],
+  "financials": {
+    "quarter": "2026Q2",
+    "totalRevenueKRW": 34000000000000,
+    "source": {
+      "title": "FICTIONAL DEMO quarterly report 2026Q2",
+      "manualReference": "FICTIONAL DEMO/005380",
+      "publishedAt": "2026-08-15"
+    }
+  },
+  "markets": [
+    {
+      "id": "bev",
+      "name": "Battery EV",
+      "scope": "Global battery-electric passenger vehicle revenue, all body types, quarterly, EUR",
+      "currency": "EUR",
+      "observations": [
+        {
+          "quarter": "2025Q3",
+          "revenue": 60000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Battery EV market size 2025Q3",
+            "manualReference": "FICTIONAL DEMO/bev",
+            "publishedAt": "2025-11-15"
+          }
+        },
+        {
+          "quarter": "2025Q4",
+          "revenue": 66000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Battery EV market size 2025Q4",
+            "manualReference": "FICTIONAL DEMO/bev",
+            "publishedAt": "2026-02-15"
+          }
+        },
+        {
+          "quarter": "2026Q1",
+          "revenue": 62000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Battery EV market size 2026Q1",
+            "manualReference": "FICTIONAL DEMO/bev",
+            "publishedAt": "2026-05-15"
+          }
+        },
+        {
+          "quarter": "2026Q2",
+          "revenue": 70000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Battery EV market size 2026Q2",
+            "manualReference": "FICTIONAL DEMO/bev",
+            "publishedAt": "2026-08-15"
+          }
+        }
+      ],
+      "annualGrowth": {
+        "value": {
+          "bear": 0.05,
+          "base": 0.18,
+          "bull": 0.3
+        },
+        "source": {
+          "title": "FICTIONAL DEMO growth assumption",
+          "manualReference": "FICTIONAL DEMO/bev",
+          "publishedAt": "2026-08-20"
+        },
+        "rationale": "Analyst assumption (fictional)."
+      },
+      "seasonality": {
+        "value": {
+          "q1": 0.95,
+          "q2": 1,
+          "q3": 1,
+          "q4": 1.05
+        },
+        "source": {
+          "title": "FICTIONAL DEMO seasonality index",
+          "manualReference": "FICTIONAL DEMO/bev",
+          "publishedAt": "2026-08-20"
+        }
+      },
+      "cyclical": {
+        "value": {
+          "bear": 0.95,
+          "base": 1,
+          "bull": 1.04
+        },
+        "source": {
+          "title": "FICTIONAL DEMO cyclical assumption",
+          "manualReference": "FICTIONAL DEMO/bev",
+          "publishedAt": "2026-08-20"
+        },
+        "rationale": "One-off level shift in the target quarter (fictional)."
+      },
+      "drivers": [
+        {
+          "text": "Fictional: incentive schemes assumed stable.",
+          "source": {
+            "title": "FICTIONAL DEMO narrative driver",
+            "manualReference": "FICTIONAL DEMO/bev",
+            "publishedAt": "2026-08-20"
+          }
+        }
+      ]
+    },
+    {
+      "id": "suv",
+      "name": "SUV (ICE/hybrid)",
+      "scope": "Global SUV revenue with ICE or hybrid powertrain (excludes BEV), quarterly, USD",
+      "currency": "USD",
+      "observations": [
+        {
+          "quarter": "2025Q3",
+          "revenue": 190000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO SUV (ICE/hybrid) market size 2025Q3",
+            "manualReference": "FICTIONAL DEMO/suv",
+            "publishedAt": "2025-11-15"
+          }
+        },
+        {
+          "quarter": "2025Q4",
+          "revenue": 200000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO SUV (ICE/hybrid) market size 2025Q4",
+            "manualReference": "FICTIONAL DEMO/suv",
+            "publishedAt": "2026-02-15"
+          }
+        },
+        {
+          "quarter": "2026Q1",
+          "revenue": 185000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO SUV (ICE/hybrid) market size 2026Q1",
+            "manualReference": "FICTIONAL DEMO/suv",
+            "publishedAt": "2026-05-15"
+          }
+        },
+        {
+          "quarter": "2026Q2",
+          "revenue": 195000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO SUV (ICE/hybrid) market size 2026Q2",
+            "manualReference": "FICTIONAL DEMO/suv",
+            "publishedAt": "2026-08-15"
+          }
+        }
+      ],
+      "annualGrowth": {
+        "value": {
+          "bear": -0.02,
+          "base": 0.03,
+          "bull": 0.06
+        },
+        "source": {
+          "title": "FICTIONAL DEMO growth assumption",
+          "manualReference": "FICTIONAL DEMO/suv",
+          "publishedAt": "2026-08-20"
+        },
+        "rationale": "Analyst assumption (fictional)."
+      },
+      "seasonality": {
+        "value": {
+          "q1": 0.98,
+          "q2": 1.03,
+          "q3": 0.99,
+          "q4": 1
+        },
+        "source": {
+          "title": "FICTIONAL DEMO seasonality index",
+          "manualReference": "FICTIONAL DEMO/suv",
+          "publishedAt": "2026-08-20"
+        }
+      },
+      "cyclical": {
+        "value": {
+          "bear": 0.97,
+          "base": 1,
+          "bull": 1.02
+        },
+        "source": {
+          "title": "FICTIONAL DEMO cyclical assumption",
+          "manualReference": "FICTIONAL DEMO/suv",
+          "publishedAt": "2026-08-20"
+        },
+        "rationale": "One-off level shift in the target quarter (fictional)."
+      },
+      "drivers": [
+        {
+          "text": "Fictional: hybrid mix assumed rising.",
+          "source": {
+            "title": "FICTIONAL DEMO narrative driver",
+            "manualReference": "FICTIONAL DEMO/suv",
+            "publishedAt": "2026-08-20"
+          }
+        }
+      ]
+    }
+  ],
+  "products": [
+    {
+      "id": "bev",
+      "name": "Battery EV",
+      "marketId": "bev",
+      "revenue": [
+        {
+          "quarter": "2025Q3",
+          "revenue": 2700000000,
+          "currency": "EUR",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Battery EV revenue 2025Q3",
+            "manualReference": "FICTIONAL DEMO/bev",
+            "publishedAt": "2025-11-15"
+          }
+        },
+        {
+          "quarter": "2025Q4",
+          "revenue": 3168000000,
+          "currency": "EUR",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Battery EV revenue 2025Q4",
+            "manualReference": "FICTIONAL DEMO/bev",
+            "publishedAt": "2026-02-15"
+          }
+        },
+        {
+          "quarter": "2026Q1",
+          "revenue": 3100000000,
+          "currency": "EUR",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Battery EV revenue 2026Q1",
+            "manualReference": "FICTIONAL DEMO/bev",
+            "publishedAt": "2026-05-15"
+          }
+        },
+        {
+          "quarter": "2026Q2",
+          "revenue": 3500000000,
+          "currency": "EUR",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Battery EV revenue 2026Q2",
+            "manualReference": "FICTIONAL DEMO/bev",
+            "publishedAt": "2026-08-15"
+          }
+        }
+      ],
+      "shareDelta": {
+        "value": {
+          "bear": -0.01,
+          "base": 0,
+          "bull": 0.01
+        },
+        "source": {
+          "title": "FICTIONAL DEMO share assumption",
+          "manualReference": "FICTIONAL DEMO/bev",
+          "publishedAt": "2026-08-20"
+        }
+      },
+      "shareBounds": {
+        "min": 0.03,
+        "max": 0.08
+      },
+      "operatingMargin": {
+        "value": {
+          "bear": 0.03,
+          "base": 0.06,
+          "bull": 0.09
+        },
+        "source": {
+          "title": "FICTIONAL DEMO margin assumption",
+          "manualReference": "FICTIONAL DEMO/bev",
+          "publishedAt": "2026-08-20"
+        }
+      }
+    },
+    {
+      "id": "suv",
+      "name": "SUV (ICE/hybrid)",
+      "marketId": "suv",
+      "revenue": [
+        {
+          "quarter": "2025Q3",
+          "revenue": 14250000000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO SUV (ICE/hybrid) revenue 2025Q3",
+            "manualReference": "FICTIONAL DEMO/suv",
+            "publishedAt": "2025-11-15"
+          }
+        },
+        {
+          "quarter": "2025Q4",
+          "revenue": 15600000000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO SUV (ICE/hybrid) revenue 2025Q4",
+            "manualReference": "FICTIONAL DEMO/suv",
+            "publishedAt": "2026-02-15"
+          }
+        },
+        {
+          "quarter": "2026Q1",
+          "revenue": 14800000000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO SUV (ICE/hybrid) revenue 2026Q1",
+            "manualReference": "FICTIONAL DEMO/suv",
+            "publishedAt": "2026-05-15"
+          }
+        },
+        {
+          "quarter": "2026Q2",
+          "revenue": 15600000000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO SUV (ICE/hybrid) revenue 2026Q2",
+            "manualReference": "FICTIONAL DEMO/suv",
+            "publishedAt": "2026-08-15"
+          }
+        }
+      ],
+      "shareDelta": {
+        "value": {
+          "bear": -0.01,
+          "base": 0,
+          "bull": 0.01
+        },
+        "source": {
+          "title": "FICTIONAL DEMO share assumption",
+          "manualReference": "FICTIONAL DEMO/suv",
+          "publishedAt": "2026-08-20"
+        }
+      },
+      "shareBounds": {
+        "min": 0.06,
+        "max": 0.1
+      },
+      "operatingMargin": {
+        "value": {
+          "bear": 0.06,
+          "base": 0.09,
+          "bull": 0.11
+        },
+        "source": {
+          "title": "FICTIONAL DEMO margin assumption",
+          "manualReference": "FICTIONAL DEMO/suv",
+          "publishedAt": "2026-08-20"
+        }
+      }
+    }
+  ],
+  "residual": {
+    "value": {
+      "annualGrowth": {
+        "bear": -0.05,
+        "base": 0.02,
+        "bull": 0.06
+      },
+      "operatingMargin": {
+        "bear": 0.02,
+        "base": 0.05,
+        "bull": 0.08
+      }
+    },
+    "source": {
+      "title": "FICTIONAL DEMO residual segment assumption",
+      "manualReference": "FICTIONAL DEMO/005380",
+      "publishedAt": "2026-08-20"
+    }
+  },
+  "earningsBridge": {
+    "value": {
+      "netInterestKRW": 100000000000,
+      "effectiveTaxRate": 0.25,
+      "noncontrollingShare": 0.03,
+      "preferredClaimsKRW": 50000000000
+    },
+    "source": {
+      "title": "FICTIONAL DEMO earnings bridge assumption",
+      "manualReference": "FICTIONAL DEMO/005380",
+      "publishedAt": "2026-08-20"
+    },
+    "rationale": "Fictional: preferred dividends plus assumed participation, stated explicitly."
+  },
+  "valuation": {
+    "peMultiple": {
+      "value": {
+        "bear": 4,
+        "base": 6,
+        "bull": 8
+      },
+      "source": {
+        "title": "FICTIONAL DEMO P/E assumption",
+        "manualReference": "FICTIONAL DEMO/005380",
+        "publishedAt": "2026-08-20"
+      },
+      "rationale": "Valuation proxy multiple, not a price forecast."
+    }
+  }
+}

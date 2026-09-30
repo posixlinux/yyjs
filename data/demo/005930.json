@@ -1,0 +1,461 @@
+{
+  "schemaVersion": 1,
+  "synthetic": true,
+  "company": {
+    "ticker": "005930",
+    "name": "삼성전자 (데모·가상 데이터)",
+    "exchange": "KOSPI",
+    "sector": "Electronics (fictional)",
+    "description": "FICTIONAL demo profile. Numbers are invented to exercise the model and are NOT real prices, share counts, revenues or market research.",
+    "sources": [
+      {
+        "title": "FICTIONAL DEMO company profile",
+        "manualReference": "FICTIONAL DEMO/005930",
+        "publishedAt": "2026-08-20"
+      }
+    ]
+  },
+  "quote": {
+    "priceKRW": 52000,
+    "asOf": "2026-09-25",
+    "source": {
+      "title": "FICTIONAL DEMO dated quote",
+      "manualReference": "FICTIONAL DEMO/005930",
+      "publishedAt": "2026-09-25"
+    }
+  },
+  "shares": {
+    "dilutedCommon": 5000000000,
+    "asOf": "2026-06-30",
+    "source": {
+      "title": "FICTIONAL DEMO diluted common share count",
+      "manualReference": "FICTIONAL DEMO/005930",
+      "publishedAt": "2026-08-15"
+    }
+  },
+  "fx": [
+    {
+      "currency": "USD",
+      "krwPerUnit": 1380,
+      "asOf": "2026-09-24",
+      "source": {
+        "title": "FICTIONAL DEMO USD/KRW rate",
+        "manualReference": "FICTIONAL DEMO/005930",
+        "publishedAt": "2026-09-24"
+      }
+    }
+  ],
+  "financials": {
+    "quarter": "2026Q2",
+    "totalRevenueKRW": 55000000000000,
+    "source": {
+      "title": "FICTIONAL DEMO quarterly report 2026Q2",
+      "manualReference": "FICTIONAL DEMO/005930",
+      "publishedAt": "2026-08-15"
+    }
+  },
+  "markets": [
+    {
+      "id": "dram",
+      "name": "DRAM",
+      "scope": "Global DRAM revenue, all customers, quarterly, USD",
+      "currency": "USD",
+      "observations": [
+        {
+          "quarter": "2025Q3",
+          "revenue": 21000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO DRAM market size 2025Q3",
+            "manualReference": "FICTIONAL DEMO/dram",
+            "publishedAt": "2025-11-15"
+          }
+        },
+        {
+          "quarter": "2025Q4",
+          "revenue": 23000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO DRAM market size 2025Q4",
+            "manualReference": "FICTIONAL DEMO/dram",
+            "publishedAt": "2026-02-15"
+          }
+        },
+        {
+          "quarter": "2026Q1",
+          "revenue": 25000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO DRAM market size 2026Q1",
+            "manualReference": "FICTIONAL DEMO/dram",
+            "publishedAt": "2026-05-15"
+          }
+        },
+        {
+          "quarter": "2026Q2",
+          "revenue": 27000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO DRAM market size 2026Q2",
+            "manualReference": "FICTIONAL DEMO/dram",
+            "publishedAt": "2026-08-15"
+          }
+        }
+      ],
+      "annualGrowth": {
+        "value": {
+          "bear": 0.02,
+          "base": 0.12,
+          "bull": 0.25
+        },
+        "source": {
+          "title": "FICTIONAL DEMO growth assumption",
+          "manualReference": "FICTIONAL DEMO/dram",
+          "publishedAt": "2026-08-20"
+        },
+        "rationale": "Analyst assumption (fictional)."
+      },
+      "seasonality": {
+        "value": {
+          "q1": 0.98,
+          "q2": 1,
+          "q3": 1.01,
+          "q4": 1.01
+        },
+        "source": {
+          "title": "FICTIONAL DEMO seasonality index",
+          "manualReference": "FICTIONAL DEMO/dram",
+          "publishedAt": "2026-08-20"
+        }
+      },
+      "cyclical": {
+        "value": {
+          "bear": 0.94,
+          "base": 1,
+          "bull": 1.05
+        },
+        "source": {
+          "title": "FICTIONAL DEMO cyclical assumption",
+          "manualReference": "FICTIONAL DEMO/dram",
+          "publishedAt": "2026-08-20"
+        },
+        "rationale": "One-off level shift in the target quarter (fictional)."
+      },
+      "drivers": [
+        {
+          "text": "Fictional: AI server memory demand assumed firm.",
+          "source": {
+            "title": "FICTIONAL DEMO narrative driver",
+            "manualReference": "FICTIONAL DEMO/dram",
+            "publishedAt": "2026-08-20"
+          }
+        }
+      ]
+    },
+    {
+      "id": "smartphone",
+      "name": "Smartphones",
+      "scope": "Global smartphone revenue (sell-in), quarterly, USD",
+      "currency": "USD",
+      "observations": [
+        {
+          "quarter": "2025Q3",
+          "revenue": 100000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Smartphones market size 2025Q3",
+            "manualReference": "FICTIONAL DEMO/smartphone",
+            "publishedAt": "2025-11-15"
+          }
+        },
+        {
+          "quarter": "2025Q4",
+          "revenue": 120000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Smartphones market size 2025Q4",
+            "manualReference": "FICTIONAL DEMO/smartphone",
+            "publishedAt": "2026-02-15"
+          }
+        },
+        {
+          "quarter": "2026Q1",
+          "revenue": 105000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Smartphones market size 2026Q1",
+            "manualReference": "FICTIONAL DEMO/smartphone",
+            "publishedAt": "2026-05-15"
+          }
+        },
+        {
+          "quarter": "2026Q2",
+          "revenue": 102000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Smartphones market size 2026Q2",
+            "manualReference": "FICTIONAL DEMO/smartphone",
+            "publishedAt": "2026-08-15"
+          }
+        }
+      ],
+      "annualGrowth": {
+        "value": {
+          "bear": -0.02,
+          "base": 0.02,
+          "bull": 0.06
+        },
+        "source": {
+          "title": "FICTIONAL DEMO growth assumption",
+          "manualReference": "FICTIONAL DEMO/smartphone",
+          "publishedAt": "2026-08-20"
+        },
+        "rationale": "Analyst assumption (fictional)."
+      },
+      "seasonality": {
+        "value": {
+          "q1": 0.95,
+          "q2": 0.93,
+          "q3": 1.02,
+          "q4": 1.1
+        },
+        "source": {
+          "title": "FICTIONAL DEMO seasonality index",
+          "manualReference": "FICTIONAL DEMO/smartphone",
+          "publishedAt": "2026-08-20"
+        }
+      },
+      "cyclical": {
+        "value": {
+          "bear": 0.97,
+          "base": 1,
+          "bull": 1.02
+        },
+        "source": {
+          "title": "FICTIONAL DEMO cyclical assumption",
+          "manualReference": "FICTIONAL DEMO/smartphone",
+          "publishedAt": "2026-08-20"
+        },
+        "rationale": "One-off level shift in the target quarter (fictional)."
+      },
+      "drivers": [
+        {
+          "text": "Fictional: replacement cycle assumed flat.",
+          "source": {
+            "title": "FICTIONAL DEMO narrative driver",
+            "manualReference": "FICTIONAL DEMO/smartphone",
+            "publishedAt": "2026-08-20"
+          }
+        }
+      ]
+    }
+  ],
+  "products": [
+    {
+      "id": "dram",
+      "name": "DRAM",
+      "marketId": "dram",
+      "revenue": [
+        {
+          "quarter": "2025Q3",
+          "revenue": 7560000000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO DRAM revenue 2025Q3",
+            "manualReference": "FICTIONAL DEMO/dram",
+            "publishedAt": "2025-11-15"
+          }
+        },
+        {
+          "quarter": "2025Q4",
+          "revenue": 8510000000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO DRAM revenue 2025Q4",
+            "manualReference": "FICTIONAL DEMO/dram",
+            "publishedAt": "2026-02-15"
+          }
+        },
+        {
+          "quarter": "2026Q1",
+          "revenue": 9375000000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO DRAM revenue 2026Q1",
+            "manualReference": "FICTIONAL DEMO/dram",
+            "publishedAt": "2026-05-15"
+          }
+        },
+        {
+          "quarter": "2026Q2",
+          "revenue": 10260000000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO DRAM revenue 2026Q2",
+            "manualReference": "FICTIONAL DEMO/dram",
+            "publishedAt": "2026-08-15"
+          }
+        }
+      ],
+      "shareDelta": {
+        "value": {
+          "bear": -0.01,
+          "base": 0,
+          "bull": 0.01
+        },
+        "source": {
+          "title": "FICTIONAL DEMO share assumption",
+          "manualReference": "FICTIONAL DEMO/dram",
+          "publishedAt": "2026-08-20"
+        }
+      },
+      "shareBounds": {
+        "min": 0.3,
+        "max": 0.45
+      },
+      "operatingMargin": {
+        "value": {
+          "bear": 0.2,
+          "base": 0.32,
+          "bull": 0.42
+        },
+        "source": {
+          "title": "FICTIONAL DEMO margin assumption",
+          "manualReference": "FICTIONAL DEMO/dram",
+          "publishedAt": "2026-08-20"
+        }
+      }
+    },
+    {
+      "id": "smartphone",
+      "name": "Smartphones",
+      "marketId": "smartphone",
+      "revenue": [
+        {
+          "quarter": "2025Q3",
+          "revenue": 19000000000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Smartphones revenue 2025Q3",
+            "manualReference": "FICTIONAL DEMO/smartphone",
+            "publishedAt": "2025-11-15"
+          }
+        },
+        {
+          "quarter": "2025Q4",
+          "revenue": 23400000000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Smartphones revenue 2025Q4",
+            "manualReference": "FICTIONAL DEMO/smartphone",
+            "publishedAt": "2026-02-15"
+          }
+        },
+        {
+          "quarter": "2026Q1",
+          "revenue": 21000000000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Smartphones revenue 2026Q1",
+            "manualReference": "FICTIONAL DEMO/smartphone",
+            "publishedAt": "2026-05-15"
+          }
+        },
+        {
+          "quarter": "2026Q2",
+          "revenue": 20400000000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "FICTIONAL DEMO Smartphones revenue 2026Q2",
+            "manualReference": "FICTIONAL DEMO/smartphone",
+            "publishedAt": "2026-08-15"
+          }
+        }
+      ],
+      "shareDelta": {
+        "value": {
+          "bear": -0.01,
+          "base": 0,
+          "bull": 0.01
+        },
+        "source": {
+          "title": "FICTIONAL DEMO share assumption",
+          "manualReference": "FICTIONAL DEMO/smartphone",
+          "publishedAt": "2026-08-20"
+        }
+      },
+      "shareBounds": {
+        "min": 0.15,
+        "max": 0.25
+      },
+      "operatingMargin": {
+        "value": {
+          "bear": 0.05,
+          "base": 0.08,
+          "bull": 0.1
+        },
+        "source": {
+          "title": "FICTIONAL DEMO margin assumption",
+          "manualReference": "FICTIONAL DEMO/smartphone",
+          "publishedAt": "2026-08-20"
+        }
+      }
+    }
+  ],
+  "residual": {
+    "value": {
+      "annualGrowth": {
+        "bear": -0.05,
+        "base": 0.03,
+        "bull": 0.08
+      },
+      "operatingMargin": {
+        "bear": 0.03,
+        "base": 0.07,
+        "bull": 0.1
+      }
+    },
+    "source": {
+      "title": "FICTIONAL DEMO residual segment assumption",
+      "manualReference": "FICTIONAL DEMO/005930",
+      "publishedAt": "2026-08-20"
+    }
+  },
+  "earningsBridge": {
+    "value": {
+      "netInterestKRW": 300000000000,
+      "effectiveTaxRate": 0.22,
+      "noncontrollingShare": 0.02,
+      "preferredClaimsKRW": 100000000000
+    },
+    "source": {
+      "title": "FICTIONAL DEMO earnings bridge assumption",
+      "manualReference": "FICTIONAL DEMO/005930",
+      "publishedAt": "2026-08-20"
+    },
+    "rationale": "Fictional: preferred dividends plus assumed participation, stated explicitly."
+  },
+  "valuation": {
+    "peMultiple": {
+      "value": {
+        "bear": 6,
+        "base": 9,
+        "bull": 13
+      },
+      "source": {
+        "title": "FICTIONAL DEMO P/E assumption",
+        "manualReference": "FICTIONAL DEMO/005930",
+        "publishedAt": "2026-08-20"
+      },
+      "rationale": "Valuation proxy multiple, not a price forecast."
+    }
+  }
+}

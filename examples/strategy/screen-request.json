@@ -1,0 +1,947 @@
+{
+  "config": {
+    "version": "earnings-gap-auto/v1",
+    "currency": "KRW",
+    "exchange": "KOSPI",
+    "gapThresholdPct": 0.1,
+    "minRevisionPct": 0,
+    "maxCurrentConsensusAgeDays": 30,
+    "minPriorConsensusLagDays": 20,
+    "maxPriorConsensusLagDays": 40,
+    "catalystMinDaysAhead": 1,
+    "catalystMaxDaysAhead": 60,
+    "maxHoldings": 5,
+    "maxWeightPerHolding": 0.2,
+    "holdSessions": 20,
+    "minConsensusEpsKRW": 1,
+    "feeBpsPerSide": 5,
+    "slippageBpsPerSide": 10,
+    "sellTaxBps": 18,
+    "initialCapitalKRW": 100000000,
+    "risk": {
+      "requireFundingData": true,
+      "excludeStressFundingGap": true,
+      "minimumCashBufferKRW": 0,
+      "minInterestCoverage": 1,
+      "volumeDecline": 0.1,
+      "priceDecline": 0.05,
+      "variableCostIncrease": 0.05,
+      "annualInterestShockBps": 200,
+      "maxSectorWeight": 0.6,
+      "requireLiquidity": true,
+      "maxParticipationRate": 0.01,
+      "maxLiquidityAgeDays": 10
+    }
+  },
+  "decisionAt": "2026-03-16T15:30:00+09:00",
+  "candidates": [
+    {
+      "ticker": "111110",
+      "evidenceMode": "synthetic",
+      "forecast": {
+        "schemaVersion": 1,
+        "ticker": "111110",
+        "sector": "automotive",
+        "fiscalYearBasis": "calendar",
+        "currency": "KRW",
+        "generatedAt": "2026-03-10T09:00:00+09:00",
+        "analyst": "example research desk (synthetic)",
+        "quarters": [
+          {
+            "quarter": "2026Q2",
+            "netInterestKRW": -10000000000,
+            "taxRate": 0.22,
+            "noncontrollingShare": 0.05,
+            "preferredClaimsKRW": 0,
+            "dilutedCommonShares": 300000000,
+            "coverageAttestation": {
+              "complete": true,
+              "statedBy": "example research desk (synthetic)",
+              "note": "two declared segments cover 100% of modelled revenue"
+            },
+            "segments": [
+              {
+                "name": "domestic_sedan",
+                "volume": 100000,
+                "unitPriceKRW": 20000000,
+                "variableCostPerUnitKRW": 15000000,
+                "fixedCostKRW": 200000000000,
+                "source": {
+                  "title": "synthetic domestic sales plan (example)",
+                  "manualReference": "example-fixture",
+                  "kind": "manual_assumption",
+                  "knownAt": "2026-03-05T09:00:00+09:00"
+                },
+                "assumptions": {
+                  "isAssumption": true,
+                  "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                  "source": {
+                    "title": "Synthetic funding/coverage plan",
+                    "kind": "manual_assumption",
+                    "manualReference": "example-fixture; NOT real company data",
+                    "knownAt": "2026-03-10T09:00:00+09:00"
+                  }
+                }
+              },
+              {
+                "name": "export_suv",
+                "volume": 50000,
+                "unitPriceKRW": 25000000,
+                "variableCostPerUnitKRW": 18000000,
+                "fixedCostKRW": 150000000000,
+                "source": {
+                  "title": "synthetic export sales plan (example)",
+                  "manualReference": "example-fixture",
+                  "kind": "manual_assumption",
+                  "knownAt": "2026-03-05T09:00:00+09:00"
+                },
+                "assumptions": {
+                  "isAssumption": true,
+                  "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                  "source": {
+                    "title": "Synthetic funding/coverage plan",
+                    "kind": "manual_assumption",
+                    "manualReference": "example-fixture; NOT real company data",
+                    "knownAt": "2026-03-10T09:00:00+09:00"
+                  }
+                }
+              }
+            ],
+            "bridgeAssumptions": {
+              "isAssumption": true,
+              "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+              "source": {
+                "title": "Synthetic funding/coverage plan",
+                "kind": "manual_assumption",
+                "manualReference": "example-fixture; NOT real company data",
+                "knownAt": "2026-03-10T09:00:00+09:00"
+              }
+            }
+          },
+          {
+            "quarter": "2026Q3",
+            "netInterestKRW": -10000000000,
+            "taxRate": 0.22,
+            "noncontrollingShare": 0.05,
+            "preferredClaimsKRW": 0,
+            "dilutedCommonShares": 300000000,
+            "coverageAttestation": {
+              "complete": true,
+              "statedBy": "example research desk (synthetic)",
+              "note": "two declared segments cover 100% of modelled revenue"
+            },
+            "segments": [
+              {
+                "name": "domestic_sedan",
+                "volume": 100000,
+                "unitPriceKRW": 20000000,
+                "variableCostPerUnitKRW": 15000000,
+                "fixedCostKRW": 200000000000,
+                "source": {
+                  "title": "synthetic domestic sales plan (example)",
+                  "manualReference": "example-fixture",
+                  "kind": "manual_assumption",
+                  "knownAt": "2026-03-05T09:00:00+09:00"
+                },
+                "assumptions": {
+                  "isAssumption": true,
+                  "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                  "source": {
+                    "title": "Synthetic funding/coverage plan",
+                    "kind": "manual_assumption",
+                    "manualReference": "example-fixture; NOT real company data",
+                    "knownAt": "2026-03-10T09:00:00+09:00"
+                  }
+                }
+              },
+              {
+                "name": "export_suv",
+                "volume": 50000,
+                "unitPriceKRW": 25000000,
+                "variableCostPerUnitKRW": 18000000,
+                "fixedCostKRW": 150000000000,
+                "source": {
+                  "title": "synthetic export sales plan (example)",
+                  "manualReference": "example-fixture",
+                  "kind": "manual_assumption",
+                  "knownAt": "2026-03-05T09:00:00+09:00"
+                },
+                "assumptions": {
+                  "isAssumption": true,
+                  "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                  "source": {
+                    "title": "Synthetic funding/coverage plan",
+                    "kind": "manual_assumption",
+                    "manualReference": "example-fixture; NOT real company data",
+                    "knownAt": "2026-03-10T09:00:00+09:00"
+                  }
+                }
+              }
+            ],
+            "bridgeAssumptions": {
+              "isAssumption": true,
+              "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+              "source": {
+                "title": "Synthetic funding/coverage plan",
+                "kind": "manual_assumption",
+                "manualReference": "example-fixture; NOT real company data",
+                "knownAt": "2026-03-10T09:00:00+09:00"
+              }
+            }
+          },
+          {
+            "quarter": "2026Q4",
+            "netInterestKRW": -10000000000,
+            "taxRate": 0.22,
+            "noncontrollingShare": 0.05,
+            "preferredClaimsKRW": 0,
+            "dilutedCommonShares": 300000000,
+            "coverageAttestation": {
+              "complete": true,
+              "statedBy": "example research desk (synthetic)",
+              "note": "two declared segments cover 100% of modelled revenue"
+            },
+            "segments": [
+              {
+                "name": "domestic_sedan",
+                "volume": 100000,
+                "unitPriceKRW": 20000000,
+                "variableCostPerUnitKRW": 15000000,
+                "fixedCostKRW": 200000000000,
+                "source": {
+                  "title": "synthetic domestic sales plan (example)",
+                  "manualReference": "example-fixture",
+                  "kind": "manual_assumption",
+                  "knownAt": "2026-03-05T09:00:00+09:00"
+                },
+                "assumptions": {
+                  "isAssumption": true,
+                  "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                  "source": {
+                    "title": "Synthetic funding/coverage plan",
+                    "kind": "manual_assumption",
+                    "manualReference": "example-fixture; NOT real company data",
+                    "knownAt": "2026-03-10T09:00:00+09:00"
+                  }
+                }
+              },
+              {
+                "name": "export_suv",
+                "volume": 50000,
+                "unitPriceKRW": 25000000,
+                "variableCostPerUnitKRW": 18000000,
+                "fixedCostKRW": 150000000000,
+                "source": {
+                  "title": "synthetic export sales plan (example)",
+                  "manualReference": "example-fixture",
+                  "kind": "manual_assumption",
+                  "knownAt": "2026-03-05T09:00:00+09:00"
+                },
+                "assumptions": {
+                  "isAssumption": true,
+                  "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                  "source": {
+                    "title": "Synthetic funding/coverage plan",
+                    "kind": "manual_assumption",
+                    "manualReference": "example-fixture; NOT real company data",
+                    "knownAt": "2026-03-10T09:00:00+09:00"
+                  }
+                }
+              }
+            ],
+            "bridgeAssumptions": {
+              "isAssumption": true,
+              "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+              "source": {
+                "title": "Synthetic funding/coverage plan",
+                "kind": "manual_assumption",
+                "manualReference": "example-fixture; NOT real company data",
+                "knownAt": "2026-03-10T09:00:00+09:00"
+              }
+            }
+          },
+          {
+            "quarter": "2027Q1",
+            "netInterestKRW": -10000000000,
+            "taxRate": 0.22,
+            "noncontrollingShare": 0.05,
+            "preferredClaimsKRW": 0,
+            "dilutedCommonShares": 300000000,
+            "coverageAttestation": {
+              "complete": true,
+              "statedBy": "example research desk (synthetic)",
+              "note": "two declared segments cover 100% of modelled revenue"
+            },
+            "segments": [
+              {
+                "name": "domestic_sedan",
+                "volume": 100000,
+                "unitPriceKRW": 20000000,
+                "variableCostPerUnitKRW": 15000000,
+                "fixedCostKRW": 200000000000,
+                "source": {
+                  "title": "synthetic domestic sales plan (example)",
+                  "manualReference": "example-fixture",
+                  "kind": "manual_assumption",
+                  "knownAt": "2026-03-05T09:00:00+09:00"
+                },
+                "assumptions": {
+                  "isAssumption": true,
+                  "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                  "source": {
+                    "title": "Synthetic funding/coverage plan",
+                    "kind": "manual_assumption",
+                    "manualReference": "example-fixture; NOT real company data",
+                    "knownAt": "2026-03-10T09:00:00+09:00"
+                  }
+                }
+              },
+              {
+                "name": "export_suv",
+                "volume": 50000,
+                "unitPriceKRW": 25000000,
+                "variableCostPerUnitKRW": 18000000,
+                "fixedCostKRW": 150000000000,
+                "source": {
+                  "title": "synthetic export sales plan (example)",
+                  "manualReference": "example-fixture",
+                  "kind": "manual_assumption",
+                  "knownAt": "2026-03-05T09:00:00+09:00"
+                },
+                "assumptions": {
+                  "isAssumption": true,
+                  "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                  "source": {
+                    "title": "Synthetic funding/coverage plan",
+                    "kind": "manual_assumption",
+                    "manualReference": "example-fixture; NOT real company data",
+                    "knownAt": "2026-03-10T09:00:00+09:00"
+                  }
+                }
+              }
+            ],
+            "bridgeAssumptions": {
+              "isAssumption": true,
+              "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+              "source": {
+                "title": "Synthetic funding/coverage plan",
+                "kind": "manual_assumption",
+                "manualReference": "example-fixture; NOT real company data",
+                "knownAt": "2026-03-10T09:00:00+09:00"
+              }
+            }
+          }
+        ],
+        "company": {
+          "name": "Synthetic manufacturer 111110",
+          "exchange": "KOSPI",
+          "securityType": "common_stock",
+          "source": {
+            "title": "Synthetic funding/coverage plan",
+            "kind": "manual_assumption",
+            "manualReference": "example-fixture; NOT real company data",
+            "knownAt": "2026-03-10T09:00:00+09:00"
+          }
+        },
+        "scope": "consolidated",
+        "funding": {
+          "openingBalanceBasis": "projected_start_of_horizon",
+          "openingUnrestrictedCashKRW": 2000000000000,
+          "openingDebtKRW": 500000000000,
+          "assumptions": {
+            "isAssumption": true,
+            "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+            "source": {
+              "title": "Synthetic funding/coverage plan",
+              "kind": "manual_assumption",
+              "manualReference": "example-fixture; NOT real company data",
+              "knownAt": "2026-03-10T09:00:00+09:00"
+            }
+          },
+          "quarters": [
+            {
+              "quarter": "2026Q2",
+              "depreciationAndAmortizationKRW": 20000000000,
+              "capexKRW": 80000000000,
+              "deltaWorkingCapitalKRW": 30000000000,
+              "cashTaxesKRW": 20000000000,
+              "cashInterestPaidKRW": 10000000000,
+              "otherOperatingCashFlowKRW": 0,
+              "otherOperatingCashFlowRationale": "No other cash adjustment in this synthetic example",
+              "debtPrincipalDueKRW": 50000000000,
+              "committedDebtDrawKRW": 0,
+              "dividendsAndBuybacksKRW": 5000000000,
+              "assumptions": {
+                "isAssumption": true,
+                "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                "source": {
+                  "title": "Synthetic funding/coverage plan",
+                  "kind": "manual_assumption",
+                  "manualReference": "example-fixture; NOT real company data",
+                  "knownAt": "2026-03-10T09:00:00+09:00"
+                }
+              }
+            },
+            {
+              "quarter": "2026Q3",
+              "depreciationAndAmortizationKRW": 20000000000,
+              "capexKRW": 80000000000,
+              "deltaWorkingCapitalKRW": 30000000000,
+              "cashTaxesKRW": 20000000000,
+              "cashInterestPaidKRW": 10000000000,
+              "otherOperatingCashFlowKRW": 0,
+              "otherOperatingCashFlowRationale": "No other cash adjustment in this synthetic example",
+              "debtPrincipalDueKRW": 50000000000,
+              "committedDebtDrawKRW": 0,
+              "dividendsAndBuybacksKRW": 5000000000,
+              "assumptions": {
+                "isAssumption": true,
+                "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                "source": {
+                  "title": "Synthetic funding/coverage plan",
+                  "kind": "manual_assumption",
+                  "manualReference": "example-fixture; NOT real company data",
+                  "knownAt": "2026-03-10T09:00:00+09:00"
+                }
+              }
+            },
+            {
+              "quarter": "2026Q4",
+              "depreciationAndAmortizationKRW": 20000000000,
+              "capexKRW": 80000000000,
+              "deltaWorkingCapitalKRW": 30000000000,
+              "cashTaxesKRW": 20000000000,
+              "cashInterestPaidKRW": 10000000000,
+              "otherOperatingCashFlowKRW": 0,
+              "otherOperatingCashFlowRationale": "No other cash adjustment in this synthetic example",
+              "debtPrincipalDueKRW": 50000000000,
+              "committedDebtDrawKRW": 0,
+              "dividendsAndBuybacksKRW": 5000000000,
+              "assumptions": {
+                "isAssumption": true,
+                "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                "source": {
+                  "title": "Synthetic funding/coverage plan",
+                  "kind": "manual_assumption",
+                  "manualReference": "example-fixture; NOT real company data",
+                  "knownAt": "2026-03-10T09:00:00+09:00"
+                }
+              }
+            },
+            {
+              "quarter": "2027Q1",
+              "depreciationAndAmortizationKRW": 20000000000,
+              "capexKRW": 80000000000,
+              "deltaWorkingCapitalKRW": 30000000000,
+              "cashTaxesKRW": 20000000000,
+              "cashInterestPaidKRW": 10000000000,
+              "otherOperatingCashFlowKRW": 0,
+              "otherOperatingCashFlowRationale": "No other cash adjustment in this synthetic example",
+              "debtPrincipalDueKRW": 50000000000,
+              "committedDebtDrawKRW": 0,
+              "dividendsAndBuybacksKRW": 5000000000,
+              "assumptions": {
+                "isAssumption": true,
+                "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                "source": {
+                  "title": "Synthetic funding/coverage plan",
+                  "kind": "manual_assumption",
+                  "manualReference": "example-fixture; NOT real company data",
+                  "knownAt": "2026-03-10T09:00:00+09:00"
+                }
+              }
+            }
+          ]
+        },
+        "liquidity": {
+          "averageDailyTradedValueKRW": 10000000000,
+          "windowSessions": 20,
+          "asOf": "2026-03-10T09:00:00+09:00",
+          "knownAt": "2026-03-10T09:00:00+09:00",
+          "source": {
+            "title": "Synthetic trailing traded value",
+            "kind": "market_data_vendor",
+            "manualReference": "example-fixture; NOT real company data",
+            "knownAt": "2026-03-10T09:00:00+09:00"
+          }
+        }
+      },
+      "currentConsensus": {
+        "schemaVersion": 1,
+        "ticker": "111110",
+        "scope": "consolidated",
+        "basis": "common_diluted",
+        "currency": "KRW",
+        "unit": "KRW_per_share",
+        "horizonQuarters": [
+          "2026Q2",
+          "2026Q3",
+          "2026Q4",
+          "2027Q1"
+        ],
+        "epsPerShare": 4400,
+        "knownAt": "2026-03-02T09:00:00+09:00",
+        "source": {
+          "title": "synthetic consensus panel (example)",
+          "manualReference": "example-fixture",
+          "kind": "analyst_report",
+          "knownAt": "2026-03-02T09:00:00+09:00"
+        }
+      },
+      "priorConsensus": {
+        "schemaVersion": 1,
+        "ticker": "111110",
+        "scope": "consolidated",
+        "basis": "common_diluted",
+        "currency": "KRW",
+        "unit": "KRW_per_share",
+        "horizonQuarters": [
+          "2026Q2",
+          "2026Q3",
+          "2026Q4",
+          "2027Q1"
+        ],
+        "epsPerShare": 4200,
+        "knownAt": "2026-01-31T09:00:00+09:00",
+        "source": {
+          "title": "synthetic consensus panel (example, prior)",
+          "manualReference": "example-fixture",
+          "kind": "analyst_report",
+          "knownAt": "2026-01-31T09:00:00+09:00"
+        }
+      },
+      "catalyst": {
+        "schemaVersion": 1,
+        "ticker": "111110",
+        "eventType": "earnings_release",
+        "eventAt": "2026-03-30T09:00:00+09:00",
+        "knownAt": "2026-02-01T09:00:00+09:00",
+        "source": {
+          "title": "synthetic IR calendar (example)",
+          "manualReference": "example-fixture",
+          "kind": "exchange_notice",
+          "knownAt": "2026-02-01T09:00:00+09:00"
+        }
+      },
+      "diagnostic": {
+        "referencePE": 8,
+        "currentPriceKRW": 32000,
+        "knownAt": "2026-03-10T09:00:00+09:00",
+        "source": {
+          "title": "synthetic market price snapshot (example)",
+          "manualReference": "example-fixture",
+          "kind": "market_data_vendor",
+          "knownAt": "2026-03-10T09:00:00+09:00"
+        }
+      }
+    },
+    {
+      "ticker": "222220",
+      "evidenceMode": "synthetic",
+      "forecast": {
+        "schemaVersion": 1,
+        "ticker": "222220",
+        "sector": "automotive",
+        "fiscalYearBasis": "calendar",
+        "currency": "KRW",
+        "generatedAt": "2026-03-10T09:00:00+09:00",
+        "analyst": "example research desk (synthetic)",
+        "quarters": [
+          {
+            "quarter": "2026Q2",
+            "netInterestKRW": -20000000000,
+            "taxRate": 0.22,
+            "noncontrollingShare": 0.1,
+            "preferredClaimsKRW": 5000000000,
+            "dilutedCommonShares": 400000000,
+            "coverageAttestation": {
+              "complete": true,
+              "statedBy": "example research desk (synthetic)",
+              "note": "single declared segment covers 100% of modelled revenue"
+            },
+            "segments": [
+              {
+                "name": "suv",
+                "volume": 80000,
+                "unitPriceKRW": 35000000,
+                "variableCostPerUnitKRW": 25000000,
+                "fixedCostKRW": 300000000000,
+                "source": {
+                  "title": "synthetic SUV sales plan (example)",
+                  "manualReference": "example-fixture",
+                  "kind": "manual_assumption",
+                  "knownAt": "2026-03-05T09:00:00+09:00"
+                },
+                "assumptions": {
+                  "isAssumption": true,
+                  "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                  "source": {
+                    "title": "Synthetic funding/coverage plan",
+                    "kind": "manual_assumption",
+                    "manualReference": "example-fixture; NOT real company data",
+                    "knownAt": "2026-03-10T09:00:00+09:00"
+                  }
+                }
+              }
+            ],
+            "bridgeAssumptions": {
+              "isAssumption": true,
+              "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+              "source": {
+                "title": "Synthetic funding/coverage plan",
+                "kind": "manual_assumption",
+                "manualReference": "example-fixture; NOT real company data",
+                "knownAt": "2026-03-10T09:00:00+09:00"
+              }
+            }
+          },
+          {
+            "quarter": "2026Q3",
+            "netInterestKRW": -20000000000,
+            "taxRate": 0.22,
+            "noncontrollingShare": 0.1,
+            "preferredClaimsKRW": 5000000000,
+            "dilutedCommonShares": 400000000,
+            "coverageAttestation": {
+              "complete": true,
+              "statedBy": "example research desk (synthetic)",
+              "note": "single declared segment covers 100% of modelled revenue"
+            },
+            "segments": [
+              {
+                "name": "suv",
+                "volume": 85000,
+                "unitPriceKRW": 35000000,
+                "variableCostPerUnitKRW": 25000000,
+                "fixedCostKRW": 300000000000,
+                "source": {
+                  "title": "synthetic SUV sales plan (example)",
+                  "manualReference": "example-fixture",
+                  "kind": "manual_assumption",
+                  "knownAt": "2026-03-05T09:00:00+09:00"
+                },
+                "assumptions": {
+                  "isAssumption": true,
+                  "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                  "source": {
+                    "title": "Synthetic funding/coverage plan",
+                    "kind": "manual_assumption",
+                    "manualReference": "example-fixture; NOT real company data",
+                    "knownAt": "2026-03-10T09:00:00+09:00"
+                  }
+                }
+              }
+            ],
+            "bridgeAssumptions": {
+              "isAssumption": true,
+              "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+              "source": {
+                "title": "Synthetic funding/coverage plan",
+                "kind": "manual_assumption",
+                "manualReference": "example-fixture; NOT real company data",
+                "knownAt": "2026-03-10T09:00:00+09:00"
+              }
+            }
+          },
+          {
+            "quarter": "2026Q4",
+            "netInterestKRW": -20000000000,
+            "taxRate": 0.22,
+            "noncontrollingShare": 0.1,
+            "preferredClaimsKRW": 5000000000,
+            "dilutedCommonShares": 400000000,
+            "coverageAttestation": {
+              "complete": true,
+              "statedBy": "example research desk (synthetic)",
+              "note": "single declared segment covers 100% of modelled revenue"
+            },
+            "segments": [
+              {
+                "name": "suv",
+                "volume": 90000,
+                "unitPriceKRW": 35000000,
+                "variableCostPerUnitKRW": 25000000,
+                "fixedCostKRW": 300000000000,
+                "source": {
+                  "title": "synthetic SUV sales plan (example)",
+                  "manualReference": "example-fixture",
+                  "kind": "manual_assumption",
+                  "knownAt": "2026-03-05T09:00:00+09:00"
+                },
+                "assumptions": {
+                  "isAssumption": true,
+                  "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                  "source": {
+                    "title": "Synthetic funding/coverage plan",
+                    "kind": "manual_assumption",
+                    "manualReference": "example-fixture; NOT real company data",
+                    "knownAt": "2026-03-10T09:00:00+09:00"
+                  }
+                }
+              }
+            ],
+            "bridgeAssumptions": {
+              "isAssumption": true,
+              "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+              "source": {
+                "title": "Synthetic funding/coverage plan",
+                "kind": "manual_assumption",
+                "manualReference": "example-fixture; NOT real company data",
+                "knownAt": "2026-03-10T09:00:00+09:00"
+              }
+            }
+          },
+          {
+            "quarter": "2027Q1",
+            "netInterestKRW": -20000000000,
+            "taxRate": 0.22,
+            "noncontrollingShare": 0.1,
+            "preferredClaimsKRW": 5000000000,
+            "dilutedCommonShares": 400000000,
+            "coverageAttestation": {
+              "complete": true,
+              "statedBy": "example research desk (synthetic)",
+              "note": "single declared segment covers 100% of modelled revenue"
+            },
+            "segments": [
+              {
+                "name": "suv",
+                "volume": 95000,
+                "unitPriceKRW": 35000000,
+                "variableCostPerUnitKRW": 25000000,
+                "fixedCostKRW": 300000000000,
+                "source": {
+                  "title": "synthetic SUV sales plan (example)",
+                  "manualReference": "example-fixture",
+                  "kind": "manual_assumption",
+                  "knownAt": "2026-03-05T09:00:00+09:00"
+                },
+                "assumptions": {
+                  "isAssumption": true,
+                  "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                  "source": {
+                    "title": "Synthetic funding/coverage plan",
+                    "kind": "manual_assumption",
+                    "manualReference": "example-fixture; NOT real company data",
+                    "knownAt": "2026-03-10T09:00:00+09:00"
+                  }
+                }
+              }
+            ],
+            "bridgeAssumptions": {
+              "isAssumption": true,
+              "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+              "source": {
+                "title": "Synthetic funding/coverage plan",
+                "kind": "manual_assumption",
+                "manualReference": "example-fixture; NOT real company data",
+                "knownAt": "2026-03-10T09:00:00+09:00"
+              }
+            }
+          }
+        ],
+        "company": {
+          "name": "Synthetic manufacturer 222220",
+          "exchange": "KOSPI",
+          "securityType": "common_stock",
+          "source": {
+            "title": "Synthetic funding/coverage plan",
+            "kind": "manual_assumption",
+            "manualReference": "example-fixture; NOT real company data",
+            "knownAt": "2026-03-10T09:00:00+09:00"
+          }
+        },
+        "scope": "consolidated",
+        "funding": {
+          "openingBalanceBasis": "projected_start_of_horizon",
+          "openingUnrestrictedCashKRW": 2000000000000,
+          "openingDebtKRW": 500000000000,
+          "assumptions": {
+            "isAssumption": true,
+            "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+            "source": {
+              "title": "Synthetic funding/coverage plan",
+              "kind": "manual_assumption",
+              "manualReference": "example-fixture; NOT real company data",
+              "knownAt": "2026-03-10T09:00:00+09:00"
+            }
+          },
+          "quarters": [
+            {
+              "quarter": "2026Q2",
+              "depreciationAndAmortizationKRW": 20000000000,
+              "capexKRW": 80000000000,
+              "deltaWorkingCapitalKRW": 30000000000,
+              "cashTaxesKRW": 20000000000,
+              "cashInterestPaidKRW": 10000000000,
+              "otherOperatingCashFlowKRW": 0,
+              "otherOperatingCashFlowRationale": "No other cash adjustment in this synthetic example",
+              "debtPrincipalDueKRW": 50000000000,
+              "committedDebtDrawKRW": 0,
+              "dividendsAndBuybacksKRW": 5000000000,
+              "assumptions": {
+                "isAssumption": true,
+                "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                "source": {
+                  "title": "Synthetic funding/coverage plan",
+                  "kind": "manual_assumption",
+                  "manualReference": "example-fixture; NOT real company data",
+                  "knownAt": "2026-03-10T09:00:00+09:00"
+                }
+              }
+            },
+            {
+              "quarter": "2026Q3",
+              "depreciationAndAmortizationKRW": 20000000000,
+              "capexKRW": 80000000000,
+              "deltaWorkingCapitalKRW": 30000000000,
+              "cashTaxesKRW": 20000000000,
+              "cashInterestPaidKRW": 10000000000,
+              "otherOperatingCashFlowKRW": 0,
+              "otherOperatingCashFlowRationale": "No other cash adjustment in this synthetic example",
+              "debtPrincipalDueKRW": 50000000000,
+              "committedDebtDrawKRW": 0,
+              "dividendsAndBuybacksKRW": 5000000000,
+              "assumptions": {
+                "isAssumption": true,
+                "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                "source": {
+                  "title": "Synthetic funding/coverage plan",
+                  "kind": "manual_assumption",
+                  "manualReference": "example-fixture; NOT real company data",
+                  "knownAt": "2026-03-10T09:00:00+09:00"
+                }
+              }
+            },
+            {
+              "quarter": "2026Q4",
+              "depreciationAndAmortizationKRW": 20000000000,
+              "capexKRW": 80000000000,
+              "deltaWorkingCapitalKRW": 30000000000,
+              "cashTaxesKRW": 20000000000,
+              "cashInterestPaidKRW": 10000000000,
+              "otherOperatingCashFlowKRW": 0,
+              "otherOperatingCashFlowRationale": "No other cash adjustment in this synthetic example",
+              "debtPrincipalDueKRW": 50000000000,
+              "committedDebtDrawKRW": 0,
+              "dividendsAndBuybacksKRW": 5000000000,
+              "assumptions": {
+                "isAssumption": true,
+                "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                "source": {
+                  "title": "Synthetic funding/coverage plan",
+                  "kind": "manual_assumption",
+                  "manualReference": "example-fixture; NOT real company data",
+                  "knownAt": "2026-03-10T09:00:00+09:00"
+                }
+              }
+            },
+            {
+              "quarter": "2027Q1",
+              "depreciationAndAmortizationKRW": 20000000000,
+              "capexKRW": 80000000000,
+              "deltaWorkingCapitalKRW": 30000000000,
+              "cashTaxesKRW": 20000000000,
+              "cashInterestPaidKRW": 10000000000,
+              "otherOperatingCashFlowKRW": 0,
+              "otherOperatingCashFlowRationale": "No other cash adjustment in this synthetic example",
+              "debtPrincipalDueKRW": 50000000000,
+              "committedDebtDrawKRW": 0,
+              "dividendsAndBuybacksKRW": 5000000000,
+              "assumptions": {
+                "isAssumption": true,
+                "rationale": "Entire example is synthetic. Forecast costs include depreciation. Other cash adjustments assumed zero.",
+                "source": {
+                  "title": "Synthetic funding/coverage plan",
+                  "kind": "manual_assumption",
+                  "manualReference": "example-fixture; NOT real company data",
+                  "knownAt": "2026-03-10T09:00:00+09:00"
+                }
+              }
+            }
+          ]
+        },
+        "liquidity": {
+          "averageDailyTradedValueKRW": 10000000000,
+          "windowSessions": 20,
+          "asOf": "2026-03-10T09:00:00+09:00",
+          "knownAt": "2026-03-10T09:00:00+09:00",
+          "source": {
+            "title": "Synthetic trailing traded value",
+            "kind": "market_data_vendor",
+            "manualReference": "example-fixture; NOT real company data",
+            "knownAt": "2026-03-10T09:00:00+09:00"
+          }
+        }
+      },
+      "currentConsensus": {
+        "schemaVersion": 1,
+        "ticker": "222220",
+        "scope": "consolidated",
+        "basis": "common_diluted",
+        "currency": "KRW",
+        "unit": "KRW_per_share",
+        "horizonQuarters": [
+          "2026Q2",
+          "2026Q3",
+          "2026Q4",
+          "2027Q1"
+        ],
+        "epsPerShare": 3200,
+        "knownAt": "2026-03-02T09:00:00+09:00",
+        "source": {
+          "title": "synthetic consensus panel (example)",
+          "manualReference": "example-fixture",
+          "kind": "analyst_report",
+          "knownAt": "2026-03-02T09:00:00+09:00"
+        }
+      },
+      "priorConsensus": {
+        "schemaVersion": 1,
+        "ticker": "222220",
+        "scope": "consolidated",
+        "basis": "common_diluted",
+        "currency": "KRW",
+        "unit": "KRW_per_share",
+        "horizonQuarters": [
+          "2026Q2",
+          "2026Q3",
+          "2026Q4",
+          "2027Q1"
+        ],
+        "epsPerShare": 3100,
+        "knownAt": "2026-01-31T09:00:00+09:00",
+        "source": {
+          "title": "synthetic consensus panel (example, prior)",
+          "manualReference": "example-fixture",
+          "kind": "analyst_report",
+          "knownAt": "2026-01-31T09:00:00+09:00"
+        }
+      },
+      "catalyst": {
+        "schemaVersion": 1,
+        "ticker": "222220",
+        "eventType": "earnings_release",
+        "eventAt": "2026-03-31T09:00:00+09:00",
+        "knownAt": "2026-02-01T09:00:00+09:00",
+        "source": {
+          "title": "synthetic IR calendar (example)",
+          "manualReference": "example-fixture",
+          "kind": "exchange_notice",
+          "knownAt": "2026-02-01T09:00:00+09:00"
+        }
+      },
+      "diagnostic": {
+        "referencePE": 9,
+        "currentPriceKRW": 28000,
+        "knownAt": "2026-03-10T09:00:00+09:00",
+        "source": {
+          "title": "synthetic market price snapshot (example)",
+          "manualReference": "example-fixture",
+          "kind": "market_data_vendor",
+          "knownAt": "2026-03-10T09:00:00+09:00"
+        }
+      }
+    }
+  ]
+}

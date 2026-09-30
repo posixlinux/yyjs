@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "ticker": "111110",
+  "scope": "consolidated",
+  "basis": "common_diluted",
+  "currency": "KRW",
+  "unit": "KRW_per_share",
+  "horizonQuarters": [
+    "2026Q2",
+    "2026Q3",
+    "2026Q4",
+    "2027Q1"
+  ],
+  "epsPerShare": 4200,
+  "knownAt": "2026-01-31T09:00:00+09:00",
+  "source": {
+    "title": "synthetic consensus panel (example, prior)",
+    "manualReference": "example-fixture",
+    "kind": "analyst_report",
+    "knownAt": "2026-01-31T09:00:00+09:00"
+  }
+}

@@ -1,0 +1,54 @@
+// Common-stock (보통주) eligibility. The server analyses operating companies only: preferred shares (우선주),
+// ETF/ETN, REITs and other pass-through vehicles (infrastructure/ship funds, SPACs) are rejected.
+// Pure functions; the callers supply whatever Naver/DART fields they have. Names are matched on Korean/English
+// legal-name conventions, so this is a best-effort screen, not an exchange-issued classification.
+
+export type SecurityRejection = { code: "PREFERRED_STOCK" | "ETF_ETN" | "REIT" | "INFRA_FUND" | "SPAC" | "SHIP_FUND" | "NON_STOCK"; message: string };
+
+export type SecurityFacts = {
+  ticker: string;
+  /** Display/legal names from any source (Naver stockName, DART corp_name, dataset company.name). */
+  names?: (string | null | undefined)[];
+  /** Naver `stockEndType`: "stock" for equities, "etf"/"etn"/... otherwise. */
+  endType?: string | null;
+  /** DART `induty_code` (KSIC). */
+  industryCode?: string | null;
+  /** Apply the ticker-suffix rule. Off for user-supplied datasets whose tickers may be fictional. */
+  checkTickerSuffix?: boolean;
+};
+
+// Korean preferred shares keep the common code's first five digits and end in 5/7/9 (or a letter for newer series);
+// a six-digit numeric common-stock code ends in 0.
+const PREFERRED_NAME = /(?:\d우[ABC]?|우[ABC]|우\(전환\)|우선주)$|\(우\)/;
+const ETF_NAME = /\b(?:ETF|ETN)\b|^(?:KODEX|TIGER|KBSTAR|ARIRANG|HANARO|KOSEF)\b|상장지수/;
+const REIT_NAME = /리츠|REITs?\b|부동산투자회사|부동산투자신탁|위탁관리|기업구조조정부동산/i;
+const INFRA_NAME = /인프라(?:투융자|펀드)|투융자회사|사회기반시설|인프라$/; // "맥쿼리인프라"-style listed funds
+const SPAC_NAME = /스팩|SPAC|기업인수목적/i;
+const SHIP_NAME = /선박투자회사/;
+// KSIC 6420x: trusts & collective investment vehicles (e.g. Macquarie Korea Infrastructure Fund).
+const FUND_INDUSTRY = /^6420\d?$/;
+
+export function classifySecurity(f: SecurityFacts): SecurityRejection[] {
+  const out: SecurityRejection[] = [];
+  const names = (f.names ?? []).map((n) => (n ?? "").trim()).filter(Boolean);
+  const named = (re: RegExp) => names.some((n) => re.test(n));
+
+  if (f.endType && f.endType.toLowerCase() !== "stock")
+    out.push({ code: /^et[fn]$/i.test(f.endType) ? "ETF_ETN" : "NON_STOCK", message: `Instrument type "${f.endType}" is not a common stock` });
+  else if (named(ETF_NAME)) out.push({ code: "ETF_ETN", message: "Name indicates an ETF/ETN" });
+
+  if ((f.checkTickerSuffix ?? true) && /^\d{6}$/.test(f.ticker) && !f.ticker.endsWith("0"))
+    out.push({ code: "PREFERRED_STOCK", message: `Ticker ${f.ticker} does not end in 0, which marks a preferred (or other non-common) share class` });
+  else if (named(PREFERRED_NAME)) out.push({ code: "PREFERRED_STOCK", message: "Name indicates a preferred share (우선주)" });
+
+  if (named(REIT_NAME)) out.push({ code: "REIT", message: "Name indicates a REIT (부동산투자회사/리츠)" });
+  if (named(INFRA_NAME) || (f.industryCode && FUND_INDUSTRY.test(f.industryCode))) out.push({ code: "INFRA_FUND", message: "Listed infrastructure/investment fund, not an operating company" });
+  if (named(SPAC_NAME)) out.push({ code: "SPAC", message: "Name indicates a special purpose acquisition company (스팩)" });
+  if (named(SHIP_NAME)) out.push({ code: "SHIP_FUND", message: "Name indicates a ship investment company (선박투자회사)" });
+  return out;
+}
+
+export const isCommonStock = (f: SecurityFacts): boolean => classifySecurity(f).length === 0;
+
+/** One-line, user-facing reason list. */
+export const describeRejections = (r: SecurityRejection[]): string => r.map((x) => x.message).join("; ");

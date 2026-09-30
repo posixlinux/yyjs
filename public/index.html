@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KOSPI 제품 시장 분석</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<header class="top">
+  <h1>KOSPI 제품 시장 분석</h1>
+  <p class="sub">일반주(보통주)만 분석합니다 — 우선주·ETF·리츠·인프라펀드·스팩 제외. 결과는 투자 권고가 아니며 목표가는 밸류에이션 프록시입니다.</p>
+</header>
+
+<main>
+  <section class="card" aria-labelledby="pick">
+    <h2 id="pick">종목 선택</h2>
+    <form id="form" autocomplete="off">
+      <div class="row">
+        <label for="q">종목명 또는 번호 검색</label>
+        <input id="q" type="search" inputmode="search" placeholder="예: 삼성전자 또는 005930" maxlength="50">
+      </div>
+      <div id="list" class="list" role="listbox" aria-label="KOSPI 일반주 목록"></div>
+      <p id="listInfo" class="hint"></p>
+
+      <div class="row inline">
+        <div>
+          <label for="ticker">선택된 종목 번호</label>
+          <input id="ticker" inputmode="numeric" pattern="\d{6}" maxlength="6" placeholder="6자리" required>
+        </div>
+        <div>
+          <label for="asOf">기준일 (비우면 오늘)</label>
+          <input id="asOf" type="date">
+        </div>
+      </div>
+
+      <fieldset class="modes">
+        <legend>분석 방식</legend>
+        <label><input type="radio" name="mode" value="analysis" checked> 전체 분석 (DART·Naver 수집 + Claude·agy(Antigravity) 검토 + 가치 계산)</label>
+        <label><input type="radio" name="mode" value="research"> 증거 수집만 (모델 미사용, 쿼터 소모 없음)</label>
+      </fieldset>
+
+      <div id="keyRow" class="row" hidden>
+        <label for="apiKey">API 키 (서버에 API_KEY가 설정됨)</label>
+        <input id="apiKey" type="password" autocomplete="off">
+      </div>
+
+      <button id="go" type="submit">분석 시작</button>
+    </form>
+  </section>
+
+  <section id="out" class="card" aria-live="polite" hidden></section>
+</main>
+<script src="/assets/app.js"></script>
+</body>
+</html>

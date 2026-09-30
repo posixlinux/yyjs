@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "ticker": "222220",
+  "eventType": "earnings_release",
+  "eventAt": "2026-03-31T09:00:00+09:00",
+  "knownAt": "2026-02-01T09:00:00+09:00",
+  "source": {
+    "title": "synthetic IR calendar (example)",
+    "manualReference": "example-fixture",
+    "kind": "exchange_notice",
+    "knownAt": "2026-02-01T09:00:00+09:00"
+  }
+}

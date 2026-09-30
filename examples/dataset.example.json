@@ -1,0 +1,284 @@
+{
+  "schemaVersion": 1,
+  "company": {
+    "ticker": "123456",
+    "name": "예시제조 (가상 예제 회사)",
+    "exchange": "KOSPI",
+    "sector": "Industrial (example)",
+    "description": "Example payload for POST /v1/datasets showing the required shape. Fictional company and numbers: replace every value and source with your own researched, cited data before relying on any output.",
+    "sources": [
+      {
+        "title": "EXAMPLE (not real) company profile",
+        "manualReference": "EXAMPLE (not real)/123456",
+        "publishedAt": "2026-08-20"
+      }
+    ]
+  },
+  "quote": {
+    "priceKRW": 30000,
+    "asOf": "2026-09-25",
+    "source": {
+      "title": "EXAMPLE (not real) dated quote",
+      "manualReference": "EXAMPLE (not real)/123456",
+      "publishedAt": "2026-09-25"
+    }
+  },
+  "shares": {
+    "dilutedCommon": 100000000,
+    "asOf": "2026-06-30",
+    "source": {
+      "title": "EXAMPLE (not real) diluted common share count",
+      "manualReference": "EXAMPLE (not real)/123456",
+      "publishedAt": "2026-08-15"
+    }
+  },
+  "fx": [
+    {
+      "currency": "USD",
+      "krwPerUnit": 1380,
+      "asOf": "2026-09-24",
+      "source": {
+        "title": "EXAMPLE (not real) USD/KRW rate",
+        "manualReference": "EXAMPLE (not real)/123456",
+        "publishedAt": "2026-09-24"
+      }
+    }
+  ],
+  "financials": {
+    "quarter": "2026Q2",
+    "totalRevenueKRW": 450000000000,
+    "source": {
+      "title": "EXAMPLE (not real) quarterly report 2026Q2",
+      "manualReference": "EXAMPLE (not real)/123456",
+      "publishedAt": "2026-08-15"
+    }
+  },
+  "markets": [
+    {
+      "id": "industrial-robots",
+      "name": "Industrial robots",
+      "scope": "Global industrial robot system revenue, quarterly, USD",
+      "currency": "USD",
+      "observations": [
+        {
+          "quarter": "2025Q3",
+          "revenue": 8000000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "EXAMPLE (not real) Industrial robots market size 2025Q3",
+            "manualReference": "EXAMPLE (not real)/industrial-robots",
+            "publishedAt": "2025-11-15"
+          }
+        },
+        {
+          "quarter": "2025Q4",
+          "revenue": 8400000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "EXAMPLE (not real) Industrial robots market size 2025Q4",
+            "manualReference": "EXAMPLE (not real)/industrial-robots",
+            "publishedAt": "2026-02-15"
+          }
+        },
+        {
+          "quarter": "2026Q1",
+          "revenue": 8100000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "EXAMPLE (not real) Industrial robots market size 2026Q1",
+            "manualReference": "EXAMPLE (not real)/industrial-robots",
+            "publishedAt": "2026-05-15"
+          }
+        },
+        {
+          "quarter": "2026Q2",
+          "revenue": 8800000000,
+          "basis": "quarterly",
+          "source": {
+            "title": "EXAMPLE (not real) Industrial robots market size 2026Q2",
+            "manualReference": "EXAMPLE (not real)/industrial-robots",
+            "publishedAt": "2026-08-15"
+          }
+        }
+      ],
+      "annualGrowth": {
+        "value": {
+          "bear": 0,
+          "base": 0.08,
+          "bull": 0.15
+        },
+        "source": {
+          "title": "EXAMPLE (not real) growth assumption",
+          "manualReference": "EXAMPLE (not real)/industrial-robots",
+          "publishedAt": "2026-08-20"
+        },
+        "rationale": "Analyst assumption (fictional)."
+      },
+      "seasonality": {
+        "value": {
+          "q1": 0.96,
+          "q2": 1,
+          "q3": 0.98,
+          "q4": 1.06
+        },
+        "source": {
+          "title": "EXAMPLE (not real) seasonality index",
+          "manualReference": "EXAMPLE (not real)/industrial-robots",
+          "publishedAt": "2026-08-20"
+        }
+      },
+      "cyclical": {
+        "value": {
+          "bear": 0.95,
+          "base": 1,
+          "bull": 1.03
+        },
+        "source": {
+          "title": "EXAMPLE (not real) cyclical assumption",
+          "manualReference": "EXAMPLE (not real)/industrial-robots",
+          "publishedAt": "2026-08-20"
+        },
+        "rationale": "One-off level shift in the target quarter (fictional)."
+      },
+      "drivers": [
+        {
+          "text": "Example driver: replace with a cited observation.",
+          "source": {
+            "title": "EXAMPLE (not real) narrative driver",
+            "manualReference": "EXAMPLE (not real)/industrial-robots",
+            "publishedAt": "2026-08-20"
+          }
+        }
+      ]
+    }
+  ],
+  "products": [
+    {
+      "id": "robot-arms",
+      "name": "Robot arms",
+      "marketId": "industrial-robots",
+      "revenue": [
+        {
+          "quarter": "2025Q3",
+          "revenue": 240000000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "EXAMPLE (not real) Robot arms revenue 2025Q3",
+            "manualReference": "EXAMPLE (not real)/robot-arms",
+            "publishedAt": "2025-11-15"
+          }
+        },
+        {
+          "quarter": "2025Q4",
+          "revenue": 260400000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "EXAMPLE (not real) Robot arms revenue 2025Q4",
+            "manualReference": "EXAMPLE (not real)/robot-arms",
+            "publishedAt": "2026-02-15"
+          }
+        },
+        {
+          "quarter": "2026Q1",
+          "revenue": 259200000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "EXAMPLE (not real) Robot arms revenue 2026Q1",
+            "manualReference": "EXAMPLE (not real)/robot-arms",
+            "publishedAt": "2026-05-15"
+          }
+        },
+        {
+          "quarter": "2026Q2",
+          "revenue": 290400000,
+          "currency": "USD",
+          "basis": "quarterly",
+          "source": {
+            "title": "EXAMPLE (not real) Robot arms revenue 2026Q2",
+            "manualReference": "EXAMPLE (not real)/robot-arms",
+            "publishedAt": "2026-08-15"
+          }
+        }
+      ],
+      "shareDelta": {
+        "value": {
+          "bear": -0.005,
+          "base": 0,
+          "bull": 0.005
+        },
+        "source": {
+          "title": "EXAMPLE (not real) share assumption",
+          "manualReference": "EXAMPLE (not real)/robot-arms",
+          "publishedAt": "2026-08-20"
+        }
+      },
+      "shareBounds": {
+        "min": 0.02,
+        "max": 0.05
+      },
+      "operatingMargin": {
+        "value": {
+          "bear": 0.04,
+          "base": 0.08,
+          "bull": 0.11
+        },
+        "source": {
+          "title": "EXAMPLE (not real) margin assumption",
+          "manualReference": "EXAMPLE (not real)/robot-arms",
+          "publishedAt": "2026-08-20"
+        }
+      }
+    }
+  ],
+  "residual": {
+    "value": {
+      "annualGrowth": {
+        "bear": -0.03,
+        "base": 0.02,
+        "bull": 0.05
+      },
+      "operatingMargin": {
+        "bear": 0.02,
+        "base": 0.05,
+        "bull": 0.08
+      }
+    },
+    "source": {
+      "title": "EXAMPLE (not real) residual segment assumption",
+      "manualReference": "EXAMPLE (not real)/123456",
+      "publishedAt": "2026-08-20"
+    }
+  },
+  "earningsBridge": {
+    "value": {
+      "netInterestKRW": 2000000000,
+      "effectiveTaxRate": 0.24,
+      "noncontrollingShare": 0,
+      "preferredClaimsKRW": 0
+    },
+    "source": {
+      "title": "EXAMPLE (not real) earnings bridge assumption",
+      "manualReference": "EXAMPLE (not real)/123456",
+      "publishedAt": "2026-08-20"
+    },
+    "rationale": "Example: no preferred share class. If one exists, put ALL next-quarter earnings allocated to it (dividends + participation) in preferredClaimsKRW and explain why."
+  },
+  "valuation": {
+    "peMultiple": {
+      "value": {
+        "bear": 8,
+        "base": 12,
+        "bull": 16
+      },
+      "source": {
+        "title": "EXAMPLE (not real) P/E assumption",
+        "manualReference": "EXAMPLE (not real)/123456",
+        "publishedAt": "2026-08-20"
+      },
+      "rationale": "Valuation proxy multiple, not a price forecast."
+    }
+  }
+}
