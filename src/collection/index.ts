@@ -3,6 +3,8 @@ import { createHttp, redact } from "./http.js";
 import { collectNaver, collectNaverSearch } from "./naver.js";
 import { collectDart } from "./dart.js";
 import { collectCompetitors, parseCompetitorIds } from "./competitors.js";
+import { collectFx } from "./fx.js";
+import { perReference } from "./per.js";
 import { CollectionError, CollectionInputError, issue } from "./types.js";
 import type {
   CollectPublicEvidenceInput,
@@ -102,6 +104,13 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
   const notKospi = [naver.value, dart.value].some((v) => v && !v.exchangeVerified && v.issues.some((i) => i.code === "not_kospi"));
   const notCommon = [naver.value, dart.value].some((v) => v?.issues.some((i) => i.code === "not_common_stock"));
   const productNames = usefulProductNames(dart.value?.productCandidates ?? [], 10);
+  // KRW reference rates (keyless), only for a verified KOSPI common stock. A failure is a warning: it only costs
+  // the FX document.
+  let fx: Outcome<Awaited<ReturnType<typeof collectFx>>> = { value: null, fatal: null, configured: false };
+  if (verified && !notKospi && !notCommon) {
+    fx = await run("fx", () => collectFx({ asOf, http, ttlMs }));
+    if (fx.fatal) fx.fatal = { ...fx.fatal, severity: "warning" };
+  }
   if (naverId && naverSecret && verified && !notKospi && !notCommon) {
     const queries = options.productQueries?.length ? options.productQueries : expandQueries(name, productNames.slice(0, 3));
     // Company queries (they contain the company name) keep only articles that actually name the company.
@@ -139,6 +148,7 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
     // an answered search with zero matches is not a failure
     naverSearch: report(search, !!search.value && (searchNews.length > 0 || search.value.issues.every((i) => i.severity !== "error")), search.value?.issues, secrets),
     dart: report(dart, !!dv && (dv.statements.length > 0 || dv.excerpts.length > 0 || dv.filings.length > 0), dv?.issues, secrets),
+    fx: report(fx, !!fx.value?.length, [], secrets),
     ...(cmp && { competitors: Object.fromEntries(Object.entries(cmp.reports).map(([m, r]) => [m, { ...r, issues: r.issues.map((i) => ({ ...i, message: redact(i.message, secrets) })) }])) }),
   };
   const exchangeVerifiedBy: ("naver" | "dart")[] = [];
@@ -155,16 +165,19 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
     modelReady: false,
     untrustedContentNotice: NOTICE,
     providers,
-    issues: [...providers.naver.issues, ...providers.dart.issues, ...providers.naverSearch.issues, ...Object.values(providers.competitors ?? {}).flatMap((r) => r.issues)],
+    issues: [...providers.naver.issues, ...providers.dart.issues, ...providers.naverSearch.issues, ...providers.fx.issues, ...Object.values(providers.competitors ?? {}).flatMap((r) => r.issues)],
     company: { name, corpCode: dv?.corpCode ?? null, exchange: exchangeVerifiedBy.length && !notKospi ? "KOSPI" : null, exchangeVerifiedBy },
     market: {
       quote: nv?.quote ?? null, referenceMetrics: nv?.referenceMetrics ?? [], quarterlyConsensus: nv?.quarterlyConsensus ?? [],
       quarterlyActuals: nv?.quarterlyActuals ?? [], dailyCloses: nv?.dailyCloses ?? [], news: nv?.news ?? [], searchNews,
+      annualFinance: nv?.annualFinance ?? [],
+      perReference: nv ? perReference(nv.dailyCloses, nv.quarterlyActuals, [`https://m.stock.naver.com/api/stock/${ticker}/price`, `https://m.stock.naver.com/api/stock/${ticker}/finance/quarter`]) : null,
+      fxRates: fx.value ?? [],
     },
     filings: {
       list: dv?.filings ?? [], statements: dv?.statements ?? [], derivedQuarters: dv?.derivedQuarters ?? [],
       excerpts: dv?.excerpts ?? [], tables: dv?.tables ?? [], metricCandidates: dv?.metricCandidates ?? [], productCandidates: dv?.productCandidates ?? [],
-      disclosures: dv?.disclosures ?? [],
+      disclosures: dv?.disclosures ?? [], shareCounts: dv?.shareCounts ?? [],
     },
     ...(cmp && { competitors: cmp.competitors }),
     requiredInputs: [],
@@ -244,7 +257,7 @@ function report(o: Outcome<unknown>, hasData: boolean, issues: CollectionIssue[]
 
 function overall(p: PublicEvidence["providers"]): PublicEvidence["status"] {
   const core = [p.naver.status, p.dart.status];
-  const optional = [p.naverSearch.status, ...Object.values(p.competitors ?? {}).map((r) => r.status)];
+  const optional = [p.naverSearch.status, ...(p.fx ? [p.fx.status] : []), ...Object.values(p.competitors ?? {}).map((r) => r.status)];
   if (core.every((s) => s === "failed" || s === "not_configured")) return "failed";
   return core.every((s) => s === "ok") && optional.every((s) => s === "ok" || s === "not_configured") ? "ok" : "partial";
 }
@@ -254,6 +267,10 @@ function requiredInputs(e: PublicEvidence): RequiredInput[] {
   const has = (pred: (c: (typeof m)[number]) => boolean) => m.some(pred);
   const st = e.filings.statements;
   const need = (field: string, status: RequiredInput["status"], detail: string): RequiredInput => ({ field, status, detail });
+  const fxRates = e.market.fxRates ?? [];
+  const commonShares = (e.filings.shareCounts ?? []).find((s) => s.classes.some((c) => c.kind === "common" && c.outstanding !== null));
+  const per = e.market.perReference ?? null;
+  const annualConsensus = (e.market.annualFinance ?? []).some((a) => a.isConsensus && a.revenueKRW !== null);
   return [
     need("quarterlyGlobalMarketRevenue", has((c) => c.kind === "market_size" && c.basis === "quarterly") ? "candidate_only" : "missing",
       "Quarterly global product-market revenue (explicit currency and definition). Filing text may give annual or company-defined market sizes; those are never converted to quarterly by the collector."),
@@ -265,21 +282,28 @@ function requiredInputs(e: PublicEvidence): RequiredInput[] {
       : []),
     need("comparableRevenueShare", has((c) => c.kind === "market_share" && c.measure === "revenue") ? "candidate_only" : "missing",
       "Company revenue share within the same product scope, quarter and currency as the market figure. Volume/shipment shares are not revenue shares."),
-    need("growthAssumptions", has((c) => c.kind === "growth_rate") ? "candidate_only" : "missing",
-      "Bear/base/bull market growth per quarter with an explicit basis (annual CAGR must be converted by the model, not by the collector)."),
+    need("growthAssumptions", has((c) => c.kind === "growth_rate") || annualConsensus ? "candidate_only" : "missing",
+      `Bear/base/bull annual market growth (CAGR; the model converts it to quarterly).${annualConsensus ? " Naver annual consensus for the company's own revenue was collected as a reference (company revenue, not the market)." : ""}`),
     need("productCoverage", e.filings.productCandidates.length ? "candidate_only" : "missing",
       "Non-overlapping product list with segment revenue/margin and a residual segment so coverage of company revenue is explicit."),
     need("companyQuarterlyFinancials", st.length ? "available_unverified" : "missing",
       st.length ? `${st.length} DART statement set(s) as reported (CFS preferred); Q4 only where derivable as annual minus Q3 cumulative.` : "DART quarterly statements were not collected (missing key, upstream error, or no filings)."),
-    need("fxToKrw", "missing", "Explicit FX rate and date for converting market currency to KRW; not collected here."),
-    need("dilutedCommonShares", e.filings.excerpts.some((x) => x.category === "shares") ? "candidate_only" : "missing",
-      e.filings.excerpts.some((x) => x.category === "shares")
-        ? "Filing excerpts/tables on share totals, EPS, capital or preferred/non-controlling interests were collected. Issued/outstanding common shares are not the diluted weighted-average count; units and periods are as printed and must be verified."
-        : "Diluted common share count excluding preferred claims. Naver marketValue and DART statement rows are not a share count."),
+    need("fxToKrw", fxRates.length ? "available_unverified" : "missing",
+      fxRates.length
+        ? `ECB reference rates dated ${fxRates[0]!.rateDate} for ${fxRates.map((f) => f.currency).join(", ")} (KRW per unit, crossed through EUR). Other currencies are not covered.`
+        : "FX reference rates could not be collected (ECB/Frankfurter unavailable)."),
+    need("dilutedCommonShares", commonShares ? "available_unverified" : e.filings.excerpts.some((x) => x.category === "shares") ? "candidate_only" : "missing",
+      commonShares
+        ? `DART share totals (${commonShares.period} ${commonShares.fiscalYear}, receipt ${commonShares.rceptNo}): outstanding common shares = issued - treasury. This is not the diluted weighted-average count; it equals it only without dilutive securities.`
+        : e.filings.excerpts.some((x) => x.category === "shares")
+          ? "Filing excerpts/tables on share totals, EPS, capital or preferred/non-controlling interests were collected. Issued/outstanding common shares are not the diluted weighted-average count; units and periods are as printed and must be verified."
+          : "Diluted common share count excluding preferred claims. Naver marketValue and DART statement rows are not a share count."),
     need("noncontrollingInterestAndNetInterestAndTax", st.length ? "available_unverified" : "missing",
       "Statement rows may contain these items; the model owner must map and verify accounts and periods."),
-    need("valuationMultiple", e.market.referenceMetrics.some((r) => r.role !== "other_reference") ? "reference_only" : "missing",
-      "Scenario PE multiples are assumptions. Naver trailing/consensus PER (if present) is a reference only."),
+    need("valuationMultiple", per || e.market.referenceMetrics.some((r) => r.role !== "other_reference") ? "reference_only" : "missing",
+      per
+        ? `Scenario PE multiples are assumptions. Reference: trailing PER ${per.current} (TTM EPS ${per.ttmEpsKRW} KRW over ${per.quarters.join("/")}); closes ${per.window.from}~${per.window.to} span ${per.window.min}~${per.window.max} (median ${per.window.median}) times that TTM EPS.`
+        : "Scenario PE multiples are assumptions. Naver trailing/consensus PER (if present) is a reference only."),
     need("currentQuote", e.market.quote ? "available_unverified" : "missing",
       e.market.quote ? "Latest Naver snapshot quote no later than asOf; check tradedAt versus the analysis date." : "No quote at or before asOf was obtained."),
   ];

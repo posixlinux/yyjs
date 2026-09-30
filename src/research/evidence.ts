@@ -241,6 +241,37 @@ export function buildDocuments(ev: PublicEvidence): BuiltDocuments {
       `종목 ${q.name} (${q.ticker}), 시장 ${q.exchange.name || q.exchange.nameEng}. 종가(최근 체결가) ${fmt(q.close)} 원 (${q.currency}), 체결 시각 ${q.tradedAt}. 최신 스냅샷이며 과거 종가 조회가 아닙니다.`,
     );
 
+  // Share totals and FX rates are core per-share / currency facts: they ride with the quote (same priority).
+  const SHARE_KIND = { common: "보통주", preferred: "우선주·종류주", total: "합계", other: "기타" } as const;
+  for (const sc of ev.filings.shareCounts ?? []) {
+    const n = (v: number | null) => (v === null ? "-" : `${fmt(v)}주`);
+    add(
+      "quote",
+      `shr-${sc.rceptNo}`,
+      `DART 주식의 총수 현황 ${sc.fiscalYear} ${sc.period}`,
+      sc.receiptUrl,
+      sc.receivedDate,
+      [
+        `DART 주식의 총수 현황 (${sc.fiscalYear} ${sc.period}, 기준일 ${sc.periodEnd}, 접수번호 ${sc.rceptNo}). 단위: 주.`,
+        "유통주식수 = 발행주식총수 - 자기주식수. 희석 가중평균 보통주식수가 아니며, 희석성 증권이 없을 때만 같습니다. 우선주는 보통주 수에 넣지 마세요.",
+        ...sc.classes.map((c) => `${c.label} [${SHARE_KIND[c.kind]}] | 발행주식총수 ${n(c.issued)} | 자기주식수 ${n(c.treasury)} | 유통주식수 ${n(c.outstanding)}`),
+      ].join("\n"),
+    );
+  }
+  const fx = ev.market.fxRates ?? [];
+  if (fx.length)
+    add(
+      "quote",
+      `fx-ecb-${fx[0]!.rateDate}`,
+      `ECB 기준환율 (원화 환산) ${fx[0]!.rateDate}`,
+      fx[0]!.sourceUrl,
+      fx[0]!.rateDate,
+      [
+        `ECB 유로 기준환율 ${fx[0]!.rateDate}자(Frankfurter API 제공)를 유로 경유로 원화 환산한 값입니다. 1 통화 단위당 원(KRW).`,
+        ...fx.map((f) => `${f.currency}/KRW: 1 ${f.currency} = ${fmt(f.krwPerUnit)} KRW`),
+      ].join("\n"),
+    );
+
   [...ev.filings.statements]
     .sort((a, b) => (a.periodEnd < b.periodEnd ? 1 : -1))
     .forEach((s) => {
@@ -366,6 +397,38 @@ export function buildDocuments(ev: PublicEvidence): BuiltDocuments {
     );
   }
 
+  const per = ev.market.perReference;
+  if (per)
+    add(
+      "reference",
+      "naver-per-band",
+      `PER 참고 범위 ${ev.ticker} (Naver 시세·분기 EPS로 계산)`,
+      per.sourceUrls[0]!,
+      per.latestClose.date,
+      [
+        "참고값(모델 가정의 근거일 뿐 관측된 PER 시계열이 아님). Naver 일별 종가와 분기 실적 EPS(기준 미확인)로 서버가 계산했습니다.",
+        `최근 4개 분기 EPS 합(TTM) ${fmt(per.ttmEpsKRW)} 원 (${per.quarters.join(", ")}). 최근 종가 ${fmt(per.latestClose.closeKRW)} 원 (${per.latestClose.date}) → 후행 PER ${fmt(per.current)}배.`,
+        `${per.window.from}~${per.window.to} ${per.window.sessions}거래일 종가를 같은 TTM EPS로 나눈 범위: 최저 ${fmt(per.window.min)}배, 중앙 ${fmt(per.window.median)}배, 최고 ${fmt(per.window.max)}배.`,
+      ].join("\n"),
+    );
+  const annual = ev.market.annualFinance ?? [];
+  if (annual.length) {
+    const won = (v: number | null) => (v === null ? "-" : `${fmt(v)} 원`);
+    const lines = annual.map((a, i) => {
+      const prev = annual[i - 1];
+      const g = prev?.revenueKRW && a.revenueKRW !== null ? ` (매출 전년 대비 ${fmt(Math.round((a.revenueKRW / prev.revenueKRW - 1) * 1000) / 10)}%)` : "";
+      return `${a.period} ${a.isConsensus ? "[컨센서스]" : "[실적]"} 매출액 ${won(a.revenueKRW)} | 영업이익 ${won(a.operatingProfitKRW)} | 당기순이익 ${won(a.netIncomeKRW)} | EPS ${a.epsKRW === null ? "-" : `${fmt(a.epsKRW)} 원`}${g}`;
+    });
+    add(
+      "reference",
+      "naver-annual",
+      `Naver 연간 실적·컨센서스 ${ev.ticker}`,
+      annual[0]!.sourceUrl,
+      kstDate(annual[0]!.observedAt),
+      "회사 전체 연간 실적과 증권사 컨센서스(Naver 표시 기준, 억원을 원으로 환산). 회사 매출 성장의 참고값이며 제품 시장 규모나 시장 성장률이 아닙니다.\n" + lines.join("\n"),
+    );
+  }
+
   // Articles that actually discuss products/markets first (then newest), not just generic current stock news.
   const newsBody = (n: PublicEvidence["market"]["news"][number]) => (n.articleText ? n.articleText : n.snippet);
   const news = [...ev.market.news, ...ev.market.searchNews]
@@ -459,12 +522,16 @@ export function summarizeEvidence(ev: PublicEvidence, built: BuiltDocuments) {
     quote: ev.market.quote,
     referenceMetricCount: ev.market.referenceMetrics.length,
     quarterlyConsensus: ev.market.quarterlyConsensus ?? [],
+    annualFinance: ev.market.annualFinance ?? [],
+    perReference: ev.market.perReference ?? null,
+    fxRates: ev.market.fxRates ?? [],
     news: [...ev.market.news, ...ev.market.searchNews].slice(0, 30).map((n) => ({ title: n.title, url: n.url, publishedAt: n.publishedAt, origin: n.origin, officeName: n.officeName })),
     filings: {
       list: ev.filings.list,
       statements: ev.filings.statements.map((s) => ({ fiscalYear: s.fiscalYear, period: s.period, periodEnd: s.periodEnd, fsDiv: s.fsDiv, rceptNo: s.rceptNo, receiptUrl: s.receiptUrl, rows: s.rows.length })),
       derivedQuarters: ev.filings.derivedQuarters.map((d) => ({ fiscalYear: d.fiscalYear, quarter: d.quarter, fsDiv: d.fsDiv, method: d.method })),
       excerptSections: ev.filings.excerpts.map((e) => ({ rceptNo: e.rceptNo, receiptUrl: e.receiptUrl, sectionTitle: e.sectionTitle, chars: e.text.length })),
+      shareCounts: ev.filings.shareCounts ?? [],
       productCandidates: ev.filings.productCandidates.slice(0, 40),
       metricCandidates: ev.filings.metricCandidates.slice(0, 40),
     },

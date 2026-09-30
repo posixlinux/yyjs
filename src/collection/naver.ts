@@ -1,7 +1,7 @@
 import type { HttpClient } from "./http.js";
 import { classifySecurity, describeRejections } from "../domain/security.js";
 import { CollectionError, issue } from "./types.js";
-import type { CollectionIssue, DailyClose, NewsItem, QuoteEvidence, QuarterlyActual, ReferenceMetric, QuarterlyConsensus } from "./types.js";
+import type { AnnualFinance, CollectionIssue, DailyClose, NewsItem, QuoteEvidence, QuarterlyActual, ReferenceMetric, QuarterlyConsensus } from "./types.js";
 import { asRecord, clip, kstDate, naverDateTime, parseAmount, plainText, str } from "./text.js";
 import type { AsOf } from "./text.js";
 
@@ -17,6 +17,7 @@ export interface NaverResult {
   quarterlyConsensus: QuarterlyConsensus[];
   quarterlyActuals: QuarterlyActual[];
   dailyCloses: DailyClose[];
+  annualFinance: AnnualFinance[];
   news: NewsItem[];
   issues: CollectionIssue[];
 }
@@ -33,7 +34,7 @@ interface NaverCtx {
 export const normalizeTitle = (t: string): string => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
 export async function collectNaver(c: NaverCtx): Promise<NaverResult> {
-  const out: NaverResult = { name: null, exchangeVerified: false, quote: null, referenceMetrics: [], quarterlyConsensus: [], quarterlyActuals: [], dailyCloses: [], news: [], issues: [] };
+  const out: NaverResult = { name: null, exchangeVerified: false, quote: null, referenceMetrics: [], quarterlyConsensus: [], quarterlyActuals: [], dailyCloses: [], annualFinance: [], news: [], issues: [] };
   const get = (path: string) => c.http.json(`${API}${path}`, { headers: HEADERS, ttlMs: c.ttlMs });
 
   // 1. basic: exact ticker + KOSPI verification gate everything else.
@@ -78,7 +79,7 @@ export async function collectNaver(c: NaverCtx): Promise<NaverResult> {
   }
 
   // 2. integration snapshot (current values only) and 3. news run independently.
-  const [ref, news, consensus, prices] = await Promise.allSettled([collectReference(c, get), collectNews(c, get), collectQuarterlyConsensus(c, get), collectDailyCloses(c, get)]);
+  const [ref, news, consensus, prices, annual] = await Promise.allSettled([collectReference(c, get), collectNews(c, get), collectQuarterlyConsensus(c, get), collectDailyCloses(c, get), collectAnnualFinance(c, get)]);
   if (ref.status === "fulfilled") {
     out.referenceMetrics = ref.value.metrics;
     out.issues.push(...ref.value.issues);
@@ -96,6 +97,8 @@ export async function collectNaver(c: NaverCtx): Promise<NaverResult> {
     out.dailyCloses = prices.value.items;
     out.issues.push(...prices.value.issues);
   } else out.issues.push({ ...toIssue("price_history_failed", prices.reason), severity: "warning" });
+  if (annual.status === "fulfilled") out.annualFinance = annual.value;
+  else out.issues.push({ ...toIssue("annual_finance_failed", annual.reason), severity: "warning" });
   return out;
 }
 
@@ -160,6 +163,42 @@ async function collectQuarterlyConsensus(c: NaverCtx, get: (p: string) => Promis
   const items = parseQuarterlyConsensus(raw, c.ticker, c.nowIso);
   const actuals = parseQuarterlyActuals(raw, c.ticker, c.nowIso);
   return { items, actuals, issues: items.length ? [] : [issue("naver", "quarterly_consensus_unavailable", "공급자가 컨센서스로 표시한 분기 추정치가 없습니다.", "info")] };
+}
+
+/** Annual actuals (isConsensus N) and consensus (Y) from Naver's annual finance table; amounts KRW, EPS KRW/share. */
+export function parseAnnualFinance(raw: unknown, ticker: string, observedAt: string): AnnualFinance[] {
+  const body = asRecord(raw);
+  const info = asRecord(body?.financeInfo);
+  if (body?.itemCode !== ticker || info?.itemCode !== ticker || body?.financePeriodType !== "annual" || !Array.isArray(info.trTitleList) || !Array.isArray(info.rowList))
+    throw new CollectionError("invalid_response", "Naver annual finance response has invalid ticker, period or table");
+  const rows = info.rowList.map(asRecord);
+  const value = (title: string, key: string, multiplier: number) => {
+    const matches = rows.filter((r) => r?.title === title);
+    if (matches.length !== 1) return null;
+    const n = parseAmount(asRecord(asRecord(matches[0]?.columns)?.[key])?.value);
+    const v = n === null ? null : n * multiplier;
+    return v !== null && Number.isFinite(v) && Math.abs(v) <= 1e18 ? v : null;
+  };
+  const keys = info.trTitleList.map(asRecord);
+  const out: AnnualFinance[] = [];
+  for (const col of keys.slice(0, 20)) {
+    const key = str(col?.key);
+    const flag = col?.isConsensus;
+    if ((flag !== "Y" && flag !== "N") || !/^\d{4}(0[1-9]|1[0-2])$/.test(key) || keys.filter((k) => k?.key === key).length !== 1) continue;
+    const item: AnnualFinance = {
+      ticker, period: `${key.slice(0, 4)}.${key.slice(4)}`, isConsensus: flag === "Y",
+      revenueKRW: value("매출액", key, 1e8), operatingProfitKRW: value("영업이익", key, 1e8), netIncomeKRW: value("당기순이익", key, 1e8), epsKRW: value("EPS", key, 1),
+      observedAt, sourceUrl: `${API}/stock/${ticker}/finance/annual`,
+    };
+    if ([item.revenueKRW, item.operatingProfitKRW, item.netIncomeKRW, item.epsKRW].some((n) => n !== null)) out.push(item);
+  }
+  return out.sort((a, b) => a.period.localeCompare(b.period));
+}
+
+/** Live runs only: the table is a current snapshot (the consensus columns change as analysts revise). */
+async function collectAnnualFinance(c: NaverCtx, get: (p: string) => Promise<unknown>): Promise<AnnualFinance[]> {
+  if (Date.parse(c.nowIso) > c.asOf.cutoffMs) return [];
+  return parseAnnualFinance(await get(`/stock/${c.ticker}/finance/annual`), c.ticker, c.nowIso);
 }
 
 const PRICE_PAGE_SIZE = 60; // Naver's largest accepted page size

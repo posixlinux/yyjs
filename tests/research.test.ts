@@ -793,6 +793,31 @@ describe("evidence documents", () => {
     expect(doc.text).toContain("1. 개최일자 | 2026-01-30 / 2. 개최목적 | 2025년 4분기 경영실적 발표");
   });
 
+  it("turns share totals, FX rates, the PER band and annual consensus into attributable documents", () => {
+    const ev = evidence();
+    ev.filings.shareCounts = [{ fiscalYear: 2025, period: "Q3", periodEnd: "2025-09-30", rceptNo: "20251114000001", receiptUrl: RECEIPT("20251114000001"), receivedDate: "2025-11-14",
+      classes: [{ kind: "common", label: "보통주", issued: 1_000_000, treasury: 10_000, outstanding: 990_000 }, { kind: "preferred", label: "우선주", issued: 50_000, treasury: 0, outstanding: 50_000 }] }];
+    ev.market.fxRates = [{ currency: "USD", krwPerUnit: 1380.1234, rateDate: "2026-01-09", source: "ECB", sourceUrl: "https://api.frankfurter.dev/v1/2026-01-09?base=EUR&symbols=KRW,USD" }];
+    ev.market.perReference = { ttmEpsKRW: 5000, quarters: ["2025Q1", "2025Q2", "2025Q3", "2025Q4"], latestClose: { date: "2026-01-09", closeKRW: 50000 }, current: 10, window: { from: "2025-07-01", to: "2026-01-09", sessions: 120, min: 8, median: 9.5, max: 12 }, sourceUrls: ["https://m.stock.naver.com/api/stock/111110/price"] };
+    ev.market.annualFinance = [
+      { ticker: "111110", period: "2024.12", isConsensus: false, revenueKRW: 1e12, operatingProfitKRW: 1e11, netIncomeKRW: null, epsKRW: null, observedAt: NOW.toISOString(), sourceUrl: "https://m.stock.naver.com/api/stock/111110/finance/annual" },
+      { ticker: "111110", period: "2025.12", isConsensus: true, revenueKRW: 1.1e12, operatingProfitKRW: null, netIncomeKRW: null, epsKRW: 5000, observedAt: NOW.toISOString(), sourceUrl: "https://m.stock.naver.com/api/stock/111110/finance/annual" },
+    ];
+    const built = buildDocuments(ev);
+    const doc = (id: string) => built.documents.find((d) => d.id === id)!;
+    expect(doc("shr-20251114000001")).toMatchObject({ url: RECEIPT("20251114000001"), publishedAt: "2025-11-14" });
+    expect(doc("shr-20251114000001").text).toContain("보통주 [보통주] | 발행주식총수 1,000,000주 | 자기주식수 10,000주 | 유통주식수 990,000주");
+    expect(doc("fx-ecb-2026-01-09")).toMatchObject({ publishedAt: "2026-01-09" });
+    expect(doc("fx-ecb-2026-01-09").text).toContain("1 USD = 1,380.1234 KRW");
+    expect(doc("naver-per-band").text).toContain("후행 PER 10배");
+    expect(doc("naver-per-band").text).toContain("최저 8배, 중앙 9.5배, 최고 12배");
+    expect(doc("naver-annual").text).toContain("2025.12 [컨센서스] 매출액 1,100,000,000,000 원");
+    expect(doc("naver-annual").text).toContain("(매출 전년 대비 10%)");
+    // share totals and FX ride with the quote, ahead of statements
+    const ids = built.documents.map((d) => d.id);
+    expect(ids.indexOf("fx-ecb-2026-01-09")).toBeLessThan(ids.findIndex((i) => i.startsWith("stmt-")));
+  });
+
   it("dates the quote by its KST trade date, not by slicing a UTC string", () => {
     const ev = evidence();
     ev.market.quote!.tradedAt = "2026-01-14T16:00:00Z";

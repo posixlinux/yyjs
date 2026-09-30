@@ -1,6 +1,6 @@
 # 공개 근거 자료 자동 수집 (`src/collection`)
 
-KOSPI 종목 1개에 대해 **Naver 금융(시세·참고지표·종목 뉴스)**, **DART(정기공시 원문·재무제표, 실적 관련 거래소공시)**, 선택적으로 **Naver Open API 뉴스 검색**에서 근거 자료를 모은다. 이 모듈은 근거를 수집할 뿐이며 **모델 실행 가능 여부를 주장하지 않는다**(`modelReady`는 항상 `false`). 제품별 글로벌 시장 규모·매출 점유율은 공개 API로 얻을 수 없으므로 후보(candidate)와 부족 입력(`requiredInputs`)으로만 반환한다.
+KOSPI 종목 1개에 대해 **Naver 금융(시세·참고지표·종목 뉴스·연간 실적/컨센서스)**, **DART(정기공시 원문·재무제표, 주식의 총수 현황, 실적 관련 거래소공시)**, **ECB 기준환율(Frankfurter, 키 불필요)**, 선택적으로 **Naver Open API 뉴스 검색**에서 근거 자료를 모은다. 이 모듈은 근거를 수집할 뿐이며 **모델 실행 가능 여부를 주장하지 않는다**(`modelReady`는 항상 `false`). 제품별 글로벌 시장 규모·매출 점유율은 공개 API로 얻을 수 없으므로 후보(candidate)와 부족 입력(`requiredInputs`)으로만 반환한다.
 
 ## 사용법
 
@@ -59,9 +59,13 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 | DART | `list.json` (`pblntf_ty=A`, `last_reprt_at=N`, `page_count=100`, 최대 3페이지) | 사업/반기/분기보고서만 사용. `rcept_dt`가 asOf 이후인 공시는 제외. |
 | DART | `fnlttSinglAcntAll.json` (`11013/11012/11014/11011`) | `CFS` 우선, 자료가 없을 때만 `OFS`. |
 | DART | `document.xml?rcept_no` (ZIP XML) | 최근 `maxDocuments`건만 다운로드. |
+| Naver | `.../stock/{ticker}/finance/annual` | `market.annualFinance`: 연간 실적(`isConsensus=N`)과 컨센서스(`Y`)의 매출·영업이익·순이익(억원→원)·EPS. 현재 기준일에만 수집. 회사 매출 성장의 참고값이며 시장 성장률이 아니다. 실패는 경고. |
+| (계산) | 일별 종가 + 분기 실적 EPS | `market.perReference`: 최근 4개 **연속** 분기 EPS 합(TTM)이 양수일 때만 후행 PER(최근 종가/TTM)과 수집 기간 종가를 같은 TTM으로 나눈 최저·중앙·최고. 역사적 PER 시계열이 아니라 가격 범위의 환산이다. |
+| DART | `stockTotqySttus.json` (주식의 총수 현황) | 최신 정기공시(없으면 그 전 1건)의 종류별 발행주식총수·자기주식수·유통주식수 → `filings.shareCounts`. 모든 행이 한 접수번호여야 하고 접수일이 asOf 이후면 제외. **유통 보통주수는 희석 가중평균 주식수가 아니다**(희석성 증권이 없을 때만 같음). 실패는 경고. |
+| ECB (Frankfurter) | `https://api.frankfurter.dev/v1/{asOf-1일}?base=EUR&symbols=KRW,USD,JPY,CNY,GBP,HKD,CHF,SGD` | `market.fxRates`: 요청일 이전 마지막 ECB 영업일의 기준환율을 유로 경유로 원화 환산(1 단위당 KRW, 소수 4자리). ECB 고시(16:00 CET)는 같은 날 자정(KST) 전이므로 asOf 전날 환율은 항상 asOf 이전에 공개된 값이다. 키 불필요. KOSPI 보통주로 확인된 종목에만 1회 요청하며, 실패는 경고(`providers.fx`). TWD 등 ECB 바스켓 밖 통화는 없다. |
 | DART | `list.json` (`pblntf_ty=I` 거래소공시, `last_reprt_at=N`, asOf 이전 200일, 1페이지) | 실적 관련 공시만 선별(최신순): 기업설명회(IR) 개최·결산실적공시 예고(최대 2건), 영업실적 등에 대한 전망(1건), (잠정)실적(1건). `rcept_dt`가 asOf 이후·첨부 공시는 제외. 각 원문(`document.xml`)을 평문으로 `filings.disclosures`에 담고, 표 하나는 한 줄로 펼친다. 실패해도 경고(warning)일 뿐 정기공시 근거에는 영향 없음. 회사 자체 공시이며 애널리스트 컨센서스가 아니다. |
 
-호스트는 `m.stock.naver.com`, `n.news.naver.com`, `openapi.naver.com`, `opendart.fss.or.kr`, `www.sec.gov`(`/files/company_tickers.json`만), `data.sec.gov`(`/api/xbrl/companyfacts/CIK##########.json`만), `api.edinet-fsa.go.jp`(`/api/v2/documents.json`, `/api/v2/documents/<docID>`만), `disclosure2dl.edinet-fsa.go.jp`(코드 목록 ZIP만) 화이트리스트만 허용(https, 포트·계정정보 불가). `n.news.naver.com`은 정확히 `/mnews/article/<숫자>/<숫자>` 또는 `/article/<숫자>/<숫자>` 경로만 허용하며 쿼리·프래그먼트는 붙이지 않는다(목록의 URL에서 쿼리를 제거해 재구성). 사용자 URL은 받지 않는다. 리다이렉트는 따라가지 않고 `redirect_rejected`로 처리한다. `dart.fss.or.kr/dsaf001/main.do?rcpNo=…`는 출처 링크로만 출력한다.
+호스트는 `m.stock.naver.com`, `n.news.naver.com`, `openapi.naver.com`, `opendart.fss.or.kr`, `www.sec.gov`(`/files/company_tickers.json`만), `data.sec.gov`(`/api/xbrl/companyfacts/CIK##########.json`만), `api.edinet-fsa.go.jp`(`/api/v2/documents.json`, `/api/v2/documents/<docID>`만), `disclosure2dl.edinet-fsa.go.jp`(코드 목록 ZIP만), `api.frankfurter.dev`(`/v1/<날짜>`만) 화이트리스트만 허용(https, 포트·계정정보 불가). `n.news.naver.com`은 정확히 `/mnews/article/<숫자>/<숫자>` 또는 `/article/<숫자>/<숫자>` 경로만 허용하며 쿼리·프래그먼트는 붙이지 않는다(목록의 URL에서 쿼리를 제거해 재구성). 사용자 URL은 받지 않는다. 리다이렉트는 따라가지 않고 `redirect_rejected`로 처리한다. `dart.fss.or.kr/dsaf001/main.do?rcpNo=…`는 출처 링크로만 출력한다.
 
 ## 접근 제한·안전장치
 
@@ -86,7 +90,7 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 
 ## 부족 입력 (`requiredInputs`)
 
-`quarterlyGlobalMarketRevenue`, `competitorRevenue`(경쟁사를 요청한 경우만), `comparableRevenueShare`, `growthAssumptions`, `productCoverage`, `companyQuarterlyFinancials`, `fxToKrw`, `dilutedCommonShares`, `noncontrollingInterestAndNetInterestAndTax`, `valuationMultiple`, `currentQuote` 각각에 `missing | candidate_only | reference_only | available_unverified`와 설명을 붙인다. `fxToKrw`, `dilutedCommonShares`는 이 모듈이 절대 채우지 않는다. 핵심 모델은 이 목록을 사용자에게 그대로 전달하고, 모델 초안이 채운 값은 추정 표시와 함께 `result.research.draftDataset`에 남는다.
+`quarterlyGlobalMarketRevenue`, `competitorRevenue`(경쟁사를 요청한 경우만), `comparableRevenueShare`, `growthAssumptions`, `productCoverage`, `companyQuarterlyFinancials`, `fxToKrw`, `dilutedCommonShares`, `noncontrollingInterestAndNetInterestAndTax`, `valuationMultiple`, `currentQuote` 각각에 `missing | candidate_only | reference_only | available_unverified`와 설명을 붙인다. `fxToKrw`는 ECB 환율을 받으면 `available_unverified`, `dilutedCommonShares`는 DART 주식의 총수 현황이 있으면 `available_unverified`(유통 보통주수이며 희석 주식수가 아님을 설명에 명시), `valuationMultiple`은 PER 참고 범위가 있어도 `reference_only`, `growthAssumptions`는 연간 컨센서스(회사 매출)만 있으면 `candidate_only`다. 핵심 모델은 이 목록을 사용자에게 그대로 전달하고, 모델 초안이 채운 값은 추정 표시와 함께 `result.research.draftDataset`에 남는다.
 
 ## 이슈 코드 (일부)
 
