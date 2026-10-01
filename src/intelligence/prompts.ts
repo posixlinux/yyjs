@@ -30,6 +30,7 @@ const DATASET_RULES = `DatasetSchema 작성 규칙:
 - 금액 단위: quote.priceKRW = 원, financials.totalRevenueKRW = 원(백만원/억원이면 원 단위로 환산), shares.dilutedCommon = 보통주 희석주식수(주, 정수, 우선주 제외; 우선주 몫은 배당과 참가적 이익 배분을 모두 포함한 다음 분기 우선주 총 이익 배분액으로 earningsBridge.value.preferredClaimsKRW 에 원 단위로 기재).
 - earningsBridge 는 가정 필드이며 rationale 이 필수입니다. 자본 종류별 권리(참가적/비참가적 우선주 등)는 모델이 자동 도출하지 않으므로 근거와 함께 rationale 에 명시하세요. 보통주 EPS 에 우선주 참가 이익이 섞이면 안 됩니다.
 - markets[].observations 는 분기별(basis="quarterly") 시장 매출 최소 4개 분기(연속). 공시/기사에 분기 시장 매출이 없더라도 포기하지 말고 아래 "추정 규칙"에 따라 추정해서 채우세요.
+- 뉴스 문서 끝의 "[자동 추출 시장 수치 후보]" 목록은 그 기사 본문에서 뽑은 시장 규모·점유율·성장률 구절입니다(미검증). 시장조사기관(트렌드포스·옴디아·카운터포인트·IDC·가트너 등)을 인용한 분기 글로벌 시장 매출과 매출 기준 점유율은 추정보다 먼저 인용하세요: 기사 본문에 그 숫자가 있으면 관측값으로 source 를 그 뉴스 문서로 두고, 시장 범위·분기·통화·매출/물량 기준을 본문에서 확인하세요. 기사마다 수치가 다르면 article_synthesis 로 종합하고, 물량(출하량) 점유율은 매출 점유율로 쓰지 마세요. 연간 수치만 있으면 period_allocation 으로 분기 배분하세요.
 - products[].revenue 는 공시된 제품/부문 분기 매출. 통화는 ISO 4217. 제품별 매출이 공시되지 않았으면 공시된 부문/사업부 매출에서 배분해 추정할 수 있습니다(method="segment_allocation").
 - competitors[] (선택이지만 강력 권장): 같은 시장(marketId)에서 경쟁하는 주요 업체 2~6곳의 분기 매출({id,name,marketId,revenue[{quarter,revenue,currency,basis,source,estimate?}],shareDelta?}). 시장 통화·분기와 같아야 합니다. 문서에 있으면 인용하고, 없으면 추정합니다.
 - 글로벌 비교는 한국·미국·일본 기업만 합니다: competitors[] 에는 한국·미국·일본 상장사만 넣고, 그 밖의 국가 기업(대만·중국·유럽 등)은 개별 경쟁사로 넣지 말고 시장 매출의 "기타 업체" 몫에 포함하세요. narrative.competition 에도 비교 대상은 한국·미국·일본 기업으로 한정하고 그 사실을 적으세요.

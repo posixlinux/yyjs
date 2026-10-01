@@ -16,10 +16,11 @@ quota / 5 min for login problems; clamped to 1 min..24 h). Effects:
 |---|---|
 | both ok | `accepted` (`crossChecked: true`) when the audit approves and every observed number is confirmed |
 | agy expired | Claude drafts, then **audits its own draft in a separate call** (adversarial prompt): `single_model` (`crossChecked: false`, `audit.independentAudit: false`) if every check passes |
+| agy audit fails for any other reason (`TIMEOUT`, `BAD_ENVELOPE`, `BAD_JSON`, `SCHEMA_INVALID`, `OUTPUT_LIMIT`, ...) | Claude takes over the same way (self-audit): `single_model`. agy is listed in `unavailable` for this run only (no cooldown) |
 | Claude expired | agy drafts (same draft prompt), then self-audits: `single_model` |
 | the self-audit call also expires | deterministic checks only: `single_model`, `audit.auditedBy: null` |
 | both expired | `unavailable`, `dataset: null` |
-| one-off failure (`TIMEOUT`, `BAD_JSON`, `SCHEMA_INVALID`, `TOOL_USE_DETECTED`, `OUTPUT_LIMIT`, disagreement…) | not an expiry: no cooldown, no takeover, `partial` |
+| any other one-off failure (a Claude draft/audit `BAD_JSON`, `SCHEMA_INVALID`, `TOOL_USE_DETECTED`, a disagreement…) | not an expiry: no cooldown, no takeover, `partial` (a Claude draft `TIMEOUT` falls back to an agy draft) |
 
 **Estimates.** The draft may INFER market size, product revenue and competitor revenue (`estimate: {method, basedOn, rationale}`, source
 `MODEL_ESTIMATE: …`). Such figures need no citation but must pass the estimate rules in `verify.ts` (`ESTIMATE_MISSING`, `ESTIMATE_NOT_LABELLED`,

@@ -560,11 +560,34 @@ describe("provider failures", () => {
     expect(r.unavailable[0]!.retryAfter).toBe(new Date(T + 2.5 * 3_600_000).toISOString());
   });
 
-  it("malformed agy envelope is a failure, not an expiry", async () => {
-    const r = await analyzeEvidence(input(), opts(route(() => claudeOut(proposal()), () => ok("<html>"))));
+  it("malformed agy envelope is a failure, not an expiry: Claude audits instead and agy has no cooldown", async () => {
+    let agyCalls = 0;
+    const runner = () => route(claudeBoth(), () => (agyCalls++, ok("<html>")));
+    const r = await analyzeEvidence(input(), opts(runner()));
     expect(r.providers.agy.code).toBe("BAD_ENVELOPE");
+    expect(r.status).toBe("single_model");
+    expect(r.audit).toMatchObject({ auditedBy: "claude", independentAudit: false });
+    expect(r.unavailable).toMatchObject([{ provider: "agy", code: "BAD_ENVELOPE", skippedWithoutCall: false }]);
+    expect(r.audit.limitations.join(" ")).toContain("agy was unavailable (BAD_ENVELOPE)");
+    await analyzeEvidence(input(), opts(runner()));
+    expect(agyCalls).toBe(2); // not an expiry: agy is asked again on the next run
+  });
+
+  it("an agy audit that times out is replaced by a Claude self-audit instead of rejecting the draft", async () => {
+    const seen: RunRequest[] = [];
+    const r = await analyzeEvidence(input(), opts(route((q) => (seen.push(q), claudeBoth()(q)), () => ({ ...ok(""), timedOut: true, exitCode: null }))));
+    expect(r.status).toBe("single_model");
+    expect(r.dataset?.company.ticker).toBe("005930");
+    expect(seen.map(isAuditPrompt)).toEqual([false, true]);
+    expect(r.providers.agy.code).toBe("TIMEOUT");
+    expect(issueCodes(r)).not.toContain("PROVIDER_UNAVAILABLE");
+  });
+
+  it("a Claude audit failure is still not replaced (only agy falls back to Claude)", async () => {
+    // agy drafts (Claude expired), then Claude is not usable; an agy self-audit failure keeps the draft unaccepted
+    const r = await analyzeEvidence(input(), opts(route(() => ({ ...ok(""), spawnError: "ENOENT" }), (q) => (isAuditPrompt(q) ? ok("<html>") : agyOut(proposal())))));
     expect(r.status).toBe("partial");
-    expect(r.unavailable).toEqual([]);
+    expect(issueCodes(r)).toContain("PROVIDER_UNAVAILABLE");
   });
 
   it("agy returning status ERROR without a quota/login hint is BAD_ENVELOPE; an empty response is too", async () => {
@@ -791,7 +814,7 @@ describe("isolation and injection", () => {
     const r = await analyzeEvidence({ ...input(), documents: [doc("a"), doc("b"), doc("c")] }, opts(route(() => claudeOut(proposal({ dataset: null, citations: [], missingFields: ["x"] })), () => (calls++, agyOut(audit())))));
     expect(calls).toBe(0);
     expect(r.providers.agy.code).toBe("OUTPUT_LIMIT");
-    expect(r.unavailable).toEqual([]); // too large is not an expiry
+    expect(r.unavailable).toMatchObject([{ provider: "agy", code: "OUTPUT_LIMIT", retryAfter: r.generatedAt }]); // this run only: too large is not an expiry
   });
 
   it("buildEnv drops everything but the allowlist; sanitize redacts", () => {

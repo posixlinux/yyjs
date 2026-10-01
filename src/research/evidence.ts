@@ -17,13 +17,15 @@ const MAX_DOCS = LIMITS.maxDocuments;
 const rawEvidenceBudget = Number(process.env.INTELLIGENCE_EVIDENCE_CHAR_BUDGET);
 const TOTAL_CHAR_BUDGET = Number.isFinite(rawEvidenceBudget) && rawEvidenceBudget > 0 ? Math.min(200_000, Math.max(20_000, rawEvidenceBudget)) : 90_000;
 const DOC_CHAR_LIMIT = 20_000; // one document (e.g. a single large filing excerpt) must never consume the whole budget
-const MAX_NEWS_DOCS = 10;
+const MAX_NEWS_DOCS = 12;
+// A long article is cut to its paragraphs with market figures (size / share / growth wording or printed numbers).
+const NEWS_FOCUS_CHARS = 3000;
 // Per-DocumentKind share of TOTAL_CHAR_BUDGET treated as a guaranteed FLOOR (not a hard ceiling -- see the two-pass
 // selection in buildDocuments): without this, a ticker with many statement quarters/fsDiv combinations can fill the
 // whole budget with financial statements alone before the loop ever reaches filing_text (business/product narrative)
 // or reference (shares/foreign-ownership context), which is exactly the starvation observed on a real large-cap
 // snapshot (quote + statements only, no business narrative, no shares proof beyond the statements). Must sum to 1.
-const KIND_BUDGET_SHARE: Record<DocumentKind, number> = { quote: 0.05, statement: 0.25, derived: 0.08, disclosure: 0.05, competitor: 0.07, filing_text: 0.23, filing_tables: 0.1, reference: 0.05, news: 0.12 };
+const KIND_BUDGET_SHARE: Record<DocumentKind, number> = { quote: 0.05, statement: 0.25, derived: 0.08, disclosure: 0.05, competitor: 0.07, filing_text: 0.21, filing_tables: 0.08, reference: 0.05, news: 0.16 };
 const MAX_STATEMENT_ROWS = 150;
 // Per-category row budget within MAX_STATEMENT_ROWS: a large income statement must never crowd out the balance
 // sheet or cash flow statement (financing/investing/CAPEX rows), which the automatic strategy path (strategy/auto.ts)
@@ -215,6 +217,26 @@ function truncateCategorized(byCat: Partial<Record<CategoryKey, string[]>>, limi
   }
   const text = join(CATEGORY_ORDER.flatMap((c) => kept[c] ?? [])) + (omittedAny ? marker : "");
   return { text: text.length <= limit ? text : text.slice(0, limit), truncated: true };
+}
+
+const FIGURE_PARAGRAPH = /점유율|시장\s*규모|시장규모|매출|성장률|CAGR|market/i;
+const HAS_NUMBER = /\d[\d,.]*\s*(%|조|억|만|달러|원|위안|엔)/;
+
+/** Keeps the lead paragraph and then paragraphs with market figures, in original order, up to `max` chars. */
+export function focusArticle(text: string, max = NEWS_FOCUS_CHARS): { text: string; focused: boolean } {
+  if (text.length <= max) return { text, focused: false };
+  const paras = text.split("\n").filter(Boolean);
+  const rank = (p: string, i: number) => (i === 0 ? 3 : 0) + (FIGURE_PARAGRAPH.test(p) ? 1 : 0) + (HAS_NUMBER.test(p) ? 1 : 0);
+  const order = paras.map((p, i) => ({ p, i, r: rank(p, i) })).filter((x) => x.r > 0).sort((a, b) => b.r - a.r || a.i - b.i);
+  const keep = new Set<number>();
+  let used = 0;
+  for (const x of order) {
+    if (used + x.p.length + 1 > max) continue;
+    keep.add(x.i);
+    used += x.p.length + 1;
+  }
+  const out = paras.filter((_p, i) => keep.has(i)).join("\n");
+  return out ? { text: out, focused: true } : { text: text.slice(0, max), focused: true };
 }
 
 const PRODUCT_MARKET_WORDS = ["시장", "점유율", "점유", "성장", "전망", "가이던스", "업황", "출하", "수요", "제품", "판매", "매출", "시황", "가격", "공급"];
@@ -429,23 +451,35 @@ export function buildDocuments(ev: PublicEvidence): BuiltDocuments {
     );
   }
 
-  // Articles that actually discuss products/markets first (then newest), not just generic current stock news.
-  const newsBody = (n: PublicEvidence["market"]["news"][number]) => (n.articleText ? n.articleText : n.snippet);
+  // Market-report articles (extracted size/share figures, a named research firm) first, then articles that discuss
+  // products/markets, then newest -- not just generic current stock news.
+  const metricsByNews = new Map<string, NonNullable<PublicEvidence["market"]["newsMetricCandidates"]>>();
+  for (const m of ev.market.newsMetricCandidates ?? []) metricsByNews.set(m.source.newsId, [...(metricsByNews.get(m.source.newsId) ?? []), m]);
+  const figureScore = (id: string) => {
+    const ms = metricsByNews.get(id) ?? [];
+    return (ms.some((m) => m.kind === "market_size") ? 3 : 0) + (ms.some((m) => m.kind === "market_share") ? 3 : 0) + (ms.some((m) => m.cites) ? 2 : 0);
+  };
+  const newsBody = (n: PublicEvidence["market"]["news"][number]) => (n.articleText ? focusArticle(n.articleText) : { text: n.snippet, focused: false });
   const news = [...ev.market.news, ...ev.market.searchNews]
-    .map((n) => ({ n, score: coverageScore(`${n.title} ${newsBody(n)}`) }))
+    .map((n) => ({ n, score: figureScore(n.id) + coverageScore(`${n.title} ${newsBody(n).text}`) }))
     .sort((a, b) => b.score - a.score || (a.n.publishedAt < b.n.publishedAt ? 1 : -1));
+  const KIND_LABEL = { market_size: "시장 규모", market_share: "점유율", growth_rate: "성장률" } as const;
   const seenNews = new Set<string>();
   for (const { n } of news) {
     if (seenNews.has(n.url)) continue;
     seenNews.add(n.url);
     const fetched = !!n.articleText;
+    const body = newsBody(n);
+    const figures = (metricsByNews.get(n.id) ?? []).slice(0, 10).map((m) =>
+      `- [${KIND_LABEL[m.kind]}${m.measure && m.measure !== "unspecified" ? `/${m.measure === "revenue" ? "매출 기준" : "물량 기준"}` : ""}${m.basis !== "unspecified" ? `/${m.basis}` : ""}] ${m.label ? `${m.label} … ` : ""}${m.rawText}${m.periodHint ? ` (${m.periodHint})` : ""}${m.cites ? ` · 인용: ${m.cites}` : ""}`);
     add(
       "news",
       `news-${n.origin === "naver-search" ? "s" : "n"}-${n.id}`,
       `[뉴스 ${fetched ? "기사 본문" : "스니펫"}] ${n.title}`,
       n.url,
       kstDate(n.publishedAt),
-      `[언론 보도 ${fetched ? `- 기사 본문 발췌${n.articleTruncated ? "(잘림)" : ""}` : "- 짧은 스니펫만 확보"}; 검증되지 않은 보도이며 그 자체로 예측 근거가 아님]\n${n.title}\n${newsBody(n)}${n.officeName ? `\n(${n.officeName})` : ""}`,
+      `[언론 보도 ${fetched ? `- 기사 본문 발췌${n.articleTruncated || body.focused ? "(수치 문단 위주로 잘림)" : ""}` : "- 짧은 스니펫만 확보"}; 검증되지 않은 보도이며 그 자체로 예측 근거가 아님]${n.query ? ` [검색어: ${n.query}]` : ""}\n${n.title}\n${body.text}${n.officeName ? `\n(${n.officeName})` : ""}` +
+        (figures.length ? `\n[자동 추출 시장 수치 후보 - 미검증, 위 본문 구절 그대로; 범위·분기·통화·매출/물량 기준을 본문에서 확인할 것]\n${figures.join("\n")}` : ""),
     );
   }
 

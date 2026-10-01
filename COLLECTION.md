@@ -26,7 +26,7 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 
 키는 `options.env`(기본 `process.env`)에서만 읽으며 로그·오류·결과에 넣지 않는다(URL의 `crtfc_key`와 키 값은 `***`로 치환).
 
-주요 옵션(`CollectionOptions`): `fetch`(테스트 주입), `now`, `signal`, `timeoutMs`(15s), `maxResponseBytes`(20MiB), `maxDecompressedBytes`(64MiB), `maxRequests`(48), `maxNewsPages`(3), `maxArticles`(5, 0~5; 0이면 기사 본문을 가져오지 않음), `maxFilings`(8, 1~8), `maxDocuments`(4, 0~8), `cacheTtlMs`(60s), `corpCodeTtlMs`(24h), `documentTtlMs`(1h), `competitorTtlMs`(6h), `productQueries`(기본 검색 질의를 대체, 최대 6개).
+주요 옵션(`CollectionOptions`): `fetch`(테스트 주입), `now`, `signal`, `timeoutMs`(15s), `maxResponseBytes`(20MiB), `maxDecompressedBytes`(64MiB), `maxRequests`(64), `maxNewsPages`(3), `maxArticles`(5, 0~5; 0이면 기사 본문을 가져오지 않음), `maxMarketArticles`(6, 0~8; 제품 시장 검색 결과 중 시장 보고서형 기사의 추가 본문 수), `maxFilings`(8, 1~8), `maxDocuments`(4, 0~8), `cacheTtlMs`(60s), `corpCodeTtlMs`(24h), `documentTtlMs`(1h), `competitorTtlMs`(6h), `productQueries`(기본 검색 질의를 대체, 최대 12개).
 
 입력 `competitors`(선택, 최대 6개)는 **한국·미국·일본만** 받는다: `KR:000660`(KRX 종목코드), `US:MU`(SEC 티커), `JP:8035`(도쿄증권거래소 코드). 다른 형식·국가는 `CollectionInputError`. 분석 대상 종목 자신은 빠진다.
 
@@ -53,7 +53,8 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 | Naver | `.../stock/{ticker}/price?pageSize=60&page=1..3` | `market.dailyCloses`: asOf 이하 일별 종가(최신순). asOf 200일 전까지 덮으면 중단. 현재 기준일에만 수집(과거 asOf는 오늘부터의 페이지로 닿지 않음). 실패는 경고. |
 | Naver | `.../news/stock/{ticker}?pageSize=20&page=1..3` | 최대 3페이지. 네이버가 종목에 연결한 기사 목록이라 시황·다른 회사 기사가 섞이므로, 제목이나 요약에 회사명(네이버 종목명·DART 법인명, `(주)`·공백 무시)이 없는 기사는 제외한다(`news_unrelated_excluded`, info). 구 `finance.naver.com` 뉴스 URL은 사용하지 않는다(410). |
 | Naver 기사 | `https://n.news.naver.com/mnews/article/<숫자>/<숫자>` 또는 `/article/<숫자>/<숫자>` | 상위 `maxArticles`건의 본문(`dic_area`)만. 아래 "기사 본문" 참조. |
-| Naver Open API | `https://openapi.naver.com/v1/search/news.json?query=…&display=20&sort=date` | 키가 있을 때만. 질의는 `productQueries`(명시하면 그대로) 또는 기본값: `"{종목명} 전망"`, `"{종목명} 성장률"`, `"{종목명} 시장 점유율"` + DART 제품 후보 상위 3개에 대한 `"{제품} 세계 시장 규모 점유율 성장률"`(총 6개 이내). 전망·성장률 기사는 모델이 성장률을 **보수적으로** 판단하는 근거(여러 수치 중 낮은 쪽, 상단 표현 할인)로 쓰이며, 기사 본문 선택에서도 `전망`·`성장률`·`가이던스` 키워드를 우선한다. |
+| Naver Open API | `https://openapi.naver.com/v1/search/news.json?query=…&display=20&sort=sim` | 키가 있을 때만. 질의는 `productQueries`(명시하면 그대로) 또는 기본값: 회사 질의 `"{종목명} 전망"`, `"{종목명} 성장률"`, `"{종목명} 시장 점유율"`(회사명이 제목·요약에 있는 기사만) + DART 제품 후보 상위 4개마다 시장 질의 `"{제품} 세계 시장 규모"`, `"{제품} 점유율 매출 분기"`(시장조사기관 인용 기사를 노림, 회사명 조건 없음)로 최대 12개. 회사 질의는 asOf 이전 1년, 시장 질의는 18개월(4개 분기 시계열용)까지의 기사만 받는다. 결과마다 `query`·`topic`(`company`/`market`)을 남긴다. 전망·성장률 기사는 모델이 성장률을 **보수적으로** 판단하는 근거로 쓰인다. |
+| (추출) | 기사 제목·요약·본문 | **시장 기사 2차 본문 수집**: 일반 본문 수집(`maxArticles`) 뒤, 시장 질의 결과 중 시장조사기관명·점유율·시장 규모/글로벌 매출·금액·%·분기가 제목/요약에 있는 기사를 점수순으로 `maxMarketArticles`건 더 가져온다(n.news.naver.com 기사만; 이미 시도한 URL은 다시 요청하지 않음). **뉴스 수치 후보** `market.newsMetricCandidates`: 각 기사 본문(없으면 제목+요약)에서 공시와 같은 규칙으로 시장 규모·점유율·성장률 구절을 뽑고, 뉴스에서는 "글로벌/세계 … 매출" 표현도 시장 규모로 본다. 같은 문장의 시장조사기관명을 `cites`에 남긴다. 기사당 12건, 전체 150건 이내. 모두 미검증 후보이며 모델 문서에는 해당 기사 끝에 목록으로 붙는다(수치 기사를 먼저 보내고, 긴 본문은 리드 문단과 수치 문단 위주로 3,000자까지). |
 | DART | `corpCode.xml` (ZIP→`CORPCODE.xml`) | 상장 종목코드→`corp_code` 색인을 TTL 24h 캐시. 특정 회사 하드코딩 없음. |
 | DART | `company.json` | `stock_code` 일치, `corp_cls=Y`(유가증권) 확인, `acc_mt` 사용. |
 | DART | `list.json` (`pblntf_ty=A`, `last_reprt_at=N`, `page_count=100`, 최대 3페이지) | 사업/반기/분기보고서만 사용. `rcept_dt`가 asOf 이후인 공시는 제외. |
@@ -90,7 +91,7 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 
 ## 부족 입력 (`requiredInputs`)
 
-`quarterlyGlobalMarketRevenue`, `competitorRevenue`(경쟁사를 요청한 경우만), `comparableRevenueShare`, `growthAssumptions`, `productCoverage`, `companyQuarterlyFinancials`, `fxToKrw`, `dilutedCommonShares`, `noncontrollingInterestAndNetInterestAndTax`, `valuationMultiple`, `currentQuote` 각각에 `missing | candidate_only | reference_only | available_unverified`와 설명을 붙인다. `fxToKrw`는 ECB 환율을 받으면 `available_unverified`, `dilutedCommonShares`는 DART 주식의 총수 현황이 있으면 `available_unverified`(유통 보통주수이며 희석 주식수가 아님을 설명에 명시), `valuationMultiple`은 PER 참고 범위가 있어도 `reference_only`, `growthAssumptions`는 연간 컨센서스(회사 매출)만 있으면 `candidate_only`다. 핵심 모델은 이 목록을 사용자에게 그대로 전달하고, 모델 초안이 채운 값은 추정 표시와 함께 `result.research.draftDataset`에 남는다.
+`quarterlyGlobalMarketRevenue`(뉴스 수치 후보 포함), `competitorRevenue`(경쟁사를 요청한 경우만), `comparableRevenueShare`, `growthAssumptions`, `productCoverage`, `companyQuarterlyFinancials`, `fxToKrw`, `dilutedCommonShares`, `noncontrollingInterestAndNetInterestAndTax`, `valuationMultiple`, `currentQuote` 각각에 `missing | candidate_only | reference_only | available_unverified`와 설명을 붙인다. `fxToKrw`는 ECB 환율을 받으면 `available_unverified`, `dilutedCommonShares`는 DART 주식의 총수 현황이 있으면 `available_unverified`(유통 보통주수이며 희석 주식수가 아님을 설명에 명시), `valuationMultiple`은 PER 참고 범위가 있어도 `reference_only`, `growthAssumptions`는 연간 컨센서스(회사 매출)만 있으면 `candidate_only`다. 핵심 모델은 이 목록을 사용자에게 그대로 전달하고, 모델 초안이 채운 값은 추정 표시와 함께 `result.research.draftDataset`에 남는다.
 
 ## 이슈 코드 (일부)
 

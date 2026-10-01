@@ -1073,15 +1073,61 @@ describe("Naver search query expansion", () => {
       "삼성전자 전망",
       "삼성전자 성장률",
       "삼성전자 시장 점유율",
-      "DRAM 세계 시장 규모 점유율 성장률",
-      "NAND Flash 세계 시장 규모 점유율 성장률",
-      "파운드리 세계 시장 규모 점유율 성장률",
+      "DRAM 세계 시장 규모",
+      "DRAM 점유율 매출 분기",
+      "NAND Flash 세계 시장 규모",
+      "NAND Flash 점유율 매출 분기",
+      "파운드리 세계 시장 규모",
+      "파운드리 점유율 매출 분기",
     ]);
     expect(e.providers.naverSearch.status).toBe("ok");
     const none = fake(either(naverHandler, dartHandler()));
     const e2 = await run(none, { env: { DART_API_KEY: KEY } });
     expect(none.calls.some((u) => u.hostname === "openapi.naver.com")).toBe(false);
     expect(e2.providers.naverSearch.status).toBe("not_configured");
+  });
+
+  it("finds market size / share reports, fetches their bodies in a second pass and extracts the figures", async () => {
+    const item = (q: string, n: number, title: string, description: string, pubDate: string) => ({
+      title, description, pubDate, link: `https://n.news.naver.com/mnews/article/0${n}/000000000${n}`, originallink: `https://press.example/${n}`,
+    });
+    const search: Handler = (u) => {
+      if (u.hostname !== "openapi.naver.com") return undefined;
+      const q = u.searchParams.get("query") ?? "";
+      if (q === "DRAM 점유율 매출 분기") return json({ items: [
+        item(q, 1, "2분기 D램 점유율, 삼성 1위", "트렌드포스에 따르면 2분기 글로벌 D램 매출은 250억 달러, 삼성 점유율 40.5%", "Mon, 10 Aug 2026 09:00:00 +0900"),
+        item(q, 2, "D램 가격 동향", "현물 가격 소폭 하락", "Mon, 10 Aug 2026 10:00:00 +0900"),
+      ] });
+      if (q === "DRAM 세계 시장 규모") return json({ items: [
+        item(q, 3, "D램 시장 규모 2년 전 기사", "시장 규모 100억 달러", "Mon, 10 Aug 2024 10:00:00 +0900"), // older than 18 months
+        item(q, 4, "D램 시장 1년 전 보고서", "옴디아: 글로벌 D램 시장 규모 900억 달러", "Mon, 01 Sep 2025 10:00:00 +0900"), // within 18 months
+      ] });
+      return json({ items: [] });
+    };
+    const body = (text: string, date: string) => new Response(`<html><head><meta property="article:published_time" content="${date}"></head><body><div id="dic_area">${text}</div></body></html>`);
+    const articles: Handler = (u) => {
+      if (u.hostname !== "n.news.naver.com") return undefined;
+      if (u.pathname === "/mnews/article/01/0000000001") return body("트렌드포스에 따르면 2분기 글로벌 D램 매출은 250억 달러로 전분기 대비 12% 성장했다.<br>삼성전자의 매출 기준 점유율은 40.5%다.", "2026-08-10T09:00:00+09:00");
+      return undefined;
+    };
+    const f = fake(either(naverHandler, dartHandler(), fxHandler, search, articles));
+    const e = await run(f, { env: keys, maxArticles: 0 }); // general pass off: only the market pass fetches
+    const market = e.market.searchNews.filter((n) => n.topic === "market");
+    expect(market.map((n) => n.title).sort()).toEqual(["2분기 D램 점유율, 삼성 1위", "D램 가격 동향", "D램 시장 1년 전 보고서"]);
+    expect(market.find((n) => n.title.startsWith("2분기"))?.query).toBe("DRAM 점유율 매출 분기");
+    // only scored market items are fetched, most report-like first; no body page -> snippet kept
+    const fetched = f.calls.filter((u) => u.hostname === "n.news.naver.com").map((u) => u.pathname).sort();
+    expect(fetched).toEqual(["/mnews/article/01/0000000001", "/mnews/article/04/0000000004"]);
+    expect(market.find((n) => n.title.startsWith("2분기"))?.articleText).toContain("250억 달러");
+
+    const m = e.market.newsMetricCandidates ?? [];
+    const size = m.find((x) => x.kind === "market_size" && x.rawText === "250억 달러");
+    expect(size).toMatchObject({ basis: "quarterly", cites: "트렌드포스", source: { url: "https://n.news.naver.com/mnews/article/01/0000000001" } });
+    expect(m.find((x) => x.kind === "market_share" && x.value === 40.5)?.measure).toBe("revenue");
+    expect(m.find((x) => x.kind === "market_size" && x.rawText === "900억 달러")?.cites).toBe("옴디아");
+    expect(e.requiredInputs.find((x) => x.field === "quarterlyGlobalMarketRevenue")).toMatchObject({ status: "candidate_only" });
+    expect(e.requiredInputs.find((x) => x.field === "quarterlyGlobalMarketRevenue")?.detail).toContain("come from news articles");
+    expect(e.requiredInputs.find((x) => x.field === "comparableRevenueShare")?.status).toBe("candidate_only");
   });
 
   it("falls back to the company query without DART candidates, and explicit productQueries win", async () => {

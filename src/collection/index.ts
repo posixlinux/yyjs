@@ -10,14 +10,17 @@ import type {
   CollectPublicEvidenceInput,
   CollectionIssue,
   CollectionOptions,
+  MetricCandidate,
   NewsItem,
+  NewsSource,
   ProductCandidate,
   ProviderName,
   ProviderReport,
   PublicEvidence,
   RequiredInput,
 } from "./types.js";
-import { enrichArticles } from "./articles.js";
+import { enrichArticles, marketArticleScore } from "./articles.js";
+import { extractMetrics } from "./extract.js";
 import { kstDate, parseAsOf } from "./text.js";
 
 export * from "./types.js";
@@ -58,7 +61,7 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
     fetch: options.fetch ?? fetch,
     timeoutMs: options.timeoutMs ?? 15_000,
     maxBytes,
-    maxRequests: options.maxRequests ?? 48,
+    maxRequests: options.maxRequests ?? 64,
     secrets,
     signal: options.signal,
     cacheDir: options.cacheDir,
@@ -112,11 +115,13 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
     if (fx.fatal) fx.fatal = { ...fx.fatal, severity: "warning" };
   }
   if (naverId && naverSecret && verified && !notKospi && !notCommon) {
-    const queries = options.productQueries?.length ? options.productQueries : expandQueries(name, productNames.slice(0, 3));
-    // Company queries (they contain the company name) keep only articles that actually name the company.
+    const queries = options.productQueries?.length ? options.productQueries : expandQueries(name, productNames.slice(0, MARKET_QUERY_PRODUCTS));
+    // Company queries (they contain the company name) keep only articles that actually name the company; product
+    // market queries (market size / share reports) keep every result.
     const names = companyNames([name, dart.value?.name]);
-    const mustMention = (q: string) => (name && q.startsWith(`${name} `) && names.length ? names : null);
-    search = await run("naver-search", () => collectNaverSearch(queries, asOf, http, { id: naverId, secret: naverSecret }, ttlMs, mustMention, normalizeName));
+    const isCompany = (q: string) => !!name && q.startsWith(`${name} `);
+    const mustMention = (q: string) => (isCompany(q) && names.length ? names : null);
+    search = await run("naver-search", () => collectNaverSearch(queries, asOf, http, { id: naverId, secret: naverSecret }, ttlMs, mustMention, normalizeName, (q) => (isCompany(q) ? "company" : "market")));
     searchNews = search.value?.items ?? [];
   }
 
@@ -135,13 +140,25 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
   }
 
   // Article bodies for the most relevant items; failures keep the snippet and add warnings.
+  const tried = new Set<string>();
   const articleIssues = nv
     ? await enrichArticles([...nv.news, ...searchNews], {
-        http, asOf, ttlMs,
+        http, asOf, ttlMs, tried,
         max: Math.max(0, Math.min(5, Math.trunc(options.maxArticles ?? 5))),
         keywords: ["전망", "성장률", "가이던스", ...productNames, ...(options.productQueries ?? [])],
       })
     : [];
+  // Second pass: bodies of product-market search results that look like market size / share reports (research
+  // firm named, figures printed). Only results that score at all are fetched.
+  if (nv) {
+    const market = searchNews.filter((n) => n.topic === "market" && marketArticleScore(n) > 0);
+    articleIssues.push(...(await enrichArticles(market, {
+      http, asOf, ttlMs, tried, rank: marketArticleScore,
+      max: Math.max(0, Math.min(8, Math.trunc(options.maxMarketArticles ?? 6))),
+      keywords: [],
+    })));
+  }
+  const newsMetricCandidates = newsMetrics([...(nv?.news ?? []), ...searchNews]);
 
   const providers = {
     naver: report(naver, !!nv && (!!nv.quote || nv.news.length > 0 || nv.referenceMetrics.length > 0), [...(nv?.issues ?? []), ...newsIssues, ...articleIssues], secrets),
@@ -173,6 +190,7 @@ export async function collectPublicEvidence(input: CollectPublicEvidenceInput, o
       annualFinance: nv?.annualFinance ?? [],
       perReference: nv ? perReference(nv.dailyCloses, nv.quarterlyActuals, [`https://m.stock.naver.com/api/stock/${ticker}/price`, `https://m.stock.naver.com/api/stock/${ticker}/finance/quarter`]) : null,
       fxRates: fx.value ?? [],
+      newsMetricCandidates,
     },
     filings: {
       list: dv?.filings ?? [], statements: dv?.statements ?? [], derivedQuarters: dv?.derivedQuarters ?? [],
@@ -228,8 +246,35 @@ function usefulProductNames(candidates: ProductCandidate[], max: number): string
   return out.slice(0, max);
 }
 
+const MARKET_QUERY_PRODUCTS = 4;
+
+/** Company outlook/growth/share queries, then per product a market-size and a share query (research-firm reports). */
 function expandQueries(name: string | null, products: string[]): string[] {
-  return [...(name ? [`${name} 전망`, `${name} 성장률`, `${name} 시장 점유율`] : []), ...products.map((p) => `${p} 세계 시장 규모 점유율 성장률`)];
+  return [
+    ...(name ? [`${name} 전망`, `${name} 성장률`, `${name} 시장 점유율`] : []),
+    ...products.flatMap((p) => [`${p} 세계 시장 규모`, `${p} 점유율 매출 분기`]),
+  ];
+}
+
+const MAX_NEWS_METRICS = 150;
+const MAX_METRICS_PER_ITEM = 12;
+
+/** Market size / share / growth figures from each item's article body (or title + snippet), newest items first. */
+function newsMetrics(items: NewsItem[]): MetricCandidate<NewsSource>[] {
+  const out: MetricCandidate<NewsSource>[] = [];
+  const seen = new Set<string>();
+  for (const n of [...items].sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt))) {
+    const source: NewsSource = { newsId: n.id, url: n.url, title: n.title, publishedAt: n.publishedAt };
+    const text = n.articleText ? `${n.title}\n${n.articleText}` : `${n.title}\n${n.snippet}`;
+    for (const m of extractMetrics(text, source, MAX_METRICS_PER_ITEM, { news: true })) {
+      const k = `${n.id}|${m.kind}|${m.rawText}|${m.context}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(m);
+      if (out.length >= MAX_NEWS_METRICS) return out;
+    }
+  }
+  return out;
 }
 
 interface Outcome<T> {
@@ -263,8 +308,10 @@ function overall(p: PublicEvidence["providers"]): PublicEvidence["status"] {
 }
 
 function requiredInputs(e: PublicEvidence): RequiredInput[] {
-  const m = e.filings.metricCandidates;
-  const has = (pred: (c: (typeof m)[number]) => boolean) => m.some(pred);
+  const m: MetricCandidate<unknown>[] = [...e.filings.metricCandidates, ...(e.market.newsMetricCandidates ?? [])];
+  const has = (pred: (c: MetricCandidate<unknown>) => boolean) => m.some(pred);
+  const fromNews = (kind: MetricCandidate["kind"]) => (e.market.newsMetricCandidates ?? []).filter((c) => c.kind === kind).length;
+  const newsNote = (kind: MetricCandidate["kind"]) => (fromNews(kind) ? ` ${fromNews(kind)} candidate(s) come from news articles (unverified; check scope, period, currency and the cited research firm).` : "");
   const st = e.filings.statements;
   const need = (field: string, status: RequiredInput["status"], detail: string): RequiredInput => ({ field, status, detail });
   const fxRates = e.market.fxRates ?? [];
@@ -273,7 +320,7 @@ function requiredInputs(e: PublicEvidence): RequiredInput[] {
   const annualConsensus = (e.market.annualFinance ?? []).some((a) => a.isConsensus && a.revenueKRW !== null);
   return [
     need("quarterlyGlobalMarketRevenue", has((c) => c.kind === "market_size" && c.basis === "quarterly") ? "candidate_only" : "missing",
-      "Quarterly global product-market revenue (explicit currency and definition). Filing text may give annual or company-defined market sizes; those are never converted to quarterly by the collector."),
+      `Quarterly global product-market revenue (explicit currency and definition). Filing text may give annual or company-defined market sizes; those are never converted to quarterly by the collector.${newsNote("market_size")}`),
     ...(e.competitors
       ? [need("competitorRevenue", e.competitors.length ? "available_unverified" : "missing",
           e.competitors.length
@@ -281,7 +328,7 @@ function requiredInputs(e: PublicEvidence): RequiredInput[] {
             : "Competitors were requested but no filed revenue was collected (missing SEC_USER_AGENT/EDINET_API_KEY/DART_API_KEY, unknown code or nothing filed before asOf).")]
       : []),
     need("comparableRevenueShare", has((c) => c.kind === "market_share" && c.measure === "revenue") ? "candidate_only" : "missing",
-      "Company revenue share within the same product scope, quarter and currency as the market figure. Volume/shipment shares are not revenue shares."),
+      `Company revenue share within the same product scope, quarter and currency as the market figure. Volume/shipment shares are not revenue shares.${newsNote("market_share")}`),
     need("growthAssumptions", has((c) => c.kind === "growth_rate") || annualConsensus ? "candidate_only" : "missing",
       `Bear/base/bull annual market growth (CAGR; the model converts it to quarterly).${annualConsensus ? " Naver annual consensus for the company's own revenue was collected as a reference (company revenue, not the market)." : ""}`),
     need("productCoverage", e.filings.productCandidates.length ? "candidate_only" : "missing",

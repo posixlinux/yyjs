@@ -32,9 +32,11 @@ export interface CollectionOptions {
   timeoutMs?: number; // per request, default 15000
   maxResponseBytes?: number; // per response, default 20 MiB
   maxDecompressedBytes?: number; // per ZIP total, default 64 MiB
-  maxRequests?: number; // per collection call, default 48
+  maxRequests?: number; // per collection call, default 64
   maxNewsPages?: number; // default 3, hard cap 3
   maxArticles?: number; // Naver article bodies fetched (n.news.naver.com only), default 5, clamped 0..5
+  /** Extra article bodies for product-market search results (market size / share reports), default 6, clamped 0..8. */
+  maxMarketArticles?: number;
   maxFilings?: number; // default 8, clamped 1..8
   maxDocuments?: number; // filing documents downloaded, default 4, clamped 0..8
   cacheTtlMs?: number; // naver / DART JSON, default 60s
@@ -43,7 +45,7 @@ export interface CollectionOptions {
   competitorTtlMs?: number; // competitor filings/facts, default 6h
   /** Persistent cache directory for filing content (DART/SEC/EDINET). Unset = memory cache only. */
   cacheDir?: string;
-  /** Replaces the default Naver Open API search queries (outlook/growth/share + product markets; max 6). */
+  /** Replaces the default Naver Open API search queries (company outlook/growth/share + product market size/share; max 12). */
   productQueries?: string[];
 }
 
@@ -155,6 +157,9 @@ export interface NewsItem {
   url: string;
   originalUrl: string | null;
   origin: "naver-stock-news" | "naver-search";
+  /** naver-search only: the query that found the item and whether it was a company or a product-market query. */
+  query?: string;
+  topic?: "company" | "market";
   /** Optional: cleaned body of the article (Naver `dic_area`), max 8000 chars. Absent when not fetched or on failure. */
   articleText?: string;
   articleTruncated?: boolean;
@@ -231,7 +236,15 @@ export interface TableEvidence extends SourceLocator {
 
 export type MetricKind = "market_share" | "market_size" | "growth_rate";
 
-export interface MetricCandidate {
+/** Where a news-derived metric candidate was read. */
+export interface NewsSource {
+  newsId: string;
+  url: string;
+  title: string;
+  publishedAt: string;
+}
+
+export interface MetricCandidate<S = SourceLocator> {
   kind: MetricKind;
   label: string;
   rawText: string;
@@ -245,7 +258,9 @@ export interface MetricCandidate {
   basis: "annual" | "quarterly" | "yoy" | "unspecified";
   periodHint: string | null;
   context: string;
-  source: SourceLocator;
+  /** Market-research firm named in the same sentence (e.g. "트렌드포스"), if any. */
+  cites?: string | null;
+  source: S;
   verificationStatus: "candidate";
 }
 
@@ -412,6 +427,8 @@ export interface PublicEvidence {
     perReference?: PerReference | null;
     /** KRW reference rates for common market currencies, dated before asOf. */
     fxRates?: FxRate[];
+    /** Market size / share / growth figures read from news titles, snippets and article bodies (unverified). */
+    newsMetricCandidates?: MetricCandidate<NewsSource>[];
     news: NewsItem[];
     searchNews: NewsItem[];
   };

@@ -43,7 +43,7 @@ const LIMITATIONS = [
   "Exact matching proves a quote exists in a supplied document and a number is derivable from it; it cannot prove the number means what the model claims. Semantic truth rests on the independent audit by the second model and on human review.",
   "Compound Korean amounts (e.g. '1조 2,345억') are not parsed; a citation must quote one number with one unit.",
   "Both providers are LLMs reading the same supplied documents; agreement is not proof. Forecast fields are assumptions, not facts.",
-  "Claude and agy (Antigravity CLI, Gemini models) use the operator's own logins and quotas. A provider whose login/quota has expired is skipped; with only one provider the dataset is NOT cross-checked (status single_model).",
+  "Claude and agy (Antigravity CLI, Gemini models) use the operator's own logins and quotas. A provider whose login/quota has expired is skipped, and an agy audit that fails for any reason is replaced by a Claude self-audit; with only one provider the dataset is NOT cross-checked (status single_model).",
 ];
 
 // ---- shared state: bounded CLI concurrency, result cache, in-flight de-duplication ----------------------------
@@ -311,6 +311,8 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
 
   // 2. Audit. Preferred: the OTHER provider (independent). If it is expired, the drafting provider audits its own draft in a
   //    fresh call with an adversarial prompt, so every check still runs (weaker: not independent, status single_model).
+  //    agy is the less reliable CLI: when it is the independent auditor and fails for ANY reason (timeout, bad or
+  //    truncated response, schema, CLI error), Claude takes over the same way instead of the draft being rejected.
   //    Only when no provider can audit at all does the draft rest on the deterministic checks alone.
   async function auditAndAccept(drafter: ProviderName, draft: import("./types.js").Proposal): Promise<void> {
     const otherProvider = other(drafter);
@@ -332,6 +334,10 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
         expire(cand.provider, out.status.code, out.status.message, out.cooldownMs, false);
         continue;
       }
+      if (cand.independent && cand.provider === "agy" && out.status.status === "error" && !signal.aborted) {
+        failTransient("agy", out.status.code, out.status.message); // no cooldown: agy is tried again on the next run
+        continue; // Claude (the drafter) audits instead
+      }
       issues.push({ code: "PROVIDER_UNAVAILABLE", path: cand.provider, message: `${out.status.message} (the audit failed for a reason other than an expired login/quota, so the draft is not accepted)` });
       return;
     }
@@ -352,7 +358,10 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
     result.audit.auditedBy = auditor.provider;
     result.audit.independentAudit = auditor.independent;
     result.crossChecked = auditor.independent;
-    if (!auditor.independent) result.audit.limitations.push(`Not cross-checked: ${otherProvider} was unavailable, so ${drafter} audited its own draft in a separate call (not independent).`);
+    if (!auditor.independent) {
+      const why = unavailable.find((u) => u.provider === otherProvider);
+      result.audit.limitations.push(`Not cross-checked: ${otherProvider} was unavailable${why ? ` (${why.code})` : ""}, so ${drafter} audited its own draft in a separate call (not independent).`);
+    }
     result.audit.auditSummary = audit.summary;
     result.missingFields = [...new Set([...result.missingFields, ...audit.missingFields])];
     result.disagreements = [

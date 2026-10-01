@@ -8,6 +8,8 @@ import type { AsOf } from "./text.js";
 const API = "https://m.stock.naver.com/api";
 const HEADERS = { accept: "application/json", "user-agent": "yyjs-evidence-collector/1" };
 const MAX_NEWS = 100;
+export const MAX_SEARCH_QUERIES = 12;
+const MAX_SEARCH_ITEMS = 160;
 
 export interface NaverResult {
   name: string | null;
@@ -343,15 +345,19 @@ export async function collectNaverSearch(
   /** Per query: normalized names an item's title/description must contain (null = keep all). */
   mustMention: (query: string) => string[] | null = () => null,
   normalize: (s: string) => string = (s) => s,
+  /** Company queries keep a one-year window; product-market queries reach back 18 months (four quarters of reports). */
+  topicOf: (query: string) => "company" | "market" = () => "company",
 ): Promise<{ items: NewsItem[]; issues: CollectionIssue[] }> {
   const items: NewsItem[] = [];
   const issues: CollectionIssue[] = [];
   const seen = new Set<string>();
   const seenTitles = new Set<string>();
   const headers = { accept: "application/json", "X-Naver-Client-Id": creds.id, "X-Naver-Client-Secret": creds.secret };
-  for (const q of queries.slice(0, 6)) {
+  for (const q of queries.slice(0, MAX_SEARCH_QUERIES)) {
     const query = q.replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 100);
     if (!query) continue;
+    const topic = topicOf(query);
+    const maxAgeDays = topic === "market" ? 540 : 365;
     try {
       // Relevance order finds outlook/analyst pieces; date order returns only the last day or two of loose matches.
       const url = `https://openapi.naver.com/v1/search/news.json?${new URLSearchParams({ query, display: "20", sort: "sim" })}`;
@@ -366,7 +372,7 @@ export async function collectNaverSearch(
         const link = str(o?.link);
         const title = plainText(str(o?.title));
         if (!o || Number.isNaN(ms) || ms > asOf.cutoffMs || !link.startsWith("https://") || !title) continue;
-        if (ms < asOf.cutoffMs - 365 * 86_400_000) continue; // relevance order can surface stale pieces
+        if (ms < asOf.cutoffMs - maxAgeDays * 86_400_000) continue; // relevance order can surface stale pieces
         if (names && !names.some((n) => normalize(`${title} ${plainText(str(o.description))}`).includes(n))) {
           unrelated++;
           continue;
@@ -386,6 +392,8 @@ export async function collectNaverSearch(
           url: link,
           originalUrl: str(o.originallink).startsWith("https://") ? str(o.originallink) : null,
           origin: "naver-search",
+          query,
+          topic,
         });
       }
       if (unrelated) issues.push(issue("naver-search", "search_unrelated_excluded", `Query "${query}": ${unrelated} result(s) do not name the company; excluded`, "info"));
@@ -394,5 +402,5 @@ export async function collectNaverSearch(
     }
   }
   items.sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt));
-  return { items: items.slice(0, MAX_NEWS), issues };
+  return { items: items.slice(0, MAX_SEARCH_ITEMS), issues };
 }
