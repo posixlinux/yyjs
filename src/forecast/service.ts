@@ -6,7 +6,7 @@ import { AppError } from "../errors.js";
 import type { UniverseProvider } from "../research/universe.js";
 import type { ListedExchange } from "../domain/security.js";
 import { DEFAULT_OPTIONS, type EngineOptions, type ForecastResult, type Series } from "./engine.js";
-import { loadHistory, loadIndex, loadStock, loadUsdKrw, type Bar, type StockHistory } from "./history.js";
+import { adjustCorporateActions, loadHistory, loadIndex, loadStock, loadUsdKrw, type Bar, type StockHistory } from "./history.js";
 import { runEngine, runMany } from "./runner.js";
 
 // Short-term forecast service: loads the target's history and that of liquid peers on the same exchange (pooled
@@ -49,12 +49,19 @@ export type ForecastScore = {
 };
 
 const MAX_PEERS = 40;
+
+/** Stock history with splits/consolidations (moves beyond the +-30% daily limit) folded into earlier prices. */
+async function loadAdjusted(http: Parameters<typeof loadStock>[0], ticker: string, pages: number): Promise<StockHistory & { adjusted: string[] }> {
+  const s = await loadStock(http, ticker, { maxPages: pages });
+  const { bars, adjusted } = adjustCorporateActions(s.bars);
+  return { ...s, bars, adjusted };
+}
 const HISTORY_TTL_MS = 30 * 60_000; // daily bars change once a day; peers are shared between forecasts
 
 export class ForecastService {
   private cache = new Map<string, { at: number; result: ForecastResult }>();
   private inflight = new Map<string, Promise<ForecastResult & { peerFailures: string[] }>>();
-  private stocks = new Map<string, { at: number; value: Promise<StockHistory> }>();
+  private stocks = new Map<string, { at: number; value: Promise<StockHistory & { adjusted: string[] }> }>();
   private indexes = new Map<string, { at: number; value: Promise<Bar[]> }>();
 
   /** USD/KRW over the bars' span; [] (features stay empty) when the rate source is unreachable. */
@@ -116,7 +123,7 @@ export class ForecastService {
 
     const pages = this.deps.pages ?? 12;
     const http = this.http((2 + pages * 2) * (2 + Math.min(MAX_PEERS, opts.peers?.length ?? peerCount)));
-    const stock = (t: string) => this.cached(this.stocks, `${t}|${pages}`, () => loadStock(http, t, { maxPages: pages }));
+    const stock = (t: string) => this.cached(this.stocks, `${t}|${pages}`, () => loadAdjusted(http, t, pages));
     const index = (ex: ListedExchange) => this.cached(this.indexes, `${ex}|${pages}`, () => loadIndex(http, ex, { maxPages: pages }));
     let target;
     try {
@@ -146,6 +153,7 @@ export class ForecastService {
       throw new AppError(422, "INSUFFICIENT_HISTORY", (e as Error).message);
     }
     result.notes.push(...fxNotes);
+    if (target.adjusted.length) result.notes.push(`가격제한폭(±30%)을 넘는 변동을 액면분할·병합으로 보고 이전 가격을 보정했습니다: ${target.adjusted.join(", ")}.`);
     if (target.name) result.notes.push(`${target.name} (${target.exchange}), 시장 지수 ${target.indexName} 사용.`);
     if (peerFailures.length) result.notes.push(`시세 이력을 받지 못해 제외한 동종 종목: ${peerFailures.join(", ")}.`);
     this.cache.set(key, { at: now, result });
@@ -176,7 +184,7 @@ export class ForecastService {
     const series: Series[] = [];
     const failures: string[] = [];
     for (let i = 0; i < tickers.length; i += 4) {
-      const got = await Promise.allSettled(tickers.slice(i, i + 4).map((t) => this.cached(this.stocks, `${t.ticker}|${pages}`, () => loadStock(http, t.ticker, { maxPages: pages }))));
+      const got = await Promise.allSettled(tickers.slice(i, i + 4).map((t) => this.cached(this.stocks, `${t.ticker}|${pages}`, () => loadAdjusted(http, t.ticker, pages))));
       got.forEach((g, j) => (g.status === "fulfilled" ? series.push({ ticker: g.value.ticker, bars: g.value.bars, index }) : failures.push(tickers[i + j]!.ticker)));
     }
     if (series.length < 3) throw new AppError(502, "HISTORY_UNAVAILABLE", "Too few price histories could be loaded to rank");

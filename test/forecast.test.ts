@@ -240,3 +240,17 @@ describe("forecast service and API", () => {
     expect(naver()).toBe(before);
   }, 120_000);
 });
+
+describe("corporate actions", () => {
+  it("folds a 1:5 split (a -80% 'move' beyond the +-30% limit) into earlier prices", async () => {
+    const { adjustCorporateActions } = await import("../src/forecast/history.js");
+    const bars = [100_000, 101_000, 20_400, 20_600].map((close, i) => ({ date: day(i), open: close, high: close, low: close, close, volume: 1000 }));
+    const { bars: adj, adjusted } = adjustCorporateActions(bars);
+    expect(adjusted).toEqual([day(2)]);
+    expect(adj.map((b) => Math.round(b.close))).toEqual([20198, 20400, 20400, 20600]);
+    expect(adj[0]!.volume).toBeCloseTo(1000 / (20_400 / 101_000), 6);
+    // a genuine limit-down day (-29.9%) is left alone
+    const real = [10_000, 7_010, 7_100].map((close, i) => ({ date: day(i), open: close, high: close, low: close, close, volume: 1 }));
+    expect(adjustCorporateActions(real).adjusted).toEqual([]);
+  });
+});

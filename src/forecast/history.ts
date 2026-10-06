@@ -79,3 +79,27 @@ export async function loadUsdKrw(http: HttpClient, from: string, to: string, ttl
     })
     .sort((a, b) => a.date.localeCompare(b.date));
 }
+
+/**
+ * KRX limits a session's move to +-30% of the previous close, so a larger close-to-close jump is a corporate action
+ * (split, reverse split, merger ratio) that Naver's raw closes do not adjust. Earlier bars are rescaled by the jump so
+ * returns, features and labels never see a fake crash or rally. Returns the adjusted bars and the dates adjusted.
+ */
+export function adjustCorporateActions(bars: Bar[], limit = 0.3): { bars: Bar[]; adjusted: string[] } {
+  const out = bars.map((b) => ({ ...b }));
+  const adjusted: string[] = [];
+  let factor = 1;
+  for (let i = out.length - 1; i > 0; i--) {
+    const ratio = bars[i]!.close / bars[i - 1]!.close;
+    if (ratio > 1 + limit + 0.01 || ratio < 1 - limit - 0.01) {
+      factor *= ratio;
+      adjusted.push(bars[i]!.date);
+    }
+    if (factor !== 1) {
+      const b = out[i - 1]!;
+      const scale = (v: number | null) => (v === null ? null : v * factor);
+      out[i - 1] = { ...b, open: scale(b.open), high: scale(b.high), low: scale(b.low), close: b.close * factor, volume: b.volume === null ? null : b.volume / factor };
+    }
+  }
+  return { bars: out, adjusted: adjusted.reverse() };
+}
