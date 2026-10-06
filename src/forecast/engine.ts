@@ -1,0 +1,306 @@
+import { context, features, FEATURE_NAMES, forwardReturn, MIN_HISTORY } from "./features.js";
+import type { Bar } from "./history.js";
+import { applyPlatt, fitLogistic, fitPlatt, fitRidge, fitScaler, linear, quantile, sigmoid, transform, type Linear, type Scaler } from "./model.js";
+
+// Short-term (1..3 session) direction and return forecast with an honest walk-forward backtest. Every prediction in
+// the backtest is made with a model trained only on samples whose outcome was already known at that date; the final
+// forecast is calibrated on those out-of-sample predictions, so a model without real skill reports probabilities
+// near the base rate instead of confident guesses.
+
+export const HORIZONS = [1, 2, 3] as const;
+export type Horizon = (typeof HORIZONS)[number];
+
+export type Series = { ticker: string; bars: Bar[]; index: Bar[] };
+
+export type EngineOptions = {
+  /** Retrain every `step` test dates. */
+  step: number;
+  /** Minimum training samples before the first out-of-sample prediction. */
+  minTrain: number;
+  /** Most recent training samples kept (recency window). */
+  maxTrain: number;
+  /** Candidate L2 strengths per training sample; each refit picks one on its own latest 20% (time-ordered). */
+  lambdaGrid: number[];
+};
+
+export const DEFAULT_OPTIONS: EngineOptions = { step: 20, minTrain: 250, maxTrain: 6000, lambdaGrid: [1] };
+
+type Sample = { ticker: string; date: string; x: number[]; fwd: number[]; endDate: (string | null)[] };
+
+/** Feature rows for every session with enough history; `fwd[h-1]` is NaN while the outcome is unknown. */
+export function buildSamples(series: Series[]): Sample[] {
+  const out: Sample[] = [];
+  for (const s of series) {
+    const ctx = context(s.bars, s.index);
+    for (let t = MIN_HISTORY - 1; t < s.bars.length; t++) {
+      out.push({
+        ticker: s.ticker,
+        date: s.bars[t]!.date,
+        x: features(ctx, t),
+        fwd: HORIZONS.map((h) => forwardReturn(s.bars, t, h)),
+        endDate: HORIZONS.map((h) => (t + h < s.bars.length ? s.bars[t + h]!.date : null)),
+      });
+    }
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date) || a.ticker.localeCompare(b.ticker));
+}
+
+type Fitted = { scaler: Scaler; logistic: Linear; ridge: Linear; baseRate: number };
+
+function fit(train: Sample[], hi: number, o: EngineOptions): Fitted | null {
+  const rows = train.filter((s) => Number.isFinite(s.fwd[hi]!) && s.fwd[hi] !== 0);
+  if (rows.length < Math.min(o.minTrain, 60)) return null;
+  const X0 = rows.map((s) => s.x);
+  const scaler = fitScaler(X0);
+  const X = X0.map((x) => transform(scaler, x));
+  const y: number[] = rows.map((s) => (s.fwd[hi]! > 0 ? 1 : 0));
+  // Returns are winsorized for the ridge fit so a single limit-up/limit-down day does not set the slope.
+  const r = rows.map((s) => s.fwd[hi]!);
+  const lo = quantile(r, 0.01), up = quantile(r, 0.99);
+  const rw = r.map((v) => Math.max(lo, Math.min(up, v)));
+  // Regularization chosen on the most recent 20% of the training window (fit on the older 80%), then refit on all:
+  // with weak signals and correlated features, too little shrinkage overfits and too much discards the signal.
+  const cut = Math.floor(rows.length * 0.8);
+  const logLoss = (m: Linear, from: number) => {
+    let s = 0;
+    for (let i = from; i < X.length; i++) {
+      const p = Math.min(1 - 1e-6, Math.max(1e-6, sigmoid(linear(m, X[i]!))));
+      s -= y[i]! ? Math.log(p) : Math.log(1 - p);
+    }
+    return s;
+  };
+  const mse = (m: Linear, from: number) => {
+    let s = 0;
+    for (let i = from; i < X.length; i++) s += (linear(m, X[i]!) - rw[i]!) ** 2;
+    return s;
+  };
+  let bestL = o.lambdaGrid[0]!, bestR = o.lambdaGrid[0]!, lossL = Infinity, lossR = Infinity;
+  if (rows.length - cut >= 30) {
+    const Xa = X.slice(0, cut);
+    for (const lam of o.lambdaGrid) {
+      const l = logLoss(fitLogistic(Xa, y.slice(0, cut), lam * cut, 12), cut);
+      if (l < lossL) (lossL = l), (bestL = lam);
+      const m = mse(fitRidge(Xa, rw.slice(0, cut), lam * cut), cut);
+      if (m < lossR) (lossR = m), (bestR = lam);
+    }
+  } else bestL = bestR = o.lambdaGrid.at(-1)!;
+  return {
+    scaler,
+    logistic: fitLogistic(X, y, bestL * rows.length, 12),
+    ridge: fitRidge(X, rw, bestR * rows.length),
+    baseRate: y.reduce((s, v) => s + v, 0) / y.length,
+  };
+}
+
+const predict = (f: Fitted, x: number[]) => {
+  const z = transform(f.scaler, x);
+  return { p: sigmoid(linear(f.logistic, z)), r: linear(f.ridge, z) };
+};
+
+export type OosPrediction = { ticker: string; date: string; p: number; r: number; baseRate: number; actual: number; past: number };
+
+/** Walk-forward out-of-sample predictions for horizon index `hi` (0 -> 1 session). */
+export function walkForward(samples: Sample[], hi: number, o: EngineOptions = DEFAULT_OPTIONS): OosPrediction[] {
+  const dates = [...new Set(samples.map((s) => s.date))].sort();
+  const byDate = new Map<string, Sample[]>();
+  for (const s of samples) (byDate.get(s.date) ?? byDate.set(s.date, []).get(s.date)!).push(s);
+  const out: OosPrediction[] = [];
+  let model: Fitted | null = null;
+  let sinceFit = Infinity;
+  for (const d of dates) {
+    if (sinceFit >= o.step) {
+      // Known outcomes only: the label window must have closed on or before today's close.
+      const known = samples.filter((s) => s.endDate[hi] !== null && s.endDate[hi]! <= d);
+      if (known.length >= o.minTrain) {
+        model = fit(known.slice(-o.maxTrain), hi, o);
+        sinceFit = 0;
+      }
+    }
+    sinceFit++;
+    if (!model) continue;
+    for (const s of byDate.get(d)!) {
+      const actual = s.fwd[hi]!;
+      if (!Number.isFinite(actual)) continue;
+      const { p, r } = predict(model, s.x);
+      out.push({ ticker: s.ticker, date: d, p, r, baseRate: model.baseRate, actual, past: s.x[FEATURE_NAMES.indexOf(hi === 0 ? "ret1" : hi === 1 ? "ret2" : "ret3")]! });
+    }
+  }
+  return out;
+}
+
+// ---- metrics ------------------------------------------------------------------------------------------------------
+
+/** One-sided p-value that a hit rate of k/n beats `p0` (normal approximation to the binomial). */
+export function pValueAbove(k: number, n: number, p0: number): number {
+  if (n === 0) return 1;
+  const z = (k - n * p0) / Math.sqrt(n * p0 * (1 - p0));
+  return 0.5 * erfc(z / Math.SQRT2);
+}
+function erfc(x: number): number {
+  // Abramowitz-Stegun 7.1.26 (|error| < 1.5e-7)
+  const t = 1 / (1 + 0.3275911 * Math.abs(x));
+  const y = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429)))) * Math.exp(-x * x);
+  return x >= 0 ? y : 2 - y;
+}
+
+export type BacktestStats = {
+  horizon: number;
+  n: number;
+  from: string | null;
+  to: string | null;
+  accuracy: number | null;
+  /** Baselines on the same predictions: always "up", and "the last h sessions' direction continues". */
+  alwaysUpAccuracy: number | null;
+  momentumAccuracy: number | null;
+  pValueVsCoin: number | null;
+  /** vs the better of "always up" / "always down" (the historical base rate). */
+  pValueVsClimatology: number | null;
+  /** vs the best of coin, base rate and momentum. */
+  pValueVsBestBaseline: number | null;
+  brier: number | null;
+  brierBaseRate: number | null;
+  meanAbsErrorPct: number | null;
+  zeroForecastMaePct: number | null;
+  /** Mean realized return when the model said up minus when it said down (percentage points). */
+  upDownSpreadPct: number | null;
+  /** Accuracy on the 30% most confident predictions. */
+  confidentAccuracy: number | null;
+  confidentN: number;
+  edge: "detected" | "none";
+};
+
+export function backtestStats(oos: OosPrediction[], horizon: number): BacktestStats {
+  const n = oos.length;
+  const pct = (v: number) => (Math.exp(v) - 1) * 100;
+  if (!n)
+    return { horizon, n: 0, from: null, to: null, accuracy: null, alwaysUpAccuracy: null, momentumAccuracy: null, pValueVsCoin: null, pValueVsClimatology: null, pValueVsBestBaseline: null, brier: null, brierBaseRate: null, meanAbsErrorPct: null, zeroForecastMaePct: null, upDownSpreadPct: null, confidentAccuracy: null, confidentN: 0, edge: "none" };
+  const up = (v: number) => v > 0;
+  const hits = oos.filter((o) => (o.p > 0.5) === up(o.actual)).length;
+  const ups = oos.filter((o) => up(o.actual)).length;
+  const mom = oos.filter((o) => Number.isFinite(o.past) && o.past !== 0);
+  const momHits = mom.filter((o) => up(o.past) === up(o.actual)).length;
+  const accuracy = hits / n;
+  const alwaysUp = ups / n;
+  const momentum = mom.length ? momHits / mom.length : 0;
+  const best = Math.max(0.5, alwaysUp, 1 - alwaysUp, momentum);
+  const brier = oos.reduce((s, o) => s + (o.p - (up(o.actual) ? 1 : 0)) ** 2, 0) / n;
+  const brierBase = oos.reduce((s, o) => s + (o.baseRate - (up(o.actual) ? 1 : 0)) ** 2, 0) / n;
+  const mae = oos.reduce((s, o) => s + Math.abs(pct(o.r) - pct(o.actual)), 0) / n;
+  const mae0 = oos.reduce((s, o) => s + Math.abs(pct(o.actual)), 0) / n;
+  const saidUp = oos.filter((o) => o.p > 0.5), saidDown = oos.filter((o) => o.p <= 0.5);
+  const avg = (xs: OosPrediction[]) => xs.reduce((s, o) => s + pct(o.actual), 0) / xs.length;
+  const conf = [...oos].sort((a, b) => Math.abs(b.p - 0.5) - Math.abs(a.p - 0.5)).slice(0, Math.max(1, Math.floor(n * 0.3)));
+  const confHits = conf.filter((o) => (o.p > 0.5) === up(o.actual)).length;
+  // Overlapping h-session windows are not independent: test on n/h effective observations (conservative).
+  const nEff = Math.max(1, Math.floor(n / horizon));
+  const pCoin = pValueAbove((hits / n) * nEff, nEff, 0.5);
+  const climate = Math.max(0.5, alwaysUp, 1 - alwaysUp);
+  const pClimate = pValueAbove((hits / n) * nEff, nEff, climate);
+  const pBest = pValueAbove((hits / n) * nEff, nEff, best);
+  return {
+    horizon,
+    n,
+    from: oos[0]!.date,
+    to: oos.at(-1)!.date,
+    accuracy,
+    alwaysUpAccuracy: alwaysUp,
+    momentumAccuracy: mom.length ? momentum : null,
+    pValueVsCoin: pCoin,
+    pValueVsClimatology: pClimate,
+    pValueVsBestBaseline: pBest,
+    brier,
+    brierBaseRate: brierBase,
+    meanAbsErrorPct: mae,
+    zeroForecastMaePct: mae0,
+    upDownSpreadPct: saidUp.length && saidDown.length ? avg(saidUp) - avg(saidDown) : null,
+    confidentAccuracy: confHits / conf.length,
+    confidentN: conf.length,
+    // Skill must beat the coin and the always-same-direction rule significantly AND improve the probability score.
+    // (Beating the simple momentum rule as well is reported via pValueVsBestBaseline, not required.)
+    edge: nEff >= 100 && pClimate < 0.05 && brier < brierBase ? "detected" : "none",
+  };
+}
+
+// ---- final forecast -----------------------------------------------------------------------------------------------
+
+export type HorizonForecast = {
+  horizon: number;
+  /** Trading session the forecast closes on, counted from `asOfDate` (1 = next session). */
+  probabilityUp: number;
+  rawProbabilityUp: number;
+  direction: "up" | "down";
+  /** "low" whenever the backtest found no edge: treat the direction as a coin flip. */
+  confidence: "high" | "medium" | "low";
+  expectedReturnPct: number;
+  /** 80% range of the return from the out-of-sample residuals. */
+  range80Pct: [number, number];
+  expectedPriceKRW: number;
+  backtest: BacktestStats;
+};
+
+export type ForecastResult = {
+  ticker: string;
+  asOfDate: string;
+  lastCloseKRW: number;
+  horizons: HorizonForecast[];
+  trainedOn: { tickers: string[]; samples: number };
+  featureNames: readonly string[];
+  notes: string[];
+};
+
+/** Fits on all known outcomes, predicts the next 1..3 sessions for `target`, and calibrates on the walk-forward. */
+export function forecast(target: Series, peers: Series[] = [], o: EngineOptions = DEFAULT_OPTIONS): ForecastResult {
+  const all = [target, ...peers.filter((p) => p.ticker !== target.ticker)];
+  const samples = buildSamples(all);
+  const last = target.bars.length - 1;
+  if (last < MIN_HISTORY) throw new Error(`Need at least ${MIN_HISTORY + 1} sessions of ${target.ticker}; have ${target.bars.length}`);
+  const ctx = context(target.bars, target.index);
+  const xNow = features(ctx, last);
+  const lastClose = target.bars[last]!.close;
+  const horizons: HorizonForecast[] = [];
+  for (const [hi, h] of HORIZONS.entries()) {
+    const oosAll = walkForward(samples, hi, o);
+    const oos = oosAll.filter((x) => x.ticker === target.ticker);
+    const stats = backtestStats(oos, h);
+    const model = fit(samples.filter((s) => Number.isFinite(s.fwd[hi]!)).slice(-o.maxTrain), hi, o);
+    if (!model) throw new Error(`Not enough history to train the ${h}-session model`);
+    const raw = predict(model, xNow);
+    // Calibrate on every out-of-sample prediction (pooled is steadier than the target's alone).
+    const calib = oosAll.length >= 100 ? fitPlatt(oosAll.map((x) => x.p), oosAll.map((x) => (x.actual > 0 ? 1 : 0))) : null;
+    const pUp = calib ? applyPlatt(calib, raw.p) : model.baseRate;
+    // Expected return: OOS slope of realized on predicted, clamped to [0, 1] (shrinks a noisy ridge toward zero).
+    let slope = 0, icpt = 0;
+    if (oosAll.length >= 100) {
+      const mx = oosAll.reduce((s, x) => s + x.r, 0) / oosAll.length;
+      const my = oosAll.reduce((s, x) => s + x.actual, 0) / oosAll.length;
+      const cov = oosAll.reduce((s, x) => s + (x.r - mx) * (x.actual - my), 0);
+      const vx = oosAll.reduce((s, x) => s + (x.r - mx) ** 2, 0);
+      slope = vx > 0 ? Math.max(0, Math.min(1, cov / vx)) : 0;
+      icpt = my - slope * mx;
+    }
+    const exp = icpt + slope * raw.r;
+    const resid = oosAll.map((x) => x.actual - (icpt + slope * x.r));
+    const lo = resid.length >= 50 ? quantile(resid, 0.1) : NaN;
+    const hiQ = resid.length >= 50 ? quantile(resid, 0.9) : NaN;
+    const pct = (v: number) => (Math.exp(v) - 1) * 100;
+    const edge = stats.edge === "detected";
+    horizons.push({
+      horizon: h,
+      probabilityUp: pUp,
+      rawProbabilityUp: raw.p,
+      direction: pUp >= 0.5 ? "up" : "down",
+      confidence: !edge ? "low" : Math.abs(pUp - 0.5) >= 0.1 ? "high" : "medium",
+      expectedReturnPct: pct(exp),
+      range80Pct: [pct(exp + lo), pct(exp + hiQ)],
+      expectedPriceKRW: lastClose * Math.exp(exp),
+      backtest: stats,
+    });
+  }
+  const notes = [
+    "Short-term prices are mostly noise; the backtest accuracy, not the forecast, says how much to trust a direction.",
+    "probabilityUp is calibrated on walk-forward out-of-sample predictions: without proven skill it stays near the historical share of rising sessions.",
+    "Not investment advice. Prices are Naver daily closes (not adjusted for splits or dividends).",
+  ];
+  if (horizons.every((h) => h.backtest.edge === "none")) notes.unshift("No horizon beat the naive baselines significantly in the walk-forward backtest: treat these directions as coin flips.");
+  return { ticker: target.ticker, asOfDate: target.bars[last]!.date, lastCloseKRW: lastClose, horizons, trainedOn: { tickers: all.map((s) => s.ticker), samples: samples.length }, featureNames: FEATURE_NAMES, notes };
+}

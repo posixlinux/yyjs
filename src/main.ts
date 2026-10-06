@@ -8,6 +8,8 @@ import { LocalStore } from "./providers/local.js";
 import { ResearchService } from "./research/service.js";
 import { Service } from "./service.js";
 import { StrategyService } from "./strategy/service.js";
+import { ForecastService } from "./forecast/service.js";
+import { UniverseProvider } from "./research/universe.js";
 
 const config = loadConfig();
 if (!config.capabilities.dartConfigured)
@@ -35,7 +37,9 @@ const strategy = new StrategyService(
   { forecasts: path.join(config.dataDir, "strategy/forecasts"), consensus: path.join(config.dataDir, "strategy/consensus"), catalysts: path.join(config.dataDir, "strategy/catalysts") },
   { now: config.now },
 );
-const app = buildApp(service, research, config, undefined, strategy);
+const universe = new UniverseProvider();
+const forecasts = new ForecastService({ universe, logDir: config.dataDir, now: config.now });
+const app = buildApp(service, research, config, universe, strategy, forecasts);
 
 // Graceful shutdown: app.close() aborts running jobs and fails queued ones (jobs are in-memory and lost on restart).
 for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => void app.close().finally(() => process.exit(0)));
