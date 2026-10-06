@@ -1,12 +1,11 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
-import path from "node:path";
+import { fileRecorder } from "../research/predictions.js";
 import { createHttp } from "../collection/http.js";
 import { CollectionError } from "../collection/types.js";
 import { AppError } from "../errors.js";
 import type { UniverseProvider } from "../research/universe.js";
 import type { ListedExchange } from "../domain/security.js";
 import { DEFAULT_OPTIONS, MIN_HISTORY_FOR, type EngineOptions, type ForecastResult, type Series } from "./engine.js";
-import { adjustCorporateActions, loadHistory, loadIndex, loadStock, loadUsdKrw, type Bar, type StockHistory } from "./history.js";
+import { adjustCorporateActions, dropUnfinishedSession, loadIndex, loadStock, loadUsdKrw, type Bar, type StockHistory } from "./history.js";
 import { runEngine, runMany } from "./runner.js";
 
 // Short-term forecast service: loads the target's history and that of liquid peers on the same exchange (pooled
@@ -38,7 +37,7 @@ export type ForecastScore = {
   ticker: string;
   asOfDate: string;
   horizon: number;
-  status: "scored" | "pending";
+  status: "scored" | "pending" | "unavailable";
   targetDate: string | null;
   actualReturnPct: number | null;
   predictedReturnPct: number;
@@ -51,17 +50,23 @@ export type ForecastScore = {
 const MAX_PEERS = 40;
 
 /** Stock history with splits/consolidations (moves beyond the +-30% daily limit) folded into earlier prices. */
-async function loadAdjusted(http: Parameters<typeof loadStock>[0], ticker: string, pages: number): Promise<StockHistory & { adjusted: string[] }> {
+type Adjusted = StockHistory & { adjusted: string[]; truncatedBefore: string | null };
+async function loadAdjusted(http: Parameters<typeof loadStock>[0], ticker: string, pages: number, now: Date): Promise<Adjusted> {
   const s = await loadStock(http, ticker, { maxPages: pages });
-  const { bars, adjusted } = adjustCorporateActions(s.bars);
-  return { ...s, bars, adjusted };
+  return { ...s, ...adjustCorporateActions(dropUnfinishedSession(s.bars, now)) };
 }
+/** Cache-key suffix that changes when today's session closes, so a pre-close load is not reused after the close. */
+const sessionKey = (now: Date) => {
+  const k = new Date(now.getTime() + 9 * 3_600_000);
+  return `${k.toISOString().slice(0, 10)}${k.getUTCHours() * 60 + k.getUTCMinutes() >= 15 * 60 + 40 ? "c" : "o"}`;
+};
 const HISTORY_TTL_MS = 30 * 60_000; // daily bars change once a day; peers are shared between forecasts
 
 export class ForecastService {
   private cache = new Map<string, { at: number; result: ForecastResult }>();
   private inflight = new Map<string, Promise<ForecastResult & { peerFailures: string[] }>>();
-  private stocks = new Map<string, { at: number; value: Promise<StockHistory & { adjusted: string[] }> }>();
+  private stocks = new Map<string, { at: number; value: Promise<Adjusted> }>();
+  private rankings = new Map<string, { at: number; value: Promise<Awaited<ReturnType<ForecastService["rankNow"]>>> }>();
   private indexes = new Map<string, { at: number; value: Promise<Bar[]> }>();
 
   /** USD/KRW over the bars' span; [] (features stay empty) when the rate source is unreachable. */
@@ -123,7 +128,9 @@ export class ForecastService {
 
     const pages = this.deps.pages ?? 12;
     const http = this.http((2 + pages * 2) * (2 + Math.min(MAX_PEERS, opts.peers?.length ?? peerCount)));
-    const stock = (t: string) => this.cached(this.stocks, `${t}|${pages}`, () => loadAdjusted(http, t, pages));
+    const at = new Date(now);
+    const sk = sessionKey(at);
+    const stock = (t: string) => this.cached(this.stocks, `${t}|${pages}|${sk}`, () => loadAdjusted(http, t, pages, at));
     const indexNotes: string[] = [];
     // The index only feeds market features: without it the forecast still runs (those features stay empty). One
     // attempt per exchange per forecast, so a failing index is not re-requested for every peer.
@@ -131,7 +138,7 @@ export class ForecastService {
     const index = (ex: ListedExchange) => {
       let p = indexOnce.get(ex);
       if (!p) {
-        p = this.cached(this.indexes, `${ex}|${pages}`, () => loadIndex(http, ex, { maxPages: pages })).catch(() => {
+        p = this.cached(this.indexes, `${ex}|${pages}|${sk}`, () => loadIndex(http, ex, { maxPages: pages }).then((b) => dropUnfinishedSession(b, at))).catch(() => {
           indexNotes.push(`${ex} 지수 시세를 받지 못해 지수 관련 특징 없이 계산했습니다.`);
           return [] as Bar[];
         });
@@ -169,6 +176,7 @@ export class ForecastService {
       throw new AppError(503, "FORECAST_FAILED", `The forecast computation failed: ${m}`, undefined, "Retry later; a computation that exceeded its time limit was stopped.");
     }
     result.notes.push(...indexNotes, ...fxNotes);
+    if (target.truncatedBefore) result.notes.push(`${target.truncatedBefore}에 가격제한폭을 넘는 분할 비율이 아닌 변동(재상장·기준가 재설정 등)이 있어 그 이전 시세는 쓰지 않았습니다.`);
     if (target.adjusted.length) result.notes.push(`가격제한폭(±30%)을 넘는 변동을 액면분할·병합으로 보고 이전 가격을 보정했습니다: ${target.adjusted.join(", ")}.`);
     if (target.name) result.notes.push(`${target.name} (${target.exchange}), 시장 지수 ${target.indexName} 사용.`);
     if (peerFailures.length) result.notes.push(`시세 이력을 받지 못해 제외한 동종 종목: ${peerFailures.join(", ")}.`);
@@ -181,7 +189,13 @@ export class ForecastService {
    * "Which stocks are most likely to rise": one pooled model over the largest `count` stocks of an exchange, ranked
    * by the probability of a rise over `horizon` sessions. Low-confidence rows stay in the list, flagged.
    */
-  async rank(opts: { exchange?: ListedExchange; count?: number; horizon?: 1 | 2 | 3 } = {}) {
+  rank(opts: { exchange?: ListedExchange; count?: number; horizon?: 1 | 2 | 3 } = {}) {
+    // Same ranking in flight or computed in the last 30 minutes -> the same result (one 1-2 minute fit, not one per click).
+    const key = `${opts.exchange ?? "KOSPI"}|${opts.count ?? 30}|${opts.horizon ?? 1}|${sessionKey((this.deps.now ?? (() => new Date()))())}`;
+    return this.cached(this.rankings, key, () => this.rankNow(opts));
+  }
+
+  private async rankNow(opts: { exchange?: ListedExchange; count?: number; horizon?: 1 | 2 | 3 }) {
     const exchange = opts.exchange ?? "KOSPI";
     const count = Math.min(opts.count ?? 30, MAX_PEERS);
     const horizon = opts.horizon ?? 1;
@@ -194,15 +208,17 @@ export class ForecastService {
     }
     const pages = this.deps.pages ?? 12;
     const http = this.http((2 + pages) * (count + 2));
+    const at = (this.deps.now ?? (() => new Date()))();
+    const sk = sessionKey(at);
     const indexNotes: string[] = [];
-    const index = await this.cached(this.indexes, `${exchange}|${pages}`, () => loadIndex(http, exchange, { maxPages: pages })).catch(() => {
+    const index = await this.cached(this.indexes, `${exchange}|${pages}|${sk}`, () => loadIndex(http, exchange, { maxPages: pages }).then((b) => dropUnfinishedSession(b, at))).catch(() => {
       indexNotes.push(`${exchange} 지수 시세를 받지 못해 지수 관련 특징 없이 계산했습니다.`);
       return [] as Bar[];
     });
     const series: Series[] = [];
     const failures: string[] = [];
     for (let i = 0; i < tickers.length; i += 4) {
-      const got = await Promise.allSettled(tickers.slice(i, i + 4).map((t) => this.cached(this.stocks, `${t.ticker}|${pages}`, () => loadAdjusted(http, t.ticker, pages))));
+      const got = await Promise.allSettled(tickers.slice(i, i + 4).map((t) => this.cached(this.stocks, `${t.ticker}|${pages}|${sk}`, () => loadAdjusted(http, t.ticker, pages, at))));
       got.forEach((g, j) => (g.status === "fulfilled" ? series.push({ ticker: g.value.ticker, bars: g.value.bars, index }) : failures.push(tickers[i + j]!.ticker)));
     }
     // Too-short histories (recent listings) cannot be forecast; say so instead of dropping them silently.
@@ -238,13 +254,11 @@ export class ForecastService {
   }
 
   private get logFile() {
-    return this.deps.logDir ? path.join(this.deps.logDir, "forecasts.jsonl") : null;
+    return this.deps.logDir ? fileRecorder<ForecastLogRecord>(this.deps.logDir, "forecasts.jsonl") : null;
   }
 
   private async log(r: ForecastResult) {
-    const file = this.logFile;
-    if (!file) return;
-    const rec: ForecastLogRecord = {
+    await this.logFile?.record({
       schemaVersion: 1,
       recordedAt: (this.deps.now ?? (() => new Date()))().toISOString(),
       ticker: r.ticker,
@@ -252,35 +266,34 @@ export class ForecastService {
       lastCloseKRW: r.lastCloseKRW,
       horizons: r.horizons.map((h) => ({ horizon: h.horizon, probabilityUp: h.probabilityUp, direction: h.direction, confidence: h.confidence, expectedReturnPct: h.expectedReturnPct, range80Pct: h.range80Pct, backtestAccuracy: h.backtest.accuracy, edge: h.backtest.edge })),
       peers: r.trainedOn.tickers.filter((t) => t !== r.ticker),
-    };
-    await mkdir(path.dirname(file), { recursive: true });
-    await appendFile(file, `${JSON.stringify(rec)}\n`);
-  }
-
-  async readLog(): Promise<ForecastLogRecord[]> {
-    const file = this.logFile;
-    if (!file) return [];
-    const text = await readFile(file, "utf8").catch(() => "");
-    return text.split("\n").flatMap((l) => {
-      try {
-        return l.trim() ? [JSON.parse(l) as ForecastLogRecord] : [];
-      } catch {
-        return [];
-      }
     });
   }
 
-  /** Scores every logged forecast against the closes that followed it (fetches each ticker's recent bars once). */
+  readLog(): Promise<ForecastLogRecord[]> {
+    return this.logFile?.readAll() ?? Promise.resolve([]);
+  }
+
+  /**
+   * Scores every logged forecast against the closes that followed it. Each ticker's history is fetched once, deep
+   * enough to reach its oldest logged session, with splits folded in, so returns are measured within one series.
+   */
   async scoreLog(): Promise<{ scores: ForecastScore[]; summary: ReturnType<typeof summarizeForecastScores> }> {
     // The same stock and session forecast twice (e.g. a forecast and a ranking) is scored once: the latest record.
     const latest = new Map<string, ForecastLogRecord>();
     for (const r of await this.readLog()) latest.set(`${r.ticker}|${r.asOfDate}`, r);
     const log = [...latest.values()];
-    const http = this.http(4 * (new Set(log.map((r) => r.ticker)).size + 1));
+    const now = (this.deps.now ?? (() => new Date()))();
+    const tickers = [...new Set(log.map((r) => r.ticker))];
+    const pagesFor = (t: string) => {
+      const oldest = log.filter((r) => r.ticker === t).reduce((m, r) => (r.asOfDate < m ? r.asOfDate : m), "9999-12-31");
+      const days = (now.getTime() - Date.parse(`${oldest}T00:00:00Z`)) / 86_400_000;
+      return Math.min(40, Math.max(2, Math.ceil((days * 0.72) / 60) + 1)); // ~0.69 sessions per calendar day
+    };
+    const http = this.http(tickers.reduce((n, t) => n + pagesFor(t) + 1, 1));
     const bars = new Map<string, Bar[]>();
-    for (const t of new Set(log.map((r) => r.ticker))) {
+    for (const t of tickers) {
       try {
-        bars.set(t, (await loadHistory(http, t, { maxPages: 2 })).bars);
+        bars.set(t, (await loadAdjusted(http, t, pagesFor(t), now)).bars);
       } catch {
         bars.set(t, []);
       }
@@ -290,23 +303,29 @@ export class ForecastService {
   }
 }
 
-/** Pure: one row per horizon; "pending" until the h-th session after asOfDate is in `bars`. */
+/**
+ * Pure: one row per horizon, measured inside `bars` from the forecast session's close (so later splits cancel out).
+ * "pending" until the h-th later session exists; "unavailable" when the forecast session is not in `bars`.
+ */
 export function scoreForecast(r: ForecastLogRecord, bars: Bar[]): ForecastScore[] {
-  const after = bars.filter((b) => b.date > r.asOfDate).sort((a, b) => a.date.localeCompare(b.date));
+  const sorted = [...bars].sort((a, b) => a.date.localeCompare(b.date));
+  const i0 = sorted.findIndex((b) => b.date === r.asOfDate);
+  const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
   return r.horizons.map((h) => {
-    const t = after[h.horizon - 1];
-    const actual = t ? (t.close / r.lastCloseKRW - 1) * 100 : null;
+    const t = i0 >= 0 ? sorted[i0 + h.horizon] : undefined;
+    const actual = t ? (t.close / sorted[i0]!.close - 1) * 100 : null;
+    const range = finite(h.range80Pct?.[0]) && finite(h.range80Pct?.[1]) ? h.range80Pct : null;
     return {
       ticker: r.ticker,
       asOfDate: r.asOfDate,
       horizon: h.horizon,
-      status: t ? "scored" : "pending",
+      status: i0 < 0 ? "unavailable" : t ? "scored" : "pending",
       targetDate: t?.date ?? null,
       actualReturnPct: actual,
       predictedReturnPct: h.expectedReturnPct,
       probabilityUp: h.probabilityUp,
       directionHit: actual === null || actual === 0 ? null : (h.probabilityUp >= 0.5) === actual > 0,
-      withinRange80: actual === null ? null : actual >= h.range80Pct[0] && actual <= h.range80Pct[1],
+      withinRange80: actual === null || !range ? null : actual >= range[0] && actual <= range[1],
       confidence: h.confidence,
     };
   });
@@ -321,12 +340,16 @@ export function summarizeForecastScores(rows: ForecastScore[]) {
       n: xs.length,
       directionAccuracy: d.length ? hits / d.length : null,
       meanAbsErrorPct: xs.length ? xs.reduce((s, r) => s + Math.abs(r.predictedReturnPct - r.actualReturnPct!), 0) / xs.length : null,
-      range80Coverage: xs.length ? xs.filter((r) => r.withinRange80).length / xs.length : null,
+      range80Coverage: (() => {
+        const withRange = xs.filter((r) => r.withinRange80 !== null);
+        return withRange.length ? withRange.filter((r) => r.withinRange80).length / withRange.length : null;
+      })(),
       brier: xs.length ? xs.reduce((s, r) => s + (r.probabilityUp - (r.actualReturnPct! > 0 ? 1 : 0)) ** 2, 0) / xs.length : null,
     };
   };
   return {
     pending: rows.filter((r) => r.status === "pending").length,
+    unavailable: rows.filter((r) => r.status === "unavailable").length,
     all: by(() => true),
     byHorizon: Object.fromEntries([1, 2, 3].map((h) => [h, by((r) => r.horizon === h)])),
     byConfidence: Object.fromEntries(["high", "medium", "low"].map((c) => [c, by((r) => r.confidence === c)])),

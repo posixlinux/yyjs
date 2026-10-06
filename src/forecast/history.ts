@@ -81,17 +81,23 @@ export async function loadUsdKrw(http: HttpClient, from: string, to: string, ttl
 }
 
 /**
- * KRX limits a session's move to +-30% of the previous close, so a larger close-to-close jump is a corporate action
- * (split, reverse split, merger ratio) that Naver's raw closes do not adjust. Earlier bars are rescaled by the jump so
- * returns, features and labels never see a fake crash or rally. Returns the adjusted bars and the dates adjusted.
+ * KRX limits a session's move to +-30% of the previous close, so a larger close-to-close jump is a corporate action.
+ * One whose ratio sits within 8% of a split or consolidation factor (1/2, 1/5, x10, ...) is folded into the earlier
+ * bars, so a 1:5 split is not an -80% crash. Any other jump (a relisting after a long halt, a base-price reset after
+ * a merger or capital reduction) cannot be adjusted reliably, so the history before it is dropped rather than
+ * rescaled into fabricated prices.
  */
-export function adjustCorporateActions(bars: Bar[], limit = 0.3): { bars: Bar[]; adjusted: string[] } {
+const SPLIT_FACTORS = [2, 3, 4, 5, 8, 10, 20, 25, 50, 100];
+export function adjustCorporateActions(bars: Bar[], limit = 0.3): { bars: Bar[]; adjusted: string[]; truncatedBefore: string | null } {
   const out = bars.map((b) => ({ ...b }));
   const adjusted: string[] = [];
   let factor = 1;
   for (let i = out.length - 1; i > 0; i--) {
     const ratio = bars[i]!.close / bars[i - 1]!.close;
     if (ratio > 1 + limit + 0.01 || ratio < 1 - limit - 0.01) {
+      const k = ratio < 1 ? 1 / ratio : ratio;
+      const nearSplit = SPLIT_FACTORS.some((f) => Math.abs(k / f - 1) <= 0.08);
+      if (!nearSplit) return { bars: out.slice(i), adjusted: adjusted.reverse(), truncatedBefore: bars[i]!.date };
       factor *= ratio;
       adjusted.push(bars[i]!.date);
     }
@@ -101,5 +107,16 @@ export function adjustCorporateActions(bars: Bar[], limit = 0.3): { bars: Bar[];
       out[i - 1] = { ...b, open: scale(b.open), high: scale(b.high), low: scale(b.low), close: b.close * factor, volume: b.volume === null ? null : b.volume / factor };
     }
   }
-  return { bars: out, adjusted: adjusted.reverse() };
+  return { bars: out, adjusted: adjusted.reverse(), truncatedBefore: null };
+}
+
+/**
+ * Drops a bar dated today (KST) before the session is over (15:40 KST, ten minutes after the closing auction): during
+ * market hours it is a partial session whose "close" and volume would be taken for final values.
+ */
+export function dropUnfinishedSession(bars: Bar[], now: Date): Bar[] {
+  const k = new Date(now.getTime() + 9 * 3_600_000);
+  const today = k.toISOString().slice(0, 10);
+  const minutes = k.getUTCHours() * 60 + k.getUTCMinutes();
+  return bars.length && bars.at(-1)!.date === today && minutes < 15 * 60 + 40 ? bars.slice(0, -1) : bars;
 }

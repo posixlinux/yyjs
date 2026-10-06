@@ -144,7 +144,8 @@ function fit(train: Sample[], hi: number, o: EngineOptions): Fitted | null {
     return s;
   };
   let bestL = o.lambdaGrid[0]!, bestR = o.lambdaGrid[0]!, lossL = Infinity, lossR = Infinity;
-  if (rows.length - cut >= 30) {
+  if (o.lambdaGrid.length === 1) bestL = bestR = o.lambdaGrid[0]!;
+  else if (rows.length - cut >= 30) {
     const Xa = X.slice(0, cut);
     for (const lam of o.lambdaGrid) {
       const l = logLoss(fitLogistic(Xa, y.slice(0, cut), lam * cut, 12, w?.slice(0, cut)), cut);
@@ -358,6 +359,22 @@ export function backtestStats(oos: OosPrediction[], horizon: number): BacktestSt
 }
 
 /**
+ * Expected-return calibration in volatility units from resolved out-of-sample rows: the slope of realized on
+ * predicted (clamped to [0, 1], which shrinks a noisy regression toward zero), its intercept, and the 10%/90%
+ * residual quantiles that make the 80% range. Null with fewer than 100 rows.
+ */
+export function calibrateReturns(rows: OosPrediction[]): { slope: number; icpt: number; q: [number, number] } | null {
+  if (rows.length < 100) return null;
+  const zr = rows.map((x) => x.r / x.scale), za = rows.map((x) => x.actual / x.scale);
+  const mx = zr.reduce((a, v) => a + v, 0) / zr.length, my = za.reduce((a, v) => a + v, 0) / za.length;
+  const cov = zr.reduce((a, v, i) => a + (v - mx) * (za[i]! - my), 0), vx = zr.reduce((a, v) => a + (v - mx) ** 2, 0);
+  const slope = vx > 0 ? Math.max(0, Math.min(1, cov / vx)) : 0;
+  const icpt = my - slope * mx;
+  const res = za.map((v, i) => v - (icpt + slope * zr[i]!));
+  return { slope, icpt, q: [quantile(res, 0.1), quantile(res, 0.9)] };
+}
+
+/**
  * Walk-forward coverage of the 80% range: for rows dated d, the range comes from volatility-unit residuals of rows
  * whose outcome closed before d (re-estimated every `step` dates); returns the share of rows inside, per ticker.
  */
@@ -366,29 +383,20 @@ export function rangeCoverage(oos: OosPrediction[], step = 20): Map<string, { in
   const byDate = new Map<string, OosPrediction[]>();
   for (const o of oos) (byDate.get(o.date) ?? byDate.set(o.date, []).get(o.date)!).push(o);
   const out = new Map<string, { inside: number; n: number }>();
-  let q: [number, number] | null = null, since = Infinity, slope = 0, icpt = 0;
+  let cal: ReturnType<typeof calibrateReturns> = null, since = Infinity;
   for (const d of dates) {
     if (since >= step) {
-      const known = oos.filter((o) => o.endDate < d);
-      if (known.length >= 100) {
-        const zr = known.map((x) => x.r / x.scale), za = known.map((x) => x.actual / x.scale);
-        const mx = zr.reduce((a, v) => a + v, 0) / zr.length, my = za.reduce((a, v) => a + v, 0) / za.length;
-        const cov = zr.reduce((a, v, i) => a + (v - mx) * (za[i]! - my), 0), vx = zr.reduce((a, v) => a + (v - mx) ** 2, 0);
-        slope = vx > 0 ? Math.max(0, Math.min(1, cov / vx)) : 0;
-        icpt = my - slope * mx;
-        const res = za.map((v, i) => v - (icpt + slope * zr[i]!));
-        q = [quantile(res, 0.1), quantile(res, 0.9)];
-        since = 0;
-      }
+      const c = calibrateReturns(oos.filter((o) => o.endDate < d));
+      if (c) (cal = c), (since = 0);
     }
     since++;
-    if (!q) continue;
+    if (!cal) continue;
     for (const o of byDate.get(d)!) {
       const c = out.get(o.ticker) ?? { inside: 0, n: 0 };
-      const center = icpt + slope * (o.r / o.scale);
+      const center = cal.icpt + cal.slope * (o.r / o.scale);
       const z = o.actual / o.scale;
       c.n++;
-      if (z >= center + q[0] && z <= center + q[1]) c.inside++;
+      if (z >= center + cal.q[0] && z <= center + cal.q[1]) c.inside++;
       out.set(o.ticker, c);
     }
   }
@@ -456,20 +464,8 @@ export function forecastMany(series: Series[], o: EngineOptions = DEFAULT_OPTION
     const meta = fitMeta(first, o.halfLife);
     // Calibrate on every out-of-sample prediction (pooled is steadier than one stock's alone).
     const calib = oosAll.length >= 100 ? fitPlatt(oosAll.map((x) => x.p), oosAll.map((x) => (x.actual > 0 ? 1 : 0))) : null;
-    // Expected return, in volatility units: OOS slope of realized on predicted (clamped to [0, 1], which shrinks a
-    // noisy regression toward zero) and residual quantiles, rescaled by each stock's current volatility.
-    const zr = oosAll.map((x) => x.r / x.scale), za = oosAll.map((x) => x.actual / x.scale);
-    let slope = 0, icpt = 0;
-    if (oosAll.length >= 100) {
-      const mx = zr.reduce((a, v) => a + v, 0) / zr.length;
-      const my = za.reduce((a, v) => a + v, 0) / za.length;
-      const cov = zr.reduce((a, v, i) => a + (v - mx) * (za[i]! - my), 0);
-      const vx = zr.reduce((a, v) => a + (v - mx) ** 2, 0);
-      slope = vx > 0 ? Math.max(0, Math.min(1, cov / vx)) : 0;
-      icpt = my - slope * mx;
-    }
-    const resid = za.map((v, i) => v - (icpt + slope * zr[i]!));
-    const qLo = resid.length >= 50 ? quantile(resid, 0.1) : NaN, qHi = resid.length >= 50 ? quantile(resid, 0.9) : NaN;
+    const cal = calibrateReturns(oosAll);
+    const slope = cal?.slope ?? 0, icpt = cal?.icpt ?? 0, qLo = cal?.q[0] ?? NaN, qHi = cal?.q[1] ?? NaN;
     for (const s of want) {
       const xNow = lastOf.get(s.ticker)!.x;
       const raw0 = predict(model, xNow, h);

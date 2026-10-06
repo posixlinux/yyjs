@@ -333,4 +333,69 @@ describe("daily forecast schedule", () => {
     expect(out.KOSPI).toMatchObject({ ranked: 2, pooledAccuracy: 0.52 });
     expect(out.KOSDAQ).toEqual({ error: "down" });
   });
+
+  it("retries a day on which every exchange failed, no sooner than 30 minutes later", async () => {
+    const { startDailyForecasts } = await import("../src/forecast/schedule.js");
+    const dir = await mkdtemp(path.join(tmpdir(), "daily2-"));
+    let t = Date.parse("2026-10-07T16:30:00+09:00");
+    let up = false;
+    const calls: string[] = [];
+    const svc = {
+      rank: async ({ exchange }: { exchange: string }) => (calls.push(exchange), up ? { ranked: [], pooledBacktest: { accuracy: null, edge: "none" }, failures: [] } : Promise.reject(new Error("offline"))),
+      scoreLog: async () => ({ summary: {} }),
+    };
+    const d = startDailyForecasts(svc as never, { at: 16 * 60 + 10, dir, now: () => new Date(t) });
+    await d.tick(); // both fail
+    t += 10 * 60_000;
+    await d.tick(); // too soon to retry
+    up = true;
+    t += 25 * 60_000;
+    await d.tick(); // retried and succeeded
+    t += 60 * 60_000;
+    await d.tick(); // done for the day
+    d.stop();
+    expect(calls).toEqual(["KOSPI", "KOSDAQ", "KOSPI", "KOSDAQ"]);
+  });
+});
+
+describe("review fixes", () => {
+  it("drops today's bar before the close, keeps it after", async () => {
+    const { dropUnfinishedSession } = await import("../src/forecast/history.js");
+    const bars = [{ date: "2026-10-06" }, { date: "2026-10-07" }] as Bar[];
+    expect(dropUnfinishedSession(bars, new Date(Date.parse("2026-10-07T11:00:00+09:00"))).map((b) => b.date)).toEqual(["2026-10-06"]);
+    expect(dropUnfinishedSession(bars, new Date(Date.parse("2026-10-07T15:45:00+09:00"))).map((b) => b.date)).toEqual(["2026-10-06", "2026-10-07"]);
+    expect(dropUnfinishedSession(bars, new Date(Date.parse("2026-10-08T09:30:00+09:00")))).toHaveLength(2);
+  });
+
+  it("cuts history at a jump that is not a split ratio instead of rescaling it", async () => {
+    const { adjustCorporateActions } = await import("../src/forecast/history.js");
+    const bars = [10_000, 10_100, 18_200, 18_000].map((close, i) => ({ date: day(i), open: close, high: close, low: close, close, volume: 1 })); // +80% relisting
+    const r = adjustCorporateActions(bars);
+    expect(r.truncatedBefore).toBe(day(2));
+    expect(r.bars.map((b) => b.close)).toEqual([18_200, 18_000]);
+    expect(r.adjusted).toEqual([]);
+  });
+
+  it("scores within the fetched series, flags a session it cannot find, and ignores a missing range", () => {
+    const bars = [100, 110, 121, 50, 55].map((close, i) => ({ date: day(i), open: null, high: null, low: null, close, volume: null }));
+    const rec = { schemaVersion: 1 as const, recordedAt: "x", ticker: "1", asOfDate: day(1), lastCloseKRW: 110, peers: [], horizons: [1, 2].map((h) => ({ horizon: h, probabilityUp: 0.6, direction: "up", confidence: "low", expectedReturnPct: 1, range80Pct: [null, null] as unknown as [number, number], backtestAccuracy: null, edge: "none" })) };
+    const [h1, h2] = scoreForecast(rec, bars);
+    expect(h1!.actualReturnPct).toBeCloseTo(10, 9);
+    expect(h1!.withinRange80).toBeNull();
+    expect(h2!.actualReturnPct).toBeCloseTo((50 / 110 - 1) * 100, 9);
+    expect(scoreForecast({ ...rec, asOfDate: "2020-01-01" }, bars)[0]!.status).toBe("unavailable");
+  });
+
+  it("computes one ranking for concurrent identical requests", async () => {
+    const index = market(300, 0, 6);
+    const markets: Record<string, Bar[]> = Object.fromEntries(["111110", "222220", "333330"].map((t, i) => [t, market(300, 0.3, 80 + i)]));
+    const { f, calls } = naverFake(markets, index);
+    const universe = { get: async () => ({ fetchedAt: "x", scanned: 3, items: Object.keys(markets).map((t, i) => ({ ticker: t, name: t, exchange: "KOSPI", marketCapKRW: 10 - i })) }) };
+    const svc = new ForecastService({ fetch: f, pages: 5, universe: universe as never });
+    const [a, b] = await Promise.all([svc.rank({ count: 3 }), svc.rank({ count: 3 })]);
+    expect(a).toBe(b);
+    const n = calls.length;
+    await svc.rank({ count: 3 });
+    expect(calls.length).toBe(n);
+  }, 120_000);
 });

@@ -105,16 +105,16 @@ export function buildPredictionRecord(p: {
   };
 }
 
-/** Appends records as JSON lines to `<dir>/predictions.jsonl`. */
-export function fileRecorder(dir: string) {
-  const file = path.join(dir, "predictions.jsonl");
+/** Appends records as JSON lines to `<dir>/<name>` and reads them back (a torn last line is skipped). */
+export function fileRecorder<T = PredictionRecord>(dir: string, name = "predictions.jsonl") {
+  const file = path.join(dir, name);
   return {
     file,
-    async record(r: PredictionRecord): Promise<void> {
+    async record(r: T): Promise<void> {
       await mkdir(dir, { recursive: true });
       await appendFile(file, `${JSON.stringify(r)}\n`);
     },
-    async readAll(): Promise<PredictionRecord[]> {
+    async readAll(): Promise<T[]> {
       let text: string;
       try {
         text = await readFile(file, "utf8");
@@ -123,7 +123,7 @@ export function fileRecorder(dir: string) {
       }
       return text.split("\n").filter((l) => l.trim()).flatMap((l) => {
         try {
-          return [JSON.parse(l) as PredictionRecord];
+          return [JSON.parse(l) as T];
         } catch {
           return []; // a torn last line from a crash is skipped, not fatal
         }
