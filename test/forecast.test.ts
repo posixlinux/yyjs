@@ -126,6 +126,7 @@ describe("short-term forecast on synthetic markets", () => {
     for (const h of f.horizons) {
       expect(h.backtest.edge).toBe("none");
       expect(h.confidence).toBe("low");
+      expect(h.actionable).toBe(false); // no proven edge -> never a trade
       expect(Math.abs(h.probabilityUp - 0.5)).toBeLessThan(0.08);
       expect(h.range80Pct[0]).toBeLessThan(0);
       expect(h.range80Pct[1]).toBeGreaterThan(0);

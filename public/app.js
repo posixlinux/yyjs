@@ -553,7 +553,7 @@ function renderForecast(r) {
       el("td", {}, el("strong", { text: up ? "▲ 상승" : "▼ 하락" }), ` ${rate(up ? h.probabilityUp : 1 - h.probabilityUp)}`),
       el("td", { text: `${pct(h.expectedReturnPct)} (${won(h.expectedPriceKRW)})` }),
       el("td", { text: `${pct(h.range80Pct[0])} ~ ${pct(h.range80Pct[1])}` }),
-      el("td", {}, badge(CONF, h.confidence)),
+      el("td", {}, badge(CONF, h.confidence), h.actionable ? el("span", { class: "badge ok", text: "비용 넘는 기대수익" }) : null),
       el("td", { text: `${rate(b.accuracy)} (n=${b.n}; 항상상승 ${rate(b.alwaysUpAccuracy)}, 모멘텀 ${rate(b.momentumAccuracy)}; 확신 상위30% ${rate(b.confidentAccuracy)})` }));
   });
   return el("div", {},
@@ -579,7 +579,7 @@ function renderRanking(r) {
         el("td", { text: rate(x.probabilityUp) }),
         el("td", { text: `${pct(x.expectedReturnPct)} (${won(x.lastCloseKRW * (1 + x.expectedReturnPct / 100))})` }),
         el("td", { text: `${pct(x.range80Pct[0])} ~ ${pct(x.range80Pct[1])}` }),
-        el("td", {}, badge(CONF, x.confidence)),
+        el("td", {}, badge(CONF, x.confidence), x.actionable ? el("span", { class: "badge ok", text: "비용 넘는 기대수익" }) : null),
         el("td", { text: `${rate(x.backtestAccuracy)} (n=${x.backtestN})` }))))),
     el("ul", { class: "small" }, ...r.notes.map((n) => el("li", { text: n }))));
 }

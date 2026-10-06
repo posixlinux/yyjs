@@ -343,8 +343,16 @@ export type HorizonForecast = {
   /** 80% range of the return from the out-of-sample residuals. */
   range80Pct: [number, number];
   expectedPriceKRW: number;
+  /**
+   * The backtest found an edge AND the expected move clears a round trip's cost (ROUND_TRIP_COST_PCT) in the
+   * forecast direction. Everything else is information, not a trade.
+   */
+  actionable: boolean;
   backtest: BacktestStats;
 };
+
+/** Approximate KRX round-trip cost: two brokerage fees plus the sell-side transaction tax (percent of price). */
+export const ROUND_TRIP_COST_PCT = 0.25;
 
 export type ForecastResult = {
   ticker: string;
@@ -410,6 +418,7 @@ export function forecastMany(series: Series[], o: EngineOptions = DEFAULT_OPTION
         expectedReturnPct: pct(exp),
         range80Pct: [pct(exp + qLo * scaleNow), pct(exp + qHi * scaleNow)],
         expectedPriceKRW: s.bars.at(-1)!.close * Math.exp(exp),
+        actionable: edge && Math.abs(pct(exp)) > ROUND_TRIP_COST_PCT && (pUp >= 0.5) === exp > 0,
         backtest: stats,
       });
     }

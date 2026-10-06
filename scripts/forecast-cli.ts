@@ -27,7 +27,7 @@ if (argv.includes("--rank")) {
     const b = r.pooledBacktest;
     console.log(`${r.exchange} 상위 종목 ${r.horizon}거래일 상승 확률 순위 · 종목군 백테스트 적중 ${rate(b.accuracy)} (n=${b.n}, 항상상승 ${rate(b.alwaysUpAccuracy)}, 모멘텀 ${rate(b.momentumAccuracy)}) · 우위 ${b.edge === "detected" ? "있음" : "없음"}`);
     console.log(`보정표(예측 상승확률 → 실제 상승 비율): ${b.calibration.map((c) => `${(c.from * 100).toFixed(0)}~${(c.to * 100).toFixed(0)}%: ${rate(c.actualUpRate)} (n=${c.n})`).join(" · ")}`);
-    r.ranked.forEach((x, i) => console.log(`${String(i + 1).padStart(2)}. ${x.ticker} ${(x.name ?? "").padEnd(12)} 상승확률 ${rate(x.probabilityUp)} 예상 ${pct(x.expectedReturnPct, 2)} (80% ${pct(x.range80Pct[0])}~${pct(x.range80Pct[1])}) 신뢰도 ${x.confidence}`));
+    r.ranked.forEach((x, i) => console.log(`${String(i + 1).padStart(2)}. ${x.ticker} ${(x.name ?? "").padEnd(12)} 상승확률 ${rate(x.probabilityUp)} 예상 ${pct(x.expectedReturnPct, 2)} (80% ${pct(x.range80Pct[0])}~${pct(x.range80Pct[1])}) 신뢰도 ${x.confidence}${x.actionable ? " ★" : ""}`));
     for (const n of r.notes) console.log(`- ${n}`);
   }
 } else if (argv.includes("--score")) {
@@ -57,7 +57,7 @@ if (argv.includes("--rank")) {
     for (const h of r.horizons) {
       const b = h.backtest;
       console.log(
-        `  ${h.horizon}거래일 후: ${h.direction === "up" ? "상승" : "하락"} 확률 ${rate(h.direction === "up" ? h.probabilityUp : 1 - h.probabilityUp)} · 예상 ${pct(h.expectedReturnPct, 2)} (80% 범위 ${pct(h.range80Pct[0], 1)} ~ ${pct(h.range80Pct[1], 1)}) · 신뢰도 ${h.confidence}`,
+        `  ${h.horizon}거래일 후: ${h.direction === "up" ? "상승" : "하락"} 확률 ${rate(h.direction === "up" ? h.probabilityUp : 1 - h.probabilityUp)} · 예상 ${pct(h.expectedReturnPct, 2)} (80% 범위 ${pct(h.range80Pct[0], 1)} ~ ${pct(h.range80Pct[1], 1)}) · 신뢰도 ${h.confidence}${h.actionable ? " · 비용 넘는 기대수익" : ""}`,
       );
       console.log(`      백테스트 ${b.from}~${b.to} n=${b.n}: 적중 ${rate(b.accuracy)} (항상상승 ${rate(b.alwaysUpAccuracy)}, 모멘텀 ${rate(b.momentumAccuracy)}) · 상위30% 확신 적중 ${rate(b.confidentAccuracy)} · 우위 ${b.edge === "detected" ? "있음" : "없음"}`);
       console.log(`      보정표(예측 상승확률 → 실제 상승 비율): ${b.calibration.map((c) => `${(c.from * 100).toFixed(0)}~${(c.to * 100).toFixed(0)}%: ${rate(c.actualUpRate)} (n=${c.n})`).join(" · ")}`);

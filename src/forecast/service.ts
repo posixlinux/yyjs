@@ -195,7 +195,7 @@ export class ForecastService {
     const rows = results
       .map((r) => {
         const h = r.horizons.find((x) => x.horizon === horizon)!;
-        return { ticker: r.ticker, name: name.get(r.ticker) ?? null, asOfDate: r.asOfDate, lastCloseKRW: r.lastCloseKRW, probabilityUp: h.probabilityUp, expectedReturnPct: h.expectedReturnPct, range80Pct: h.range80Pct, confidence: h.confidence, backtestAccuracy: h.backtest.accuracy, backtestN: h.backtest.n };
+        return { ticker: r.ticker, name: name.get(r.ticker) ?? null, asOfDate: r.asOfDate, lastCloseKRW: r.lastCloseKRW, probabilityUp: h.probabilityUp, expectedReturnPct: h.expectedReturnPct, range80Pct: h.range80Pct, confidence: h.confidence, actionable: h.actionable, backtestAccuracy: h.backtest.accuracy, backtestN: h.backtest.n };
       })
       .sort((a, b) => b.probabilityUp - a.probabilityUp || b.expectedReturnPct - a.expectedReturnPct);
     for (const r of results) await this.log(r).catch(() => undefined);
