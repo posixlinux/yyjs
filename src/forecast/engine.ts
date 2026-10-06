@@ -196,7 +196,7 @@ export function fitMeta(rows: OosPrediction[]): Meta | null {
   const act = rows.map((o) => o.actual);
   const lo = quantile(act, 0.01), hi = quantile(act, 0.99);
   return {
-    cls: fitLogistic(rows.map(metaX), y, 0.05 * rows.length, 30),
+    cls: fitLogistic(rows.map(metaX), y, 1e-3 * rows.length, 30),
     reg: fitRidge(rows.map(metaR), act.map((v) => Math.max(lo, Math.min(hi, v))), 1e-6 * rows.length),
     n: rows.length,
   };
