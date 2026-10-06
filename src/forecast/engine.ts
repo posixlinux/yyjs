@@ -82,6 +82,14 @@ export function buildSamples(series: Series[]): Sample[] {
   return out.sort((a, b) => a.date.localeCompare(b.date) || a.ticker.localeCompare(b.ticker));
 }
 
+// Returns are modelled in units of the stock's own recent volatility (vol20 x sqrt(h)): pooled stocks then share one
+// scale, the ridge is not dominated by the most volatile names, and ranges come out stock-specific.
+const I_VOL20 = FEATURE_NAMES.indexOf("vol20");
+export const volScale = (x: number[], h: number) => {
+  const v = x[I_VOL20]!;
+  return (Number.isFinite(v) ? Math.max(v, 0.003) : 0.02) * Math.sqrt(h);
+};
+
 type Fitted = { scaler: Scaler; logistic: Linear; ridge: Linear; gbm: Gbm | null; baseRate: number };
 
 function fit(train: Sample[], hi: number, o: EngineOptions): Fitted | null {
@@ -92,7 +100,7 @@ function fit(train: Sample[], hi: number, o: EngineOptions): Fitted | null {
   const X = X0.map((x) => transform(scaler, x));
   const y: number[] = rows.map((s) => (s.fwd[hi]! > 0 ? 1 : 0));
   // Returns are winsorized for the ridge fit so a single limit-up/limit-down day does not set the slope.
-  const r = rows.map((s) => s.fwd[hi]!);
+  const r = rows.map((s) => s.fwd[hi]! / volScale(s.x, hi + 1));
   const lo = quantile(r, 0.01), up = quantile(r, 0.99);
   const rw = r.map((v) => Math.max(lo, Math.min(up, v)));
   // Regularization chosen on the most recent 20% of the training window (fit on the older 80%), then refit on all:
@@ -130,15 +138,15 @@ function fit(train: Sample[], hi: number, o: EngineOptions): Fitted | null {
   };
 }
 
-const predict = (f: Fitted, x: number[]) => {
+const predict = (f: Fitted, x: number[], h: number) => {
   const z = transform(f.scaler, x);
   const p = sigmoid(linear(f.logistic, z));
-  return { p, r: linear(f.ridge, z), pg: f.gbm ? gbmProb(f.gbm, z) : p };
+  return { p, r: linear(f.ridge, z) * volScale(x, h), pg: f.gbm ? gbmProb(f.gbm, z) : p };
 };
 
 const PAST = (["ret1", "ret2", "ret3"] as const).map((n) => FEATURE_NAMES.indexOf(n));
 
-export type OosPrediction = { ticker: string; date: string; endDate: string; p: number; pg: number; r: number; baseRate: number; actual: number; past: number; ret1: number };
+export type OosPrediction = { ticker: string; date: string; endDate: string; scale: number; p: number; pg: number; r: number; baseRate: number; actual: number; past: number; ret1: number };
 
 /** Walk-forward out-of-sample predictions for horizon index `hi` (0 -> 1 session). */
 export function walkForward(samples: Sample[], hi: number, o: EngineOptions = DEFAULT_OPTIONS): OosPrediction[] {
@@ -162,8 +170,8 @@ export function walkForward(samples: Sample[], hi: number, o: EngineOptions = DE
     for (const s of byDate.get(d)!) {
       const actual = s.fwd[hi]!;
       if (!Number.isFinite(actual)) continue;
-      const { p, pg, r } = predict(model, s.x);
-      out.push({ ticker: s.ticker, date: d, endDate: s.endDate[hi]!, p, pg, r, baseRate: model.baseRate, actual, past: s.x[PAST[hi]!]!, ret1: s.x[PAST[0]!]! });
+      const { p, pg, r } = predict(model, s.x, hi + 1);
+      out.push({ ticker: s.ticker, date: d, endDate: s.endDate[hi]!, scale: volScale(s.x, hi + 1), p, pg, r, baseRate: model.baseRate, actual, past: s.x[PAST[hi]!]!, ret1: s.x[PAST[0]!]! });
     }
   }
   return out;
@@ -354,7 +362,7 @@ export function forecast(target: Series, peers: Series[] = [], o: EngineOptions 
     const stats = backtestStats(oos, h);
     const model = fit(samples.filter((s) => Number.isFinite(s.fwd[hi]!)).slice(-o.maxTrain), hi, o);
     if (!model) throw new Error(`Not enough history to train the ${h}-session model`);
-    const raw0 = predict(model, xNow);
+    const raw0 = predict(model, xNow, h);
     const meta = fitMeta(first);
     const now = { ...raw0, past: xNow[PAST[hi]!]!, ret1: xNow[PAST[0]!]! };
     const raw = meta ? metaPredict(meta, now) : { ...raw0, p: (raw0.p + raw0.pg) / 2 };
@@ -362,17 +370,21 @@ export function forecast(target: Series, peers: Series[] = [], o: EngineOptions 
     const calib = oosAll.length >= 100 ? fitPlatt(oosAll.map((x) => x.p), oosAll.map((x) => (x.actual > 0 ? 1 : 0))) : null;
     const pUp = calib ? applyPlatt(calib, raw.p) : model.baseRate;
     // Expected return: OOS slope of realized on predicted, clamped to [0, 1] (shrinks a noisy ridge toward zero).
+    // In volatility units: OOS slope of realized on predicted (clamped to [0, 1]) and residual quantiles, rescaled by
+    // this stock's current volatility.
+    const zr = oosAll.map((x) => x.r / x.scale), za = oosAll.map((x) => x.actual / x.scale);
     let slope = 0, icpt = 0;
     if (oosAll.length >= 100) {
-      const mx = oosAll.reduce((s, x) => s + x.r, 0) / oosAll.length;
-      const my = oosAll.reduce((s, x) => s + x.actual, 0) / oosAll.length;
-      const cov = oosAll.reduce((s, x) => s + (x.r - mx) * (x.actual - my), 0);
-      const vx = oosAll.reduce((s, x) => s + (x.r - mx) ** 2, 0);
+      const mx = zr.reduce((s, v) => s + v, 0) / zr.length;
+      const my = za.reduce((s, v) => s + v, 0) / za.length;
+      const cov = zr.reduce((s, v, i) => s + (v - mx) * (za[i]! - my), 0);
+      const vx = zr.reduce((s, v) => s + (v - mx) ** 2, 0);
       slope = vx > 0 ? Math.max(0, Math.min(1, cov / vx)) : 0;
       icpt = my - slope * mx;
     }
-    const exp = icpt + slope * raw.r;
-    const resid = oosAll.map((x) => x.actual - (icpt + slope * x.r));
+    const scaleNow = volScale(xNow, h);
+    const exp = (icpt + slope * (raw.r / scaleNow)) * scaleNow;
+    const resid = za.map((v, i) => (v - (icpt + slope * zr[i]!)) * scaleNow);
     const lo = resid.length >= 50 ? quantile(resid, 0.1) : NaN;
     const hiQ = resid.length >= 50 ? quantile(resid, 0.9) : NaN;
     const pct = (v: number) => (Math.exp(v) - 1) * 100;

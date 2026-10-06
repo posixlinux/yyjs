@@ -91,6 +91,20 @@ describe("point-in-time features", () => {
 });
 
 describe("short-term forecast on synthetic markets", () => {
+  it("gives a volatile stock a proportionally wider range than a calm one when pooled together", () => {
+    const index = market(600, 0, 40);
+    const calm = Array.from({ length: 3 }, (_, i) => ({ ticker: `30000${i}`, bars: market(600, 0, 41 + i, 0.01), index }));
+    const wild = Array.from({ length: 3 }, (_, i) => ({ ticker: `40000${i}`, bars: market(600, 0, 51 + i, 0.04), index }));
+    const width = (f: ReturnType<typeof forecast>) => f.horizons[0]!.range80Pct[1] - f.horizons[0]!.range80Pct[0];
+    const fc = forecast(calm[0]!, [...calm.slice(1), ...wild]);
+    const fw = forecast(wild[0]!, [...wild.slice(1), ...calm]);
+    expect(width(fw) / width(fc)).toBeGreaterThan(2.5);
+    expect(width(fw) / width(fc)).toBeLessThan(6);
+    // a one-session 80% range of a 1%-volatility stock is roughly +-1.3%
+    expect(width(fc)).toBeGreaterThan(1.5);
+    expect(width(fc)).toBeLessThan(4);
+  }, 180_000);
+
   it("reports no edge and a near-base-rate probability on a random walk", () => {
     const target = { ticker: "111110", bars: market(700, 0, 11), index: market(700, 0, 12) };
     const peers = [21, 31].map((seed, i) => ({ ticker: `22222${i}`, bars: market(700, 0, seed), index: target.index }));
@@ -102,7 +116,7 @@ describe("short-term forecast on synthetic markets", () => {
       expect(h.range80Pct[0]).toBeLessThan(0);
       expect(h.range80Pct[1]).toBeGreaterThan(0);
     }
-    expect(f.notes[0]).toMatch(/coin flips/);
+    expect(f.notes[0]).toMatch(/동전 던지기/);
   }, 120_000);
 
   it("detects real short-term momentum and predicts its direction", () => {
