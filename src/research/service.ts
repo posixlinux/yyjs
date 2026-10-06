@@ -240,7 +240,7 @@ export class ResearchService {
           draftDataset = { status: reviewed ? "reviewed" : "provisional", serverRepaired: checked.reasons.some((r) => r.code === "DATASET_REPAIRED"), dataset: checked.dataset ?? proposed };
           if (checked.dataset && !reasons.some((r) => r.severity === "blocking")) {
             try {
-              analysis = analyze(checked.dataset, asOf);
+              analysis = analyze(checked.dataset, asOf, { reportedEps: ev.market.quarterlyActuals ?? [] });
             } catch (e) {
               block(e instanceof AppError ? e.code : "MODEL_FAILED", this.msg(e));
             }

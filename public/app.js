@@ -315,7 +315,7 @@ function renderAnalysis(a, valuation) {
       line("귀속 매출", (s) => big(s.totals && s.totals.revenueKRW)),
       line("영업이익", (s) => big(s.totals && s.totals.operatingProfitKRW)),
       line("보통주 귀속이익", (s) => big(s.totals && s.totals.commonEarningsKRW)),
-      line("연환산 EPS", (s) => (v(s).status === "available" ? won(v(s).annualizedEpsKRW) : "-")),
+      line("연간 EPS(PER 적용)", (s) => (v(s).status === "available" ? `${won(v(s).annualizedEpsKRW)}${v(s).epsBasis === "quarter_x4" ? " (분기×4)" : " (최근 3분기 실적+예측)"}` : "-")),
       line("적용 PER", (s) => (v(s).status === "available" ? `${v(s).peMultiple}배` : "-")),
       line("목표가(프록시)", (s) => (v(s).status === "available" ? won(v(s).targetPriceKRW) : "산출 불가")),
       line("현재가 대비", (s) => (v(s).status === "available" ? pct(v(s).upsidePct) : "-")),
