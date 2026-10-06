@@ -286,3 +286,14 @@ describe("forecast log scoring", () => {
     expect(summary.all.n).toBe(3);
   });
 });
+
+describe("degraded data sources", () => {
+  it("still forecasts when the index endpoint fails, and says so", async () => {
+    const markets = { "111110": market(300, 0.3, 8), "222220": market(300, 0.3, 9), "333330": market(300, 0.3, 10) };
+    const { f } = naverFake(markets, market(300, 0, 6));
+    const noIndex = (async (input: string | URL | Request, init?: RequestInit) => (String(input).includes("/api/index/") ? new Response("gone", { status: 404 }) : f(input, init))) as typeof fetch;
+    const r = await new ForecastService({ fetch: noIndex, pages: 5 }).run("111110", { peers: ["222220", "333330"] });
+    expect(r.horizons).toHaveLength(3);
+    expect(r.notes.join(" ")).toMatch(/지수 시세를 받지 못해/);
+  }, 120_000);
+});

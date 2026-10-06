@@ -124,7 +124,13 @@ export class ForecastService {
     const pages = this.deps.pages ?? 12;
     const http = this.http((2 + pages * 2) * (2 + Math.min(MAX_PEERS, opts.peers?.length ?? peerCount)));
     const stock = (t: string) => this.cached(this.stocks, `${t}|${pages}`, () => loadAdjusted(http, t, pages));
-    const index = (ex: ListedExchange) => this.cached(this.indexes, `${ex}|${pages}`, () => loadIndex(http, ex, { maxPages: pages }));
+    const indexNotes: string[] = [];
+    // The index only feeds market features: without it the forecast still runs (those features stay empty).
+    const index = (ex: ListedExchange) =>
+      this.cached(this.indexes, `${ex}|${pages}`, () => loadIndex(http, ex, { maxPages: pages })).catch(() => {
+        if (!indexNotes.length) indexNotes.push(`${ex} 지수 시세를 받지 못해 지수 관련 특징 없이 계산했습니다.`);
+        return [] as Bar[];
+      });
     let target;
     try {
       const s = await stock(ticker);
@@ -152,7 +158,7 @@ export class ForecastService {
     } catch (e) {
       throw new AppError(422, "INSUFFICIENT_HISTORY", (e as Error).message);
     }
-    result.notes.push(...fxNotes);
+    result.notes.push(...indexNotes, ...fxNotes);
     if (target.adjusted.length) result.notes.push(`가격제한폭(±30%)을 넘는 변동을 액면분할·병합으로 보고 이전 가격을 보정했습니다: ${target.adjusted.join(", ")}.`);
     if (target.name) result.notes.push(`${target.name} (${target.exchange}), 시장 지수 ${target.indexName} 사용.`);
     if (peerFailures.length) result.notes.push(`시세 이력을 받지 못해 제외한 동종 종목: ${peerFailures.join(", ")}.`);
@@ -178,8 +184,10 @@ export class ForecastService {
     }
     const pages = this.deps.pages ?? 12;
     const http = this.http((2 + pages) * (count + 2));
-    const index = await this.cached(this.indexes, `${exchange}|${pages}`, () => loadIndex(http, exchange, { maxPages: pages })).catch((e: Error) => {
-      throw new AppError(502, "HISTORY_UNAVAILABLE", `Could not load the ${exchange} index: ${e.message}`);
+    const indexNotes: string[] = [];
+    const index = await this.cached(this.indexes, `${exchange}|${pages}`, () => loadIndex(http, exchange, { maxPages: pages })).catch(() => {
+      indexNotes.push(`${exchange} 지수 시세를 받지 못해 지수 관련 특징 없이 계산했습니다.`);
+      return [] as Bar[];
     });
     const series: Series[] = [];
     const failures: string[] = [];
@@ -192,7 +200,7 @@ export class ForecastService {
     failures.push(...short.map((t) => `${t} (상장 후 ${MIN_HISTORY_FOR}거래일 미만)`));
     if (series.length - short.length < 3) throw new AppError(502, "HISTORY_UNAVAILABLE", "Too few price histories could be loaded to rank");
     const fxNotes: string[] = [];
-    const fx = await this.fx(http, index, fxNotes);
+    const fx = await this.fx(http, index.length ? index : series[0]?.bars ?? [], fxNotes);
     const { results, pooled } = await runMany(series.map((s) => ({ ...s, fx })), { ...DEFAULT_OPTIONS, ...this.deps.options });
     const name = new Map(tickers.map((t) => [t.ticker, t.name]));
     const rows = results
@@ -212,6 +220,7 @@ export class ForecastService {
         pooled.find((p) => p.horizon === horizon)!.edge === "detected"
           ? "이 종목군 전체의 워크포워드 백테스트에서 단순 기준을 유의하게 넘었습니다. 그래도 개별 종목의 신뢰도와 범위를 함께 보세요."
           : "이 종목군 전체의 워크포워드 백테스트에서 단순 기준을 유의하게 넘지 못했습니다. 순위는 동전 던지기와 크게 다르지 않을 수 있습니다.",
+        ...indexNotes,
         ...fxNotes,
         "투자 권고가 아닙니다.",
       ],
