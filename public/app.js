@@ -67,11 +67,11 @@ async function loadList() {
     list.replaceChildren(...r.items.map((it) => {
       const cap = it.marketCapKRW > 0 ? big(it.marketCapKRW) : "";
       const n = el("div", { class: "item", role: "option", tabindex: "0", "data-ticker": it.ticker, "aria-selected": $("ticker").value === it.ticker },
-        el("span", {}, el("strong", { text: it.name }), " ", el("span", { class: "code", text: it.ticker })),
+        el("span", {}, el("strong", { text: it.name }), " ", el("span", { class: "code", text: `${it.ticker} · ${it.exchange === "KOSDAQ" ? "코스닥" : "코스피"}` })),
         el("span", { class: "cap", text: cap }));
       return n;
     }));
-    $("listInfo").textContent = r.total ? `일반주 ${r.total.toLocaleString("ko-KR")}종목 중 ${r.items.length}개 표시 (시가총액 순)` : "검색 결과가 없습니다. 6자리 종목 번호를 직접 입력할 수도 있습니다.";
+    $("listInfo").textContent = r.total ? `KOSPI·KOSDAQ 보통주 ${r.total.toLocaleString("ko-KR")}종목 중 ${r.items.length}개 표시 (시가총액 순)` : "검색 결과가 없습니다. 6자리 종목 번호를 직접 입력할 수도 있습니다.";
   } catch (e) {
     if (seq !== searchSeq) return;
     $("list").replaceChildren();
@@ -90,7 +90,7 @@ $("list").addEventListener("keydown", (e) => {
 $("q").addEventListener("input", () => {
   clearTimeout(debounce);
   const q = $("q").value.trim();
-  if (/^\d{6}$/.test(q)) $("ticker").value = q; // typing a full ticker selects it
+  if (/^[0-9][0-9A-Za-z]{5}$/.test(q)) $("ticker").value = q.toUpperCase(); // typing a full ticker selects it
   debounce = setTimeout(loadList, 250);
 });
 
@@ -119,7 +119,7 @@ function renderEvidence(ev) {
       ? "수집 안 함 — 서버에 DART_API_KEY가 설정되지 않았습니다"
       : `정기보고서 ${filings.length}건 · 재무제표 ${statements.length}건` }),
     el("dt", { text: "뉴스" }), el("dd", { text: `${news.length}건` }),
-    ...(ev.competitors ? [el("dt", { text: "경쟁사 공시 매출" }), el("dd", { text: ev.competitors.length ? ev.competitors.map((c) => `${c.market}:${c.code}${c.name ? ` ${c.name}` : ""} (${c.system}, ${c.periods.length}개 기간)`).join(" · ") : "수집되지 않음" })] : []),
+    ...(ev.competitors ? [el("dt", { text: "경쟁사 공시 매출" }), el("dd", { text: ev.competitors.length ? `${ev.competitorSelection === "naver_industry" ? "[자동 선정 · 네이버 동종업종] " : ""}${ev.competitors.map((c) => `${c.market}:${c.code}${c.name ? ` ${c.name}` : ""} (${c.system}, ${c.periods.length}개 기간)`).join(" · ")}` : "수집되지 않음" })] : []),
   ));
   const prov = ev.providers || {};
   if (prov.dart?.status === "not_configured")
@@ -425,13 +425,10 @@ const JOB_WAIT_SECONDS = 55;
 $("form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   if (running) return;
-  const ticker = $("ticker").value.trim();
-  if (!/^\d{6}$/.test(ticker)) { $("ticker").focus(); return; }
+  const ticker = $("ticker").value.trim().toUpperCase();
+  if (!/^[0-9][0-9A-Z]{5}$/.test(ticker)) { $("ticker").focus(); return; }
   const mode = new FormData($("form")).get("mode");
   const body = { ticker };
-  if ($("asOf").value) body.asOf = $("asOf").value;
-  const competitors = ($("competitors")?.value || "").split(/[\s,]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
-  if (competitors.length) body.competitors = competitors;
   if (apiKeyRequired) { try { sessionStorage.setItem("yyKey", $("apiKey").value); } catch { /* storage unavailable */ } }
 
   running = true;

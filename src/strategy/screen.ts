@@ -75,8 +75,8 @@ export function evaluateOne(c: CandidateInput, config: StrategyConfig, decisionA
   if (c.forecast.ticker !== c.ticker || c.currentConsensus.ticker !== c.ticker || c.priorConsensus.ticker !== c.ticker || c.catalyst.ticker !== c.ticker) add("TICKER_MISMATCH", "forecast/consensus/catalyst ticker does not match the candidate ticker");
   const company = c.forecast.company;
   if (!company || c.forecast.scope !== "consolidated") add("COMPANY_SCOPE_MISSING", "Company/exchange/security type and consolidated scope must be declared");
-  else if (company.exchange !== "KOSPI" || company.securityType !== "common_stock" || classifySecurity({ ticker: c.ticker, names: [company.name] }).length)
-    add("NOT_KOSPI_COMMON", "Strategy requires declared KOSPI common shares passing the security filter");
+  else if (!["KOSPI", "KOSDAQ"].includes(company.exchange) || company.securityType !== "common_stock" || classifySecurity({ ticker: c.ticker, names: [company.name] }).length)
+    add("NOT_KOSPI_COMMON", "Strategy requires declared KOSPI/KOSDAQ common shares passing the security filter");
 
   const forecastQuarters = c.forecast.quarters.map((q) => q.quarter);
   const currentHorizon = c.currentConsensus.horizonQuarters;

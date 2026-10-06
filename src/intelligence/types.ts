@@ -49,7 +49,7 @@ export const EvidenceDocumentSchema = z
 
 export const EvidenceInputSchema = z
   .object({
-    ticker: z.string().regex(/^\d{6}$/, "six-digit KOSPI ticker"),
+    ticker: z.string().regex(/^[0-9][0-9A-Z]{5}$/, "six-character KRX ticker"),
     asOf: isoDate,
     documents: z.array(EvidenceDocumentSchema).min(1).max(LIMITS.maxDocuments),
   })

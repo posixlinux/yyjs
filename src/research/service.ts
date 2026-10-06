@@ -52,19 +52,21 @@ export class ResearchService {
   /** Common stocks only: a preferred-share ticker is refused before any job or network call. */
   private requireCommonStock(ticker: string) {
     const r = classifySecurity({ ticker });
-    if (r.length) throw new AppError(422, "NOT_COMMON_STOCK", `Ticker ${ticker} is not a KOSPI common stock: ${describeRejections(r)}`, r, "Only common shares of operating companies are analysed (no preferred shares, ETF/ETN, REITs, infrastructure funds or SPACs).");
+    if (r.length) throw new AppError(422, "NOT_COMMON_STOCK", `Ticker ${ticker} is not a KOSPI/KOSDAQ common stock: ${describeRejections(r)}`, r, "Only common shares of operating companies are analysed (no preferred shares, ETF/ETN, REITs, infrastructure funds or SPACs).");
   }
 
+  // The analysis date is always today (Asia/Seoul): the collected quote, consensus and news are live snapshots, so a
+  // past date could only be served with lookahead. A requested asOf is ignored.
   startAnalysis(req: { ticker: string; asOf?: string; competitors?: string[] }) {
     this.requireCommonStock(req.ticker);
-    const asOf = this.resolveAsOf(req.asOf);
+    const asOf = this.resolveAsOf();
     const competitors = req.competitors ?? [];
     return this.submit("analysis", req.ticker, asOf, competitors, (ticker, a) => this.analysisWork(ticker, a, competitors));
   }
 
   startResearch(req: { ticker: string; asOf?: string; competitors?: string[] }) {
     this.requireCommonStock(req.ticker);
-    const asOf = this.resolveAsOf(req.asOf);
+    const asOf = this.resolveAsOf();
     const competitors = req.competitors ?? [];
     return this.submit("research", req.ticker, asOf, competitors, (ticker, a) => this.researchWork(ticker, a, competitors));
   }
@@ -137,8 +139,8 @@ export class ResearchService {
       const notCommon = ev.issues?.find((i) => i.code === "not_common_stock");
       if (notCommon)
         return { outcome: { status: "failed", error: { code: "NOT_COMMON_STOCK", message: this.msg(notCommon.message) }, result: this.clean({ ticker, asOf, evidence: summarizeEvidence(ev, buildDocuments(ev)) }) } };
-      if (ev.issues?.some((i) => i.code === "not_kospi"))
-        return { outcome: { status: "failed", error: { code: "NOT_KOSPI", message: `Ticker ${ticker} is not a KOSPI listing; only KOSPI companies are supported` }, result: this.clean({ ticker, asOf, evidence: summarizeEvidence(ev, buildDocuments(ev)) }) } };
+      if (ev.issues?.some((i) => i.code === "not_listed"))
+        return { outcome: { status: "failed", error: { code: "NOT_LISTED", message: `Ticker ${ticker} is not a KOSPI/KOSDAQ listing; only KOSPI and KOSDAQ common stocks are supported` }, result: this.clean({ ticker, asOf, evidence: summarizeEvidence(ev, buildDocuments(ev)) }) } };
       return { ev };
     } catch (e) {
       if (signal.aborted) throw e; // job manager reports timeout / shutdown
@@ -190,7 +192,7 @@ export class ResearchService {
       const block = (code: string, message: string, details?: unknown) => reasons.push({ code, severity: "blocking", message, ...(details !== undefined && { details }) });
       const warn = (code: string, message: string, details?: unknown) => reasons.push({ code, severity: "warning", message, ...(details !== undefined && { details }) });
 
-      if (ev.company.exchange !== "KOSPI") warn("EXCHANGE_UNVERIFIED", "KOSPI listing could not be verified by Naver or DART; the valuation relies on the dataset's own KOSPI claim");
+      if (!ev.company.exchange) warn("EXCHANGE_UNVERIFIED", "KOSPI/KOSDAQ listing could not be verified by Naver or DART; the valuation relies on the dataset's own exchange claim");
       if (!ev.market.quote)
         asOf < today
           ? warn("HISTORICAL_QUOTE_UNAVAILABLE", `asOf ${asOf} is before today (${today}); Naver only serves the latest quote snapshot, so no dated quote exists for that date. The dataset's quote (from the documents) is used unverified; use today's date for a verified quote.`)
@@ -362,6 +364,10 @@ export class ResearchService {
     if (!parsed.success) return { dataset: null, reasons: [{ code: "DATASET_SCHEMA_INVALID", severity: "blocking", message: "Proposed dataset failed schema validation", details: parsed.error.issues.slice(0, 20).map((i) => ({ path: i.path.join("."), message: i.message })) }] };
     let ds = parsed.data;
     if (ds.company.ticker !== ticker) reasons.push({ code: "DATASET_TICKER_MISMATCH", severity: "blocking", message: `Dataset is for ${ds.company.ticker}, request was ${ticker}` });
+    if (ev.company.exchange && ds.company.exchange !== ev.company.exchange) {
+      reasons.push({ code: "DATASET_EXCHANGE_REPLACED", severity: "warning", message: `Dataset exchange ${ds.company.exchange} differed from the verified listing ${ev.company.exchange}; the verified one is used` });
+      ds = { ...ds, company: { ...ds.company, exchange: ev.company.exchange } };
+    }
     if (ds.synthetic) reasons.push({ code: "DATASET_SYNTHETIC", severity: "blocking", message: "Synthetic datasets are never valid for public analysis" });
     const quote = ev.market.quote;
     if (quote && (ds.quote.priceKRW !== quote.close || ds.quote.asOf !== kstDate(quote.tradedAt))) {

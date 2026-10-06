@@ -19,7 +19,8 @@ export interface CollectPublicEvidenceInput {
   ticker: string;
   /** YYYY-MM-DD (inclusive through end of that day, KST) or an ISO timestamp with timezone. */
   asOf: string;
-  /** Optional competitors to compare, KR/US/JP only: "KR:000660" (DART), "US:MU" (SEC EDGAR), "JP:8035" (EDINET). Max 6. */
+  /** Competitors to compare, KR/US/JP only: "KR:000660" (DART), "US:MU" (SEC EDGAR), "JP:8035" (EDINET). Max 6.
+   * Omitted or empty: up to 6 KOSPI/KOSDAQ peers from Naver's same-industry list are compared automatically. */
   competitors?: string[];
 }
 
@@ -326,6 +327,8 @@ export interface DerivedQuarter {
 }
 
 export type CompetitorMarket = "KR" | "US" | "JP";
+/** How the compared competitors were chosen: named in the request, or Naver's same-industry list. */
+export type CompetitorSelection = "requested" | "naver_industry";
 
 /** One reported (or derived) revenue period of a competitor, exactly as filed: no FX, no scaling, no calendarisation. */
 export interface CompetitorPeriod {
@@ -404,13 +407,13 @@ export interface PublicEvidence {
   /** The collector never asserts that a valuation model can run from this evidence alone. */
   modelReady: false;
   untrustedContentNotice: string;
-  /** `competitors` is present only when competitors were requested (one report per requested market). */
+  /** `competitors` is present only when competitors were compared (one report per market). */
   providers: { naver: ProviderReport; naverSearch: ProviderReport; dart: ProviderReport; fx?: ProviderReport; competitors?: Partial<Record<CompetitorMarket, ProviderReport>> };
   issues: CollectionIssue[];
   company: {
     name: string | null;
     corpCode: string | null;
-    exchange: "KOSPI" | null;
+    exchange: "KOSPI" | "KOSDAQ" | null;
     exchangeVerifiedBy: ("naver" | "dart")[];
   };
   market: {
@@ -445,8 +448,9 @@ export interface PublicEvidence {
     /** DART share totals (issued / treasury / outstanding by class) for the latest periodic filing. */
     shareCounts?: ShareCountEvidence[];
   };
-  /** Competitors' filed revenue (KR/US/JP disclosure systems). Absent when none were requested. */
+  /** Competitors' filed revenue (KR/US/JP disclosure systems). Absent when none were compared. */
   competitors?: CompetitorEvidence[];
+  competitorSelection?: CompetitorSelection;
   requiredInputs: RequiredInput[];
 }
 

@@ -2,13 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 import { setup } from "../test/app.js";
 import { toItem, UniverseProvider } from "../src/research/universe.js";
 
-const row = (itemCode: string, stockName: string, stockEndType = "stock", marketValue = "1,000") => ({ itemCode, stockName, stockEndType, marketValue, stockExchangeType: { code: "KS" } });
+const row = (itemCode: string, stockName: string, stockEndType = "stock", marketValue = "1,000", code = "KS") => ({ itemCode, stockName, stockEndType, marketValue, stockExchangeType: { code } });
 
-const listing = (rows: unknown[]) =>
-  vi.fn(async () => new Response(JSON.stringify({ stocks: rows, totalCount: rows.length }), { status: 200 })) as unknown as typeof fetch;
+// One listing per market URL (.../marketValue/KOSPI, .../marketValue/KOSDAQ); rows are routed by their exchange code.
+const listing = (rows: ReturnType<typeof row>[]) =>
+  vi.fn(async (input: string | URL) => {
+    const code = new URL(String(input)).pathname.endsWith("/KOSDAQ") ? "KQ" : "KS";
+    const stocks = rows.filter((r) => r.stockExchangeType.code === code);
+    return new Response(JSON.stringify({ stocks, totalCount: stocks.length }), { status: 200 });
+  }) as unknown as typeof fetch;
 
 describe("universe", () => {
-  it("keeps only KOSPI common stocks (drops ETF, preferred, REIT, infra fund) sorted by market cap", async () => {
+  it("keeps only KOSPI/KOSDAQ common stocks (drops ETF, preferred, REIT, infra fund) sorted by market cap", async () => {
     const u = new UniverseProvider({
       fetch: listing([
         row("005930", "삼성전자", "stock", "15,000,000"),
@@ -18,10 +23,12 @@ describe("universe", () => {
         row("088980", "맥쿼리인프라"),
         row("000660", "SK하이닉스", "stock", "9,000,000"),
         row("000660", "SK하이닉스"), // duplicate
+        row("196170", "알테오젠", "stock", "180,000", "KQ"),
       ]),
     });
     const r = await u.get();
-    expect(r.items.map((i) => i.ticker)).toEqual(["005930", "000660"]);
+    expect(r.items.map((i) => i.ticker)).toEqual(["005930", "000660", "196170"]);
+    expect(r.items.find((i) => i.ticker === "196170")?.exchange).toBe("KOSDAQ");
     expect(r.items[0]!.marketCapKRW).toBe(15_000_000 * 1e8);
     expect(UniverseProvider.search(r, "하이", 10).items.map((i) => i.ticker)).toEqual(["000660"]);
     expect(UniverseProvider.search(r, "0059", 10).total).toBe(1);
@@ -33,14 +40,15 @@ describe("universe", () => {
     const u = new UniverseProvider({ fetch: f, ttlMs: 10, now: () => new Date(t) });
     await u.get();
     await u.get();
-    expect(f).toHaveBeenCalledTimes(1);
+    expect(f).toHaveBeenCalledTimes(2); // one page per market, once
     t = 100;
     (f as any).mockImplementation(async () => new Response("x", { status: 500 }));
     expect((await u.get()).items).toHaveLength(1);
   });
 
   it("rejects rows on other exchanges and malformed rows", () => {
-    expect(toItem({ itemCode: "123450", stockName: "X", stockExchangeType: { code: "KQ" } })).toBeNull();
+    expect(toItem({ itemCode: "123450", stockName: "X", stockExchangeType: { code: "KN" } })).toBeNull();
+    expect(toItem({ itemCode: "123450", stockName: "X", stockExchangeType: { code: "KQ" } })?.exchange).toBe("KOSDAQ");
     expect(toItem(null)).toBeNull();
     expect(toItem(row("12345", "short"))).toBeNull();
   });
@@ -66,7 +74,7 @@ describe("web UI routes", () => {
     const s = await setup();
     const good = buildApp(s.service, s.research, { ...s.config, logLevel: "silent" }, new UniverseProvider({ fetch: listing([row("005930", "삼성전자"), row("005935", "삼성전자우")]) }));
     const res = await good.inject({ url: "/v1/universe?query=삼성" });
-    expect(res.json()).toMatchObject({ commonStocksOnly: true, total: 1, items: [{ ticker: "005930", name: "삼성전자" }] });
+    expect(res.json()).toMatchObject({ markets: ["KOSPI", "KOSDAQ"], commonStocksOnly: true, total: 1, items: [{ ticker: "005930", name: "삼성전자" }] });
     expect((await good.inject({ url: "/v1/universe?limit=0" })).statusCode).toBe(400);
     const bad = buildApp(s.service, s.research, { ...s.config, logLevel: "silent" }, new UniverseProvider({ fetch: (async () => new Response("x", { status: 500 })) as unknown as typeof fetch }));
     const r = await bad.inject({ url: "/v1/universe" });

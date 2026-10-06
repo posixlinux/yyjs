@@ -34,13 +34,14 @@ const DATASET_RULES = `DatasetSchema 작성 규칙:
 - products[].revenue 는 공시된 제품/부문 분기 매출. 통화는 ISO 4217. 제품별 매출이 공시되지 않았으면 공시된 부문/사업부 매출에서 배분해 추정할 수 있습니다(method="segment_allocation").
 - competitors[] (선택이지만 강력 권장): 같은 시장(marketId)에서 경쟁하는 주요 업체 2~6곳의 분기 매출({id,name,marketId,revenue[{quarter,revenue,currency,basis,source,estimate?}],shareDelta?}). 시장 통화·분기와 같아야 합니다. 문서에 있으면 인용하고, 없으면 추정합니다.
 - 글로벌 비교는 한국·미국·일본 기업만 합니다: competitors[] 에는 한국·미국·일본 상장사만 넣고, 그 밖의 국가 기업(대만·중국·유럽 등)은 개별 경쟁사로 넣지 말고 시장 매출의 "기타 업체" 몫에 포함하세요. narrative.competition 에도 비교 대상은 한국·미국·일본 기업으로 한정하고 그 사실을 적으세요.
+- 경쟁사 공시 문서는 요청이 없으면 네이버 동종업종 목록에서 자동으로 고른 국내 상장사입니다. 같은 업종이라도 이 제품 시장에서 실제로 경쟁하지 않는 회사는 competitors[] 에 넣지 말고, 문서에 없는 핵심 경쟁사(해외 포함)는 추정 규칙에 따라 추가하세요.
 - "[경쟁사 공시 매출 · KR/US/JP]" 문서(DART·SEC EDGAR·EDINET 공시 원문 수치)가 있으면 그 경쟁사 매출은 추정보다 먼저 인용하세요. 그 값은 회사 전체 매출이므로 시장 범위가 더 좁으면 segment_allocation 으로 추정(basedOn 에 문서 id)하세요. 분기(3개월) 값은 문서에 표시된 달력 분기(quarter)에 넣고, 일본 기업처럼 반기(6개월)·연간 값만 있으면 period_allocation 으로 분기에 배분(계절성 근거를 rationale 에)하세요. '(근사)' 표시와 파생값은 limitations 에 적으세요. 통화가 시장 통화와 다르면 제공된 문서의 환율로만 환산하고, 환율 문서가 없으면 그 값은 estimate(basedOn 에 문서 id)로 표시하세요.
 - 성장률·마진·점유율 변화는 소수(0.1 = 10%), bear <= base <= bull.
 - 성장률은 보수적으로 판단하세요(GROWTH_RULES 참고).
 - 관찰된 사실(주가, 주식수, 환율, 회사 매출, 그리고 estimate 로 표시하지 않은 시장/제품/경쟁사 매출)은 반드시 제공된 문서에서 가져오고 source.url 과 source.publishedAt 이 그 문서와 정확히 같아야 합니다.
 - 주가, 주식수, 환율, 회사 총매출은 절대 추정하지 마세요(인용 필수). 이 값들이 없으면 dataset 을 null 로 하고 missingFields 에 경로를 적으세요. 주식수는 희석주식수가 없으면 문서의 보통주 유통주식수(발행주식총수-자기주식)를 인용하고 limitations 에 "희석주식수 미공시, 유통 보통주수 사용"이라고 적으세요.
 - 예측 가정(annualGrowth, seasonality, cyclical, shareDelta, operatingMargin, residual, earningsBridge, peMultiple)만 명시적 가정으로 제시할 수 있으며, 문서 근거가 없으면 source = {title, manualReference:"MODEL_ASSUMPTION: <이유>", publishedAt: asOf} 그리고 rationale 을 반드시 채우세요. 이 표기는 가정 필드에만 허용됩니다.
-- schemaVersion=1, synthetic 필드는 넣지 마세요, exchange="KOSPI".
+- schemaVersion=1, synthetic 필드는 넣지 마세요, exchange 는 시세 문서에 적힌 시장("KOSPI" 또는 "KOSDAQ").
 
 추정 규칙(시장 규모·제품 매출·경쟁사 매출에만 허용):
 - 정확한 전체 시장 규모를 구할 수 없으면 이전 자료를 바탕으로 추론해 예측하세요. 방법(method): "share_implied"(시장 = 회사 제품 매출 ÷ 문서에 적힌 점유율), "prior_extrapolation"(문서에 적힌 이전 시점 시장/업체 규모에 문서 또는 가정의 성장률을 적용), "sum_of_players"(회사 + 파악한 경쟁사들 + 추정한 기타 업체의 합), "segment_allocation", "period_allocation"(공시된 반기·연간 매출을 분기로 배분), "article_synthesis"(여러 기사에 적힌 서로 다른 수치를 종합한 대략값; 아래 기사 수치 종합 규칙), "model_knowledge"(문서 없이 당신의 배경지식; 가장 낮은 등급이므로 마지막 수단).
@@ -93,7 +94,7 @@ Catalyst: ${catalystJsonSchema}
 - forecast (EarningsForecastSnapshot): schemaVersion=1, ticker="${input.ticker}", scope="consolidated", fiscalYearBasis="calendar", currency="KRW", generatedAt(서버가 실제 생성 시각으로 덮어쓰므로 asOf 기준 아무 유효한 시각이나 넣어도 됨), analyst(누가/무엇이 작성했는지, "model_knowledge" 금지), sector(업종 한 줄 설명). quarters 는 위에서 선택한 분기 하나만 담은 길이 1의 배열이어야 합니다("${previous}" 또는 "${current}"). 그 분기: segments[](name, volume, unitPriceKRW, variableCostPerUnitKRW, fixedCostKRW, source, assumptions?), coverageAttestation:{complete:true, statedBy}, netInterestKRW, taxRate, noncontrollingShare, preferredClaimsKRW, dilutedCommonShares, 그리고 **bridgeAssumptions(필수)**: {isAssumption:true, rationale, source}. bridgeAssumptions.source 와 segment.assumptions.source 는 반드시 실제 제공된 문서의 url 을 가져야 합니다(순수 manualReference 텍스트만으로는 안 됨: 전망치라도 그 근거가 된 실제 문서가 있어야 합니다). segment.source(관측치인 경우) 도 실제 문서 url 이 필요합니다.
   아직 실적이 발표되지 않은 분기이므로 대부분 추정입니다: 숫자가 문서의 실제 관측값(예: 최근 분기 실제 판매량·단가)이 아니라 추정치면 그 segment 에 assumptions 를 채우고, 그 rationale 이 근거로 삼은 실제 문서(예: 최근 분기 실적, 회사 가이던스)를 assumptions.source 에 인용하세요(전혀 근거가 없으면 forecast 전체를 null 로 하세요).
   은행·보험·금융지주·증권사 등 금융업은 판매량×단가 모델이 적용되지 않으므로 forecast 전체를 null 로 하고 missingFields 에 사유를 적으세요.
-  company(선택), liquidity(선택, averageDailyTradedValueKRW·windowSessions·asOf·knownAt·source, 반드시 실제 거래대금 데이터 인용)를 채우세요. funding은 연결 재무자료가 있으면 아래 규칙으로 반드시 작성을 시도하세요. 근거 부족으로 작성할 수 없으면 생략하세요(null을 넣지 마세요).
+  company(선택; exchange 는 시세 문서에 적힌 시장 "KOSPI" 또는 "KOSDAQ", securityType="common_stock"), liquidity(선택, averageDailyTradedValueKRW·windowSessions·asOf·knownAt·source, 반드시 실제 거래대금 데이터 인용)를 채우세요. funding은 연결 재무자료가 있으면 아래 규칙으로 반드시 작성을 시도하세요. 근거 부족으로 작성할 수 없으면 생략하세요(null을 넣지 마세요).
 ${FUNDING_RULES}
 - currentConsensus/priorConsensus (ConsensusSnapshot): schemaVersion=1, ticker="${input.ticker}", scope="consolidated", basis="common_diluted", currency="KRW", unit="KRW_per_share". 애널리스트/증권사 컨센서스 EPS 가 문서에 명시되어 있고 그 대상 기간이 forecast 와 정확히 같은 한 분기일 때만 채우세요(horizonQuarters 는 그 분기 하나). 연간 컨센서스나 다른 분기·여러 분기 합산 EPS 를 나누거나 그대로 옮겨 쓰지 마세요. 두 값 모두 없으면 null 이며, 컨센서스가 없어도 forecast 는 작성합니다.
   검증 규칙(반드시 지키세요): source, epsPerShare 인용, horizonQuarters 인용은 모두 **같은 문서**(같은 documentId)를 가리켜야 합니다. epsPerShare 의 evidenceQuote 와 horizonQuarters 의 evidenceQuote 는 (1) 청구한 분기가 "2026Q4"/"2026년 4분기" 형식으로 명시되어 있고 다른 분기 표기는 섞여 있지 않아야 하며, (2) "연결"(consolidated) 과 "희석" 또는 "보통주" 라는 단어가 실제로 포함되어야 합니다(그냥 모순이 없다는 것만으로는 부족합니다 -- 명시적으로 그렇게 적혀 있어야 합니다). 이 조건 중 하나라도 문서 원문에 없으면 절대 채우지 말고 null 로 두세요.

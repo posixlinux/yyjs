@@ -131,9 +131,9 @@ export const DatasetSchema = z
     synthetic: z.boolean().optional(), // true only for bundled demo fixtures
     company: z
       .object({
-        ticker: z.string().regex(/^\d{6}$/, "six-digit KOSPI ticker"),
+        ticker: z.string().regex(/^[0-9][0-9A-Z]{5}$/, "six-character KRX ticker"),
         name: text(100),
-        exchange: z.literal("KOSPI"),
+        exchange: z.enum(["KOSPI", "KOSDAQ"]),
         sector: text(100).optional(),
         description: text(1000),
         sources: z.array(SourceSchema).min(1).max(10),
@@ -192,13 +192,13 @@ const competitorIds = z
 
 export const AnalysisRequestSchema = z
   .object({
-    ticker: z.string().regex(/^\d{6}$/, "six-digit KOSPI ticker"),
-    asOf: date.optional(), // defaults to today's Asia/Seoul calendar date
+    ticker: z.string().regex(/^[0-9][0-9A-Z]{5}$/, "six-character KOSPI/KOSDAQ ticker"),
+    asOf: date.optional(), // demo mode only; a public analysis always runs as of today (Asia/Seoul)
     mode: z.enum(["public", "demo"]).default("public"),
     competitors: competitorIds.optional(),
   })
   .strict();
 
 export const ResearchRequestSchema = z
-  .object({ ticker: z.string().regex(/^\d{6}$/, "six-digit KOSPI ticker"), asOf: date.optional(), competitors: competitorIds.optional() })
+  .object({ ticker: z.string().regex(/^[0-9][0-9A-Z]{5}$/, "six-character KOSPI/KOSDAQ ticker"), asOf: date.optional() /* ignored: always today */, competitors: competitorIds.optional() })
   .strict();

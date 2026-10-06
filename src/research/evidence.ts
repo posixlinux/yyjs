@@ -357,7 +357,7 @@ export function buildDocuments(ev: PublicEvidence): BuiltDocuments {
     add(
       "competitor",
       `cmp-${c.market}-${c.code}`,
-      `[경쟁사 공시 매출 · ${c.market}] ${c.name ?? c.code} (${c.system})`,
+      `[경쟁사 공시 매출 · ${c.market}${ev.competitorSelection === "naver_industry" ? " · 네이버 동종업종 자동 선정" : ""}] ${c.name ?? c.code} (${c.system})`,
       newest.sourceUrl,
       newest.filedDate,
       [
@@ -569,6 +569,7 @@ export function summarizeEvidence(ev: PublicEvidence, built: BuiltDocuments) {
       productCandidates: ev.filings.productCandidates.slice(0, 40),
       metricCandidates: ev.filings.metricCandidates.slice(0, 40),
     },
+    ...(ev.competitorSelection && { competitorSelection: ev.competitorSelection }),
     competitors: (ev.competitors ?? []).map((c) => ({
       market: c.market, code: c.code, name: c.name, system: c.system,
       periods: c.periods.map((p) => ({ calendarPeriod: p.calendarPeriod, months: p.months, currency: p.currency, revenue: p.revenue, basis: p.basis, filedDate: p.filedDate, sourceUrl: p.sourceUrl })),

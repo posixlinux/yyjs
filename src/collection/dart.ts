@@ -1,7 +1,8 @@
 import type { HttpClient } from "./http.js";
 import { isZip, unzip } from "./zip.js";
 import type { ZipLimits } from "./zip.js";
-import { classifySecurity, describeRejections } from "../domain/security.js";
+import { classifySecurity, describeRejections, exchangeOf } from "../domain/security.js";
+import type { ListedExchange } from "../domain/security.js";
 import { extractDisclosureText, extractDocument, extractMetrics, extractProducts } from "./extract.js";
 import { CollectionError, issue } from "./types.js";
 import type {
@@ -57,7 +58,7 @@ export interface DartCtx {
   zip: ZipLimits;
   maxFilings: number;
   maxDocuments: number;
-  /** Competitor mode: statements only (no documents/disclosures) and KOSDAQ (corp_cls K) allowed. */
+  /** Competitor mode: statements only (no documents/disclosures). */
   competitor?: boolean;
 }
 
@@ -65,6 +66,7 @@ export interface DartResult {
   name: string | null;
   corpCode: string | null;
   exchangeVerified: boolean;
+  exchange: ListedExchange | null;
   filings: FilingEvidence[];
   statements: StatementSet[];
   derivedQuarters: DerivedQuarter[];
@@ -141,7 +143,7 @@ async function corpIndex(c: DartCtx): Promise<Map<string, Corp>> {
       const b = m[1] ?? "";
       const tag = (t: string) => new RegExp(`<${t}>\\s*([^<]*?)\\s*</${t}>`).exec(b)?.[1] ?? "";
       const stock = tag("stock_code");
-      if (/^\d{6}$/.test(stock)) index.set(stock, { code: tag("corp_code"), name: tag("corp_name") });
+      if (/^[0-9][0-9A-Z]{5}$/.test(stock)) index.set(stock, { code: tag("corp_code"), name: tag("corp_name") });
     }
     if (index.size === 0) throw new CollectionError("invalid_response", "corpCode.xml contained no listed companies");
     return index;
@@ -165,7 +167,7 @@ function periodOf(reportName: string, fyeMonth: number): FilingEvidence["period"
 
 export async function collectDart(c: DartCtx): Promise<DartResult> {
   const out: DartResult = {
-    name: null, corpCode: null, exchangeVerified: false, filings: [], statements: [], derivedQuarters: [],
+    name: null, corpCode: null, exchangeVerified: false, exchange: null, filings: [], statements: [], derivedQuarters: [],
     excerpts: [], tables: [], metricCandidates: [], productCandidates: [], disclosures: [], shareCounts: [], issues: [],
   };
 
@@ -176,8 +178,9 @@ export async function collectDart(c: DartCtx): Promise<DartResult> {
   }
   const company = await dartJson(c, "company.json", { corp_code: corp.code }, false, DISK.company);
   if (str(company?.stock_code) !== c.ticker) throw new CollectionError("invalid_response", "DART company stock_code does not match the ticker");
-  if (!(c.competitor ? ["Y", "K"] : ["Y"]).includes(str(company?.corp_cls))) {
-    out.issues.push(issue("dart", "not_kospi", `DART corp_cls is "${str(company?.corp_cls)}", not Y (KOSPI)`));
+  out.exchange = exchangeOf(str(company?.corp_cls));
+  if (!out.exchange) {
+    out.issues.push(issue("dart", "not_listed", `DART corp_cls is "${str(company?.corp_cls)}", not Y (KOSPI) or K (KOSDAQ)`));
     return out;
   }
   out.exchangeVerified = true;

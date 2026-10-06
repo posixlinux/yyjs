@@ -197,17 +197,24 @@ describe("POST /v1/analyses (public default)", () => {
     expect(collect.mock.calls[0]![0].asOf).toBe("2026-01-16");
   });
 
-  it("rejects future, malformed or unknown request fields with 400 before any job starts", async () => {
+  it("rejects malformed or unknown request fields with 400 before any job starts", async () => {
     const collect = vi.fn(async () => evidence());
     const { app } = await setup({}, NOW, { collect });
-    const future = await submit(app, { ticker: "111110", asOf: "2026-01-16" });
-    expect(future.statusCode).toBe(400);
-    expect(future.json().error.code).toBe("INVALID_AS_OF");
-    expect((await submit(app, { ticker: "111110", asOf: "2026-01-16" }, {}, "/v1/research")).json().error.code).toBe("INVALID_AS_OF");
     expect((await submit(app, { ticker: "12", asOf: AS_OF })).statusCode).toBe(400);
     expect((await submit(app, { ticker: "111110", asOf: AS_OF, url: "http://evil" })).statusCode).toBe(400);
     expect((await submit(app, { ticker: "111110", asOf: AS_OF, mode: "live" })).statusCode).toBe(400);
     expect(collect).not.toHaveBeenCalled();
+  });
+
+  it("always analyses as of today (Asia/Seoul): a requested asOf, past or future, is ignored", async () => {
+    const collect = vi.fn(async () => evidence());
+    const { app } = await setup({}, NOW, { collect, intelligence: async () => accepted(null) });
+    for (const [asOf, url] of [["2026-01-16", "/v1/analyses"], ["2025-06-30", "/v1/research"]] as const) {
+      const res = await submit(app, { ticker: "111110", asOf }, {}, url);
+      expect(res.statusCode).toBe(202);
+      await poll(app, res.json().statusUrl);
+    }
+    expect(collect.mock.calls.map((c) => (c as unknown as [{ asOf: string }])[0].asOf)).toEqual([AS_OF, AS_OF]);
   });
 
   it("keeps explicit demo synchronous while public is the default; there is no manual mode", async () => {
@@ -417,10 +424,10 @@ describe("partial results never carry a valuation", () => {
     expect(body).toMatchObject({ status: "failed", error: { code: "COLLECTION_INPUT_INVALID" } });
   });
 
-  it("rejects a non-KOSPI listing as failed and never calls the models", async () => {
-    const ev = evidence({ company: { name: "X", corpCode: null, exchange: null, exchangeVerifiedBy: [] }, issues: [{ provider: "naver", code: "not_kospi", severity: "error", message: "KOSDAQ" }] });
+  it("rejects a listing outside KOSPI/KOSDAQ as failed and never calls the models", async () => {
+    const ev = evidence({ company: { name: "X", corpCode: null, exchange: null, exchangeVerifiedBy: [] }, issues: [{ provider: "naver", code: "not_listed", severity: "error", message: "KONEX" }] });
     const { body, intelligence } = await partialCase(ev, accepted());
-    expect(body).toMatchObject({ status: "failed", error: { code: "NOT_KOSPI" } });
+    expect(body).toMatchObject({ status: "failed", error: { code: "NOT_LISTED" } });
     expect(intelligence).not.toHaveBeenCalled();
   });
 
@@ -507,7 +514,7 @@ describe("partial results never carry a valuation", () => {
 
   it("rejects schema-invalid datasets from the intelligence module", async () => {
     const ds = makeDataset() as any;
-    ds.company.exchange = "KOSDAQ";
+    ds.company.exchange = "KONEX";
     const { body } = await partialCase(evidence(), accepted(ds));
     noPrices(body);
     expect(body.result.partialReasons.map((r: any) => r.code)).toContain("DATASET_SCHEMA_INVALID");
@@ -528,12 +535,11 @@ describe("partial results never carry a valuation", () => {
     expect((await partialCase(utc, accepted())).body.status).toBe("completed");
   });
 
-  it("historical asOf without a dated quote is clearly partial (Naver only serves the latest snapshot)", async () => {
-    const ev = evidence({ market: { quote: null } });
-    const { body } = await partialCase(ev, accepted(null), { ticker: "111110", asOf: "2026-01-05" });
-    noPrices(body);
-    const reason = body.result.partialReasons.find((r: any) => r.code === "HISTORICAL_QUOTE_UNAVAILABLE");
-    expect(reason.message).toContain("latest quote snapshot");
+  it("a past asOf request still runs as of today (no historical-quote path)", async () => {
+    const { body } = await partialCase(evidence({ market: { quote: null } }), accepted(null), { ticker: "111110", asOf: "2026-01-05" });
+    const codes = body.result.partialReasons.map((r: any) => r.code);
+    expect(codes).toContain("QUOTE_MISSING");
+    expect(codes).not.toContain("HISTORICAL_QUOTE_UNAVAILABLE");
   });
 
   it("current-day request with no quote reports QUOTE_MISSING", async () => {
@@ -582,7 +588,7 @@ describe("POST /v1/research (evidence only)", () => {
     expect(intelligence).not.toHaveBeenCalled();
   });
 
-  it("partial evidence maps to partial, total failure to failed, not-KOSPI to failed", async () => {
+  it("partial evidence maps to partial, total failure to failed, not-listed to failed", async () => {
     const run = async (ev: PublicEvidence) => {
       const { app } = await setup({}, NOW, { collect: async () => ev });
       return (await poll(app, (await submit(app, { ticker: "111110", asOf: AS_OF }, {}, "/v1/research")).json().statusUrl)).body;
@@ -591,7 +597,7 @@ describe("POST /v1/research (evidence only)", () => {
     const failed = await run(evidence({ status: "failed" }));
     expect(failed).toMatchObject({ status: "failed", error: { code: "COLLECTION_FAILED" } });
     expect(failed.result.evidence).toBeDefined();
-    expect((await run(evidence({ issues: [{ provider: "naver", code: "not_kospi", severity: "error", message: "x" }] }))).error.code).toBe("NOT_KOSPI");
+    expect((await run(evidence({ issues: [{ provider: "naver", code: "not_listed", severity: "error", message: "x" }] }))).error.code).toBe("NOT_LISTED");
   });
 });
 

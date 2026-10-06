@@ -1,6 +1,6 @@
-# KOSPI 제품 시장 분석 서버
+# KOSPI·KOSDAQ 제품 시장 분석 서버
 
-KOSPI 상장사 한 곳을 골라 **공시·시세·뉴스 자동 수집 → Claude + agy(Antigravity CLI) 이중 검토 → 결정론적 재무 모델 → 다음 분기말 비관·기본·낙관 시나리오 가격**을 계산하는 로컬 우선(local-first) 서버입니다. 매매·주문·배포 기능은 없습니다.
+KOSPI·KOSDAQ 보통주 하나를 골라 **공시·시세·뉴스 자동 수집 → Claude + agy(Antigravity CLI) 이중 검토 → 결정론적 재무 모델 → 다음 분기말 비관·기본·낙관 시나리오 가격**을 계산하는 로컬 우선(local-first) 서버입니다. 매매·주문·배포 기능은 없습니다.
 
 - Node.js ≥ 22, TypeScript, Fastify, Zod, Vitest
 - **기본 워크플로는 공개 자료 자동 수집(`mode: "public"`)** 입니다: DART 정기보고서/재무제표 + Naver 시세·뉴스. 가상 데모(`demo`)는 명시적으로 요청할 때만 동작합니다. 수동 데이터셋 입력 경로는 없습니다.
@@ -18,7 +18,7 @@ flowchart TD
   E --> F[Claude CLI: 구조화 초안]
   F --> G[agy(Antigravity CLI): 독립 감사]
   E --> G
-  G --> H[출처·숫자·범위·기간 검증<br/>+ KOSPI/티커/시세 대조]
+  G --> H[출처·숫자·범위·기간 검증<br/>+ 시장/티커/시세 대조]
   H --> I[결정론적 시장·이익 모델]
   H --> J[partial: 근거 · 서술 · 부족 입력 · 사유]
   I --> K[다음 분기말 비관·기본·낙관 가격]
@@ -49,9 +49,12 @@ npm start                   # 또는 개발용: npm run dev
 - **DART 키가 없어도** Naver 시세·뉴스는 수집되지만 재무제표·사업 내용이 없어 가치 산정은 불가(partial)입니다. Naver 뉴스검색 키(`NAVER_CLIENT_ID/SECRET`)는 선택입니다.
 - 모델 없이 근거만 확인하려면 agy 로그인 전에도 `POST /v1/research`(evidence-only)를 쓸 수 있습니다.
 - 실제 네트워크 스모크(LLM 미사용): `npm run smoke:public -- 005930` (DART 키가 없으면 Naver만).
-- **분석 대상은 KOSPI 일반주(보통주)만**입니다. 우선주(티커 끝자리 ≠ 0 또는 `…우`/`…2우B` 이름), ETF/ETN(Naver `stockEndType`), 리츠·인프라투융자회사·스팩·선박투자회사(법인명·DART 업종코드 6420x)는 거부합니다.
+- **분석 대상은 KOSPI·KOSDAQ 일반주(보통주)만**입니다. 티커는 6자리 KRX 코드(숫자 또는 신규 영숫자 코드). 우선주(티커 끝자리 ≠ 0 또는 `…우`/`…2우B` 이름), ETF/ETN(Naver `stockEndType`), 리츠·인프라투융자회사·스팩·선박투자회사(법인명·DART 업종코드 6420x)는 거부합니다.
   - `POST /v1/analyses`, `POST /v1/research`: 우선주 티커는 네트워크 호출 없이 즉시 **422 `NOT_COMMON_STOCK`**, ETF/리츠 등은 수집 직후 job이 `failed`(`error.code: NOT_COMMON_STOCK`)이며 모델은 호출되지 않습니다.
+  - 시장은 Naver(`KS`/`KQ`)와 DART(`corp_cls` `Y`/`K`)로 확인합니다. 그 밖의 시장(KONEX 등)은 `failed`(`NOT_LISTED`), 두 출처가 시장을 다르게 말하면 미확인(`EXCHANGE_UNVERIFIED` 경고)입니다.
   - 이름·티커 규칙에 기반한 **최선 노력(best-effort) 선별**이며 거래소가 부여한 공식 분류가 아닙니다. 새로운 명명 규칙의 상품은 `src/domain/security.ts`에서 보완하세요.
+- **기준일(asOf)은 항상 오늘(Asia/Seoul)**입니다. 공개 분석(`/v1/analyses` public, `/v1/research`)은 요청의 `asOf`를 무시합니다(데모 모드만 `asOf`를 씁니다).
+- **경쟁사는 자동으로 고릅니다.** `competitors`를 주지 않으면 네이버 증권의 동종업종 비교 목록에서 KOSPI·KOSDAQ 보통주 최대 6곳을 골라 DART 공시 매출을 수집하고, `evidence.competitorSelection: "naver_industry"`로 표시합니다. 같은 업종이라도 실제 제품 시장 경쟁사가 아닐 수 있으므로 모델이 걸러내고, 해외 경쟁사는 추정 규칙으로 추가합니다. 미국·일본 기업을 공시 수치로 비교하려면 API에서 `competitors`를 직접 지정하세요(지정하면 자동 선정 대신 그 목록을 씁니다).
 - `npm run doctor`는 증거 수집(DART 키)과 전체 분석(Claude 또는 agy 로그인, 둘 다면 교차검증)의 준비 상태를 따로 보고합니다.
 
 ## 라우트
@@ -67,7 +70,7 @@ npm start                   # 또는 개발용: npm run dev
 | GET | `/v1/companies/:ticker` | 데모(가상) 종목 프로파일 |
 | GET | `/v1/schema` | 데이터셋 JSON Schema (`result.research.draftDataset.dataset`의 형식) |
 
-- `asOf` 생략 시 **Asia/Seoul 오늘 날짜**. 미래 날짜는 400 `INVALID_AS_OF`.
+- 공개 분석의 기준일은 항상 **Asia/Seoul 오늘 날짜**이며 `asOf`는 무시됩니다. 데모 모드에서는 `asOf` 생략 시 오늘, 미래 날짜는 400 `INVALID_AS_OF`.
 - `API_KEY`를 설정하면 **모든 public 분석/근거 수집 작업 생성 및 그 결과 조회**와 전략 기록 API에 `x-api-key` 헤더가 필요합니다(`demo` 동기 분석과 `health`는 제외). `HOST`가 루프백이 아니면 `API_KEY` 없이는 서버가 기동하지 않습니다.
 - 작업은 **메모리에만 저장**되어 서버 재시작 시 사라집니다. 완료 후 `RESEARCH_JOB_TTL_MS`(기본 1시간)가 지나면 404 `JOB_NOT_FOUND`.
 - 동일한 진행 중 요청(같은 종류·티커·asOf)은 **중복 제거**되어 같은 `id`를 돌려줍니다(`deduplicated: true`). 실행 중/대기 중 상한을 넘으면 429 `QUEUE_FULL`. 종료(`SIGINT/SIGTERM`) 시 실행 중 작업의 CLI 자식 프로세스를 중단하고 대기 작업은 실패 처리합니다.
@@ -85,13 +88,13 @@ curl -s -i -X POST localhost:3000/v1/analyses -H 'content-type: application/json
 # 폴링 (완료까지 수 분 걸릴 수 있음)
 curl -s localhost:3000/v1/analyses/<id>
 
-# 경쟁사 공시 매출을 함께 수집 (한국·미국·일본만; 미국은 SEC_USER_AGENT, 일본은 EDINET_API_KEY 필요)
+# 경쟁사를 직접 지정 (생략하면 네이버 동종업종에서 자동 선정; 미국은 SEC_USER_AGENT, 일본은 EDINET_API_KEY 필요)
 curl -s -X POST localhost:3000/v1/analyses -H 'content-type: application/json' \
   -d '{"ticker":"005380","competitors":["KR:000270","US:F","JP:7203"]}'
 
 # 근거만 수집 (LLM 미사용, agy 로그인 전에도 가능)
 curl -s -X POST localhost:3000/v1/research -H 'content-type: application/json' \
-  -d '{"ticker":"005930","asOf":"2026-09-28"}'
+  -d '{"ticker":"005930"}'
 curl -s localhost:3000/v1/research/<id>
 
 # 결정론적 데모 (가상 데이터, 동기; asOf 는 2026-09-28 부근에서만 신선도 검증 통과)
@@ -111,7 +114,7 @@ curl -s localhost:3000/v1/schema
   "request": { "ticker": "005930", "asOf": "2026-09-28", "mode": "public" },
   "createdAt": "…", "startedAt": "…", "finishedAt": "…", "expiresAt": "…",
   "result": {
-    "evidence":  { /* 제공자 상태·이슈, 회사(KOSPI 검증), 시세, 뉴스, 공시 목록, 상품/지표 후보, requiredInputs, 모델에 전달한 문서 목록 */ },
+    "evidence":  { /* 제공자 상태·이슈, 회사(KOSPI/KOSDAQ 검증), 시세, 뉴스, 공시 목록, 상품/지표 후보, requiredInputs, 모델에 전달한 문서 목록 */ },
     "research":  { /* Claude/agy 각각의 상태·코드, `crossChecked`, 만료된 모델 목록(`unavailable`), 제품/산업 서술(한국어), 인용, 가정, 불일치, 부족 필드, 감사 결과, 초안 데이터셋(`draftDataset`, 아래) */ },
     "analysis":  { /* 결정론적 모델 출력(아래 '모델' 참고). partial 이면 null */ },
     "valuation": { "status": "available | partial | unavailable", "scenarios": { "bear": "available", … }, "grade": "verified | provisional | null" },
@@ -125,7 +128,7 @@ curl -s localhost:3000/v1/schema
 
 - `completed`: 사유 없이 데이터셋이 이중 검토·결정론 검증을 모두 통과하고 세 시나리오 가치가 모두 산출됨. 이때 `missingInputs`는 비어 있습니다(수집기의 사전 부족 목록은 `evidence.requiredInputs`에 남음).
 - `partial`: 가격 없음(`blocking` 사유가 있어 `analysis: null`), 잠정 가격(`warning` 사유만 있어 `analysis` 유지, `valuation.grade: "provisional"`), 또는 일부 시나리오 가치 불가(`VALUATION_UNAVAILABLE`, `analysis`는 유지). **수집 근거, 제품/산업 서술, 부족한 입력과 사유는 항상 노출**됩니다.
-- `failed`: 수집 실패, KOSPI가 아님(`NOT_KOSPI`), 타임아웃(`JOB_TIMEOUT`), 종료(`SERVER_CLOSING`) 등.
+- `failed`: 수집 실패, KOSPI·KOSDAQ 상장 종목이 아님(`NOT_LISTED`), 보통주가 아님(`NOT_COMMON_STOCK`), 타임아웃(`JOB_TIMEOUT`), 종료(`SERVER_CLOSING`) 등.
 
 주요 `partialReasons` 코드:
 - `blocking`(가격 없음): `NO_EVIDENCE_DOCUMENTS`, `INTELLIGENCE_ERROR`, `RESEARCH_NOT_ACCEPTED`(쓸 수 있는 데이터셋 없음), `DATASET_SCHEMA_INVALID`, `DATASET_TICKER_MISMATCH`, `DATASET_SYNTHETIC`, `DATA_VALIDATION_FAILED`(하드 이슈: asOf 이후 데이터, FX/시장/커버리지 누락, 점유율 > 1, 매출 초과·이중 계산, 연간 기준 등), `MODEL_FAILED`.
@@ -150,7 +153,7 @@ curl -s localhost:3000/v1/schema
 1. 수집기(`src/collection`)가 DART(정기보고서 최대 8건, 재무제표, 사업의 내용·표 발췌, 주식의 총수 현황)와 Naver(시세, 일별 종가, 분기·연간 실적/컨센서스, 종목 뉴스, 상위 기사 본문, 선택적 뉴스검색 — 키가 있으면 제품별 "세계 시장 규모"·"점유율 매출 분기" 검색으로 시장조사기관 인용 기사를 찾아 본문과 시장 규모·점유율 수치 후보를 추출), ECB 기준환율(키 불필요)을 가져옵니다. 일별 종가와 분기 EPS로 후행 PER 참고 범위도 계산합니다. 화이트리스트 호스트만 호출하며 사용자 URL은 가져오지 않습니다.
 2. `src/research/evidence.ts`가 근거를 `{id,title,url,publishedAt,text}` 문서로 변환합니다. URL/날짜는 **실제 접수번호 URL·접수일, Naver URL·거래/기사 시각(KST 환산)** 에서 오며 모델이 만들지 않습니다. 재무제표는 행별 통화·소수점을 보존하고, 손익만 분기/연간으로, 재무상태표는 기말 잔액, 현금흐름은 공시 제공 기준으로 표기합니다. 파생 4분기(연간−3분기 누적)는 연간 보고서 접수일/URL을 쓰고 두 접수번호를 본문에 남기며, 3분기 정정이 더 늦으면 파생을 보류합니다. 뉴스는 제품·시장·점유율을 다루는 기사를 우선하고 기사 본문(있으면)/스니펫으로 표기합니다.
 3. Claude가 초안(Dataset·서술·인용·가정)을, agy(Gemini 계열 모델)가 같은 원문으로 독립 감사를 수행합니다. **둘 다 성공하고 승인·확인하면** 교차검증된 데이터셋(`accepted`)입니다. 한쪽이 **만료**(쿼터/로그인/CLI 없음)면 그 모델은 호출하지 않고 나머지 모델의 초안만으로 진행하되(`single_model`) 인용·숫자·날짜 검사는 똑같이 통과해야 합니다. **agy 감사가 만료 외의 이유(타임아웃, 잘못되거나 잘린 응답, 스키마 오류, CLI 오류 등)로 실패해도 Claude가 대신 감사**합니다(`single_model`; 그 agy 실패는 이번 실행에만 `unavailable`에 남고 쿨다운은 없음). 감사 결과의 불일치·미승인과 Claude 쪽 실패는 그대로 partial입니다.
-4. 서버가 다시 검사: 스키마, 티커 일치, 실제 KOSPI 검증, 시세(가격·거래일) 일치, 정적·asOf 검증(아래 표). 통과하면 순수 `analyze()`로 계산합니다.
+4. 서버가 다시 검사: 스키마, 티커 일치, 실제 KOSPI/KOSDAQ 검증, 시세(가격·거래일) 일치, 정적·asOf 검증(아래 표). 통과하면 순수 `analyze()`로 계산합니다.
 
 한계: 인용 검증은 "원문에 그 구절이 있고 숫자가 도출된다"까지만 증명하며 의미의 진실성은 증명하지 못합니다. 공시 본문에 글로벌 제품 시장의 분기 매출 시계열이 없더라도(대부분 그렇습니다) 데이터셋 작성이 멈추지 않고, 아래 "추정치와 경쟁사 합계" 규칙에 따라 **추론한 값으로 예측**하되 그 사실을 모든 출력에 표시합니다.
 
@@ -249,7 +252,7 @@ Market(T) = Market(L) / s[L의 분기] × (1+gq)^n × s[T의 분기] × c
 ## 데이터 출처와 한계
 
 - **DART**: 정기보고서·재무제표·사업 내용을 제공하지만 글로벌 제품 시장 점유율/시장 규모 시계열은 제공하지 않습니다. 시장 매출은 공시 본문에 회사가 밝힌 경우만 후보로 추출됩니다(연/분기, 출하량/매출을 변환하지 않음).
-- **경쟁사 공시(DART·SEC EDGAR·EDINET)**: 요청의 `competitors`로 지정한 한국·미국·일본 기업의 공시 매출(회사 전체, 원 통화)을 근거 문서로 넘깁니다. 글로벌 비교는 이 세 나라 기업만 하며, 다른 나라 기업은 시장의 "기타"로 묶습니다. 일본은 2024년 이후 반기·연간 공시만 있어 분기 값은 추정(`period_allocation`)입니다. 통화가 다르면 수집한 ECB 기준환율(원화 환산) 문서로 환산하며, 그 문서에 없는 통화(TWD 등)의 환산값은 추정으로 표시됩니다.
+- **경쟁사 공시(DART·SEC EDGAR·EDINET)**: 요청의 `competitors`로 지정한(생략 시 네이버 동종업종에서 자동 선정한 국내) 한국·미국·일본 기업의 공시 매출(회사 전체, 원 통화)을 근거 문서로 넘깁니다. 글로벌 비교는 이 세 나라 기업만 하며, 다른 나라 기업은 시장의 "기타"로 묶습니다. 일본은 2024년 이후 반기·연간 공시만 있어 분기 값은 추정(`period_allocation`)입니다. 통화가 다르면 수집한 ECB 기준환율(원화 환산) 문서로 환산하며, 그 문서에 없는 통화(TWD 등)의 환산값은 추정으로 표시됩니다.
 - **Naver**: 시세는 **최신 스냅샷**(과거 종가 조회 아님)이라 과거 `asOf`에는 시세가 없어 partial입니다. 뉴스 스니펫/본문만으로는 검증된 예측이 아니며 뉴스는 예측 근거로 취급되지 않습니다.
 - **LLM**: Claude·agy 모두 같은 문서를 읽는 LLM이므로 합의가 곧 진실은 아닙니다. agy는 Google 로그인 개인 한도에 종속되며(2026-09 기준 소진 시 리셋까지 약 17시간), 프롬프트는 argv 한 개로 전달되므로 macOS 인자 한도(약 1MB) 아래로 제한됩니다(900,000바이트 초과 시 `OUTPUT_LIMIT`).
 - FX는 데이터셋의 단일 기준일 환율 하나로 모든 분기를 환산합니다. 잔여 부문은 계절성 없이 일정 성장률로 전개합니다. 인접 분기 3배 초과 변동은 연/분기 혼동으로 간주되어 실제로 급변하는 시장은 거부될 수 있습니다.
@@ -283,7 +286,7 @@ test/ tests/      Vitest
 
 **자동 분석은 한 분기만 추정합니다(단기, 최장 3개월).** 방금 끝나 실적이 아직 나오지 않은 분기 또는 진행 중인 분기 하나의 매출·영업이익·EPS를, 최근에 공시된 한 분기 실적만 있어도 추정합니다. 컨센서스가 없어도 추정 결과가 나오며(`estimate_only`), 네이버 증권이 컨센서스로 표시한 같은 분기 값은 추정 옆에 참고로만 보여줍니다(현재 스냅샷이라 과거 기준일에는 쓰지 않고, 희석 기준이 확인되지 않은 EPS는 비교하지 않습니다). 자세한 내용은 `docs/STRATEGY.md`.
 
-별도 연구 모듈 `earnings-gap-auto/v1`을 추가했습니다. **사용자가 직접 고른 KOSPI 보통주 후보 티커**(업종 제한 없음)의 네 분기 실적과 같은 기간 컨센서스를 비교하고, **설비투자·운전자본·차입금 상환 이후 자금 부족** 및 판매량/가격/원가/금리 하방 시나리오를 계산합니다. 위험 조건을 통과한 종목만 업종별(사용자 선언 라벨 기준, 업종마다 독립 적용)·종목 비중과 거래대금 한도 안에서 배분합니다.
+별도 연구 모듈 `earnings-gap-auto/v1`을 추가했습니다. **사용자가 직접 고른 KOSPI·KOSDAQ 보통주 후보 티커**(업종 제한 없음)의 네 분기 실적과 같은 기간 컨센서스를 비교하고, **설비투자·운전자본·차입금 상환 이후 자금 부족** 및 판매량/가격/원가/금리 하방 시나리오를 계산합니다. 위험 조건을 통과한 종목만 업종별(사용자 선언 라벨 기준, 업종마다 독립 적용)·종목 비중과 거래대금 한도 안에서 배분합니다.
 
 기존 웹 분석 화면의 `POST /v1/analyses`(티커만 입력)는 이 전략용 한 분기 실적 추정·컨센서스·촉매·자금 입력을 공개 수집(DART/Naver)과 기존 Claude 초안 호출로 **자동으로 채우려 시도**합니다(사용자가 전략 JSON을 직접 작성할 필요 없음). 근거 문서가 없는 컨센서스/촉매/유동성은 절대 지어내지 않고 명시적으로 미확보 처리하며, 실적 브릿지·자금 위험은 컨센서스가 없어도 계속 표시됩니다. 비중/투자금액(수수료·세금·초기자본)은 개인 포트폴리오 가정이라 자동 계산하지 않으며, 실제 배분이 필요하면 아래 CLI/API를 명시적 설정으로 직접 호출하세요. 자세한 내용과 한계는 [전략 사용 설명](docs/STRATEGY.md)의 "자동 연결" 절을 참고하세요.
 
