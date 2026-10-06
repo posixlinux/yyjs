@@ -17,11 +17,18 @@
     <h2 id="pick">종목 선택</h2>
     <form id="form" autocomplete="off">
       <div class="row">
-        <label for="q">종목명 또는 번호 검색</label>
-        <input id="q" type="search" inputmode="search" placeholder="예: 삼성전자 또는 005930" maxlength="50">
+        <label for="q">종목 검색 · 선택 (KOSPI·KOSDAQ 전체 보통주)</label>
+        <div class="combo">
+          <input id="q" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="list" placeholder="종목명·초성·번호 (예: 삼성전자, ㅅㅅㅈㅈ, 005930)" maxlength="50" spellcheck="false">
+          <button id="qToggle" type="button" class="combo-toggle" aria-label="전체 종목 목록 열기" tabindex="-1">▾</button>
+          <div id="list" class="list dropdown" role="listbox" aria-label="KOSPI·KOSDAQ 보통주 목록" hidden></div>
+        </div>
+        <div class="filters">
+          <label>시장 <select id="market"><option value="">전체</option><option value="KOSPI">코스피</option><option value="KOSDAQ">코스닥</option></select></label>
+          <label>정렬 <select id="sort"><option value="cap">시가총액순</option><option value="name">가나다순</option><option value="ticker">종목번호순</option></select></label>
+        </div>
+        <p id="listInfo" class="hint"></p>
       </div>
-      <div id="list" class="list" role="listbox" aria-label="KOSPI·KOSDAQ 보통주 목록"></div>
-      <p id="listInfo" class="hint"></p>
 
       <div class="row">
         <label for="ticker">선택된 종목 번호</label>

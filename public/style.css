@@ -26,11 +26,21 @@ label { display: block; font-weight: 600; margin-bottom: 4px; font-size: .9rem; 
 input[type=search], input[type=text], input[type=password], input[type=date], input:not([type]), input[inputmode=numeric] {
   width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); font: inherit;
 }
-input:focus-visible, button:focus-visible, .item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.list { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; margin: 8px 0 4px; }
+input:focus-visible, select:focus-visible, button:focus-visible, .item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.combo { position: relative; }
+.combo input { padding-right: 44px; }
+.combo-toggle { position: absolute; top: 0; right: 0; height: 100%; width: 40px; padding: 0; background: transparent; color: var(--muted); border-radius: 0 8px 8px 0; font-size: 1rem; }
+.list { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; margin: 4px 0; background: var(--card); }
+.list.dropdown { position: absolute; left: 0; right: 0; top: 100%; z-index: 10; box-shadow: 0 6px 20px rgba(0, 0, 0, .18); }
+.list[hidden] { display: none; }
+.list .empty { padding: 10px 12px; color: var(--muted); }
+.filters { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 8px; }
+.filters label { display: flex; align-items: center; gap: 6px; font-weight: 400; margin: 0; }
+select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); font: inherit; }
 .item { display: flex; justify-content: space-between; gap: 8px; padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--line); }
 .item:last-child { border-bottom: 0; }
-.item:hover, .item[aria-selected=true] { background: var(--info-bg); }
+.item:hover, .item.active, .item[aria-selected=true] { background: var(--info-bg); }
+.item.active { outline: 1px solid var(--accent); outline-offset: -1px; }
 .item .code { color: var(--muted); font-variant-numeric: tabular-nums; }
 .item .cap { color: var(--muted); font-size: .85rem; white-space: nowrap; }
 fieldset.modes { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 12px; padding: 8px 12px; }
