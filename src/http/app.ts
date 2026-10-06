@@ -73,7 +73,7 @@ export function buildApp(
     demoEnabled: config.demoEnabled,
     apiKeyRequired: !!config.apiKey, // for public analysis/research jobs and strategy records
     jobs: research.jobs.stats(),
-    capabilities: config.capabilities ?? {}, // booleans only, e.g. dartConfigured; never key material
+    capabilities: { ...(config.capabilities ?? {}), shortTermForecast: !!forecasts }, // booleans only; never key material
     defaultModels: config.defaultModels ?? ["claude"], // public analysis models when a request names none
   }));
 

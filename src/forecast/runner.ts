@@ -6,6 +6,7 @@ import { forecastMany, MIN_HISTORY_FOR, type EngineOptions, type ForecastResult,
 // each other down.
 
 type Many = ReturnType<typeof forecastMany>;
+const WORKER_TIMEOUT_MS = 10 * 60_000;
 let chain: Promise<unknown> = Promise.resolve();
 
 export function runMany(series: Series[], options: EngineOptions, targets?: string[]): Promise<Many> {
@@ -23,8 +24,15 @@ export async function runEngine(target: Series, peers: Series[], options: Engine
 function inWorker(series: Series[], options: EngineOptions, targets?: string[]): Promise<Many> {
   return new Promise((resolve, reject) => {
     const w = new Worker(new URL("./worker.js", import.meta.url), { workerData: { series, options, targets } });
-    w.once("message", (m: { ok: true; result: Many } | { ok: false; message: string }) => (m.ok ? resolve(m.result) : reject(new Error(m.message))));
-    w.once("error", reject);
-    w.once("exit", (code) => code !== 0 && reject(new Error(`forecast worker exited with code ${code}`)));
+    // A stuck computation must not block every later forecast behind it.
+    const timer = setTimeout(() => {
+      reject(new Error(`forecast computation exceeded ${WORKER_TIMEOUT_MS / 1000} s and was stopped`));
+      void w.terminate();
+    }, WORKER_TIMEOUT_MS);
+    timer.unref();
+    const done = () => clearTimeout(timer);
+    w.once("message", (m: { ok: true; result: Many } | { ok: false; message: string }) => (done(), m.ok ? resolve(m.result) : reject(new Error(m.message))));
+    w.once("error", (e) => (done(), reject(e)));
+    w.once("exit", (code) => (done(), code !== 0 && reject(new Error(`forecast worker exited with code ${code}`))));
   });
 }

@@ -626,7 +626,7 @@ describe("API_KEY protects costly jobs and mutations", () => {
     const config = loadConfig({ DART_API_KEY: "DARTSECRETVALUE", NAVER_CLIENT_ID: "id-value", NAVER_CLIENT_SECRET: "sec-value", API_KEY: "APIKEYVALUE", EDINET_API_KEY: "EDINETSECRET" });
     const { app } = await setup({ capabilities: config.capabilities, apiKey: config.apiKey });
     const body = (await app.inject({ url: "/health" })).body;
-    expect(JSON.parse(body).capabilities).toEqual({ dartConfigured: true, naverSearchConfigured: true, secConfigured: false, edinetConfigured: true });
+    expect(JSON.parse(body).capabilities).toEqual({ dartConfigured: true, naverSearchConfigured: true, secConfigured: false, edinetConfigured: true, shortTermForecast: false });
     for (const v of ["DARTSECRETVALUE", "sec-value", "APIKEYVALUE", "EDINETSECRET"]) expect(body).not.toContain(v);
     expect(config.secrets()).toEqual(expect.arrayContaining(["DARTSECRETVALUE", "APIKEYVALUE", "EDINETSECRET"]));
   });

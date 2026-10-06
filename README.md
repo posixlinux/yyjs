@@ -24,6 +24,10 @@ flowchart TD
   I --> K["다음 분기말 비관·기본·낙관 가격"]
 ```
 
+## 단기 주가 예측 (1~3거래일)
+
+다음 1~3거래일 뒤 **상승/하락 확률과 예상 등락률·80% 범위**를 워크포워드 백테스트와 함께 냅니다(LLM 미사용). 웹 화면의 **단기 주가 예측** 모드와 **오를 확률 순위** 버튼, `GET /v1/forecast/:ticker`, `GET /v1/forecast-ranking`, `npm run forecast -- 005930` / `npm run forecast -- --rank`. 예측은 `data/records/forecasts.jsonl`에 기록되고 `npm run forecast -- --score`로 실제 종가와 채점합니다. 방법·자료·한계는 [docs/FORECAST.md](docs/FORECAST.md).
+
 ## 빠른 시작
 
 사전 준비: Node.js ≥ 22, **Claude Code CLI(`claude`)가 PATH에 있고 로그인되어 있을 것**(기본 분석 모델). 선택 사항: OpenAI Codex CLI(`codex`, ChatGPT 계정 로그인), Antigravity CLI(`agy`)와 Google 계정. 분석 모델은 요청마다 고릅니다(아래 "분석 모델 선택").
