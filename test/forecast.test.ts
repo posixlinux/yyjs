@@ -130,6 +130,9 @@ describe("short-term forecast on synthetic markets", () => {
       expect(Math.abs(h.probabilityUp - 0.5)).toBeLessThan(0.08);
       expect(h.range80Pct[0]).toBeLessThan(0);
       expect(h.range80Pct[1]).toBeGreaterThan(0);
+      // ranges built only from past errors still cover about 80% of what happened next
+      expect(h.backtest.range80Coverage!).toBeGreaterThan(0.72);
+      expect(h.backtest.range80Coverage!).toBeLessThan(0.88);
     }
     expect(f.notes[0]).toMatch(/동전 던지기/);
   }, 120_000);

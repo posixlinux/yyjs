@@ -554,7 +554,7 @@ function renderForecast(r) {
       el("td", { text: `${pct(h.expectedReturnPct)} (${won(h.expectedPriceKRW)})` }),
       el("td", { text: `${pct(h.range80Pct[0])} ~ ${pct(h.range80Pct[1])}` }),
       el("td", {}, badge(CONF, h.confidence), h.actionable ? el("span", { class: "badge ok", text: "비용 넘는 기대수익" }) : null),
-      el("td", { text: `${rate(b.accuracy)} (n=${b.n}; 항상상승 ${rate(b.alwaysUpAccuracy)}, 모멘텀 ${rate(b.momentumAccuracy)}; 확신 상위30% ${rate(b.confidentAccuracy)})` }));
+      el("td", { text: `${rate(b.accuracy)} (n=${b.n}; 항상상승 ${rate(b.alwaysUpAccuracy)}, 모멘텀 ${rate(b.momentumAccuracy)}; 확신 상위30% ${rate(b.confidentAccuracy)}; 80% 범위 실제 적중 ${rate(b.range80Coverage)})` }));
   });
   return el("div", {},
     el("h2", { text: `${r.ticker} 단기 주가 예측` }),
@@ -570,7 +570,7 @@ function renderRanking(r) {
   const b = r.pooledBacktest;
   return el("div", {},
     el("h2", { text: `${r.exchange} 상위 종목 ${r.horizon}거래일 상승 확률 순위` }),
-    el("p", { class: "small", text: `종목군 워크포워드 백테스트: 적중 ${rate(b.accuracy)} (n=${b.n}; 항상상승 ${rate(b.alwaysUpAccuracy)}, 모멘텀 ${rate(b.momentumAccuracy)}) · 우위 ${b.edge === "detected" ? "있음" : "없음"}` }),
+    el("p", { class: "small", text: `종목군 워크포워드 백테스트: 적중 ${rate(b.accuracy)} (n=${b.n}; 항상상승 ${rate(b.alwaysUpAccuracy)}, 모멘텀 ${rate(b.momentumAccuracy)}; 80% 범위 실제 적중 ${rate(b.range80Coverage)}) · 우위 ${b.edge === "detected" ? "있음" : "없음"}` }),
     el("table", {},
       el("thead", {}, el("tr", {}, ...["순위", "종목", "상승 확률", "예상 등락", "80% 범위", "신뢰도", "종목 백테스트"].map((t) => el("th", { text: t })))),
       el("tbody", {}, ...r.ranked.map((x, i) => el("tr", {},

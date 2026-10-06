@@ -288,6 +288,11 @@ export type BacktestStats = {
   /** Accuracy on the 30% most confident predictions. */
   confidentAccuracy: number | null;
   confidentN: number;
+  /**
+   * Share of realized returns inside the 80% range when each range is built only from errors resolved before its
+   * date (null until set by forecastMany). Close to 0.8 means the ranges are honest.
+   */
+  range80Coverage: number | null;
   /** Reliability table: predictions bucketed by probability of a rise, with the share that actually rose. */
   calibration: { from: number; to: number; n: number; meanPredicted: number; actualUpRate: number }[];
   edge: "detected" | "none";
@@ -299,7 +304,7 @@ export function backtestStats(oos: OosPrediction[], horizon: number): BacktestSt
   const n = oos.length;
   const pct = (v: number) => (Math.exp(v) - 1) * 100;
   if (!n)
-    return { horizon, n: 0, from: null, to: null, accuracy: null, alwaysUpAccuracy: null, momentumAccuracy: null, pValueVsCoin: null, pValueVsClimatology: null, pValueVsBestBaseline: null, brier: null, brierBaseRate: null, meanAbsErrorPct: null, zeroForecastMaePct: null, upDownSpreadPct: null, confidentAccuracy: null, confidentN: 0, calibration: [], edge: "none" };
+    return { horizon, n: 0, from: null, to: null, accuracy: null, alwaysUpAccuracy: null, momentumAccuracy: null, pValueVsCoin: null, pValueVsClimatology: null, pValueVsBestBaseline: null, brier: null, brierBaseRate: null, meanAbsErrorPct: null, zeroForecastMaePct: null, upDownSpreadPct: null, confidentAccuracy: null, confidentN: 0, range80Coverage: null, calibration: [], edge: "none" };
   const up = (v: number) => v > 0;
   const hits = oos.filter((o) => (o.p > 0.5) === up(o.actual)).length;
   const ups = oos.filter((o) => up(o.actual)).length;
@@ -341,6 +346,7 @@ export function backtestStats(oos: OosPrediction[], horizon: number): BacktestSt
     upDownSpreadPct: saidUp.length && saidDown.length ? avg(saidUp) - avg(saidDown) : null,
     confidentAccuracy: confHits / conf.length,
     confidentN: conf.length,
+    range80Coverage: null,
     calibration: CAL_BINS.map(([from, to]) => {
       const xs = oos.filter((o) => o.p >= from && (o.p < to || to === 1));
       return { from, to, n: xs.length, meanPredicted: xs.reduce((a, o) => a + o.p, 0) / xs.length, actualUpRate: xs.filter((o) => up(o.actual)).length / xs.length };
@@ -349,6 +355,44 @@ export function backtestStats(oos: OosPrediction[], horizon: number): BacktestSt
     // (Beating the simple momentum rule as well is reported via pValueVsBestBaseline, not required.)
     edge: nEff >= 100 && pClimate < 0.05 && brier < brierBase ? "detected" : "none",
   };
+}
+
+/**
+ * Walk-forward coverage of the 80% range: for rows dated d, the range comes from volatility-unit residuals of rows
+ * whose outcome closed before d (re-estimated every `step` dates); returns the share of rows inside, per ticker.
+ */
+export function rangeCoverage(oos: OosPrediction[], step = 20): Map<string, { inside: number; n: number }> {
+  const dates = [...new Set(oos.map((o) => o.date))].sort();
+  const byDate = new Map<string, OosPrediction[]>();
+  for (const o of oos) (byDate.get(o.date) ?? byDate.set(o.date, []).get(o.date)!).push(o);
+  const out = new Map<string, { inside: number; n: number }>();
+  let q: [number, number] | null = null, since = Infinity, slope = 0, icpt = 0;
+  for (const d of dates) {
+    if (since >= step) {
+      const known = oos.filter((o) => o.endDate < d);
+      if (known.length >= 100) {
+        const zr = known.map((x) => x.r / x.scale), za = known.map((x) => x.actual / x.scale);
+        const mx = zr.reduce((a, v) => a + v, 0) / zr.length, my = za.reduce((a, v) => a + v, 0) / za.length;
+        const cov = zr.reduce((a, v, i) => a + (v - mx) * (za[i]! - my), 0), vx = zr.reduce((a, v) => a + (v - mx) ** 2, 0);
+        slope = vx > 0 ? Math.max(0, Math.min(1, cov / vx)) : 0;
+        icpt = my - slope * mx;
+        const res = za.map((v, i) => v - (icpt + slope * zr[i]!));
+        q = [quantile(res, 0.1), quantile(res, 0.9)];
+        since = 0;
+      }
+    }
+    since++;
+    if (!q) continue;
+    for (const o of byDate.get(d)!) {
+      const c = out.get(o.ticker) ?? { inside: 0, n: 0 };
+      const center = icpt + slope * (o.r / o.scale);
+      const z = o.actual / o.scale;
+      c.n++;
+      if (z >= center + q[0] && z <= center + q[1]) c.inside++;
+      out.set(o.ticker, c);
+    }
+  }
+  return out;
 }
 
 // ---- final forecast -----------------------------------------------------------------------------------------------
@@ -400,7 +444,13 @@ export function forecastMany(series: Series[], o: EngineOptions = DEFAULT_OPTION
   for (const [hi, h] of HORIZONS.entries()) {
     const first = walkForward(samples, hi, o);
     const oosAll = stack(first, o.step, o.halfLife);
-    pooled.push(backtestStats(oosAll, h));
+    const coverage = rangeCoverage(oosAll, o.step);
+    const covOf = (keep: (t: string) => boolean) => {
+      let inside = 0, n = 0;
+      for (const [t, c] of coverage) if (keep(t)) (inside += c.inside), (n += c.n);
+      return n ? inside / n : null;
+    };
+    pooled.push({ ...backtestStats(oosAll, h), range80Coverage: covOf(() => true) });
     const model = fit(samples.filter((s) => Number.isFinite(s.fwd[hi]!)).slice(-o.maxTrain), hi, o);
     if (!model) throw new Error(`Not enough history to train the ${h}-session model`);
     const meta = fitMeta(first, o.halfLife);
@@ -428,7 +478,7 @@ export function forecastMany(series: Series[], o: EngineOptions = DEFAULT_OPTION
       const pUp = calib ? applyPlatt(calib, raw.p) : model.baseRate;
       const scaleNow = volScale(xNow, h);
       const exp = (icpt + slope * (raw.r / scaleNow)) * scaleNow;
-      const stats = backtestStats(oosAll.filter((x) => x.ticker === s.ticker), h);
+      const stats = { ...backtestStats(oosAll.filter((x) => x.ticker === s.ticker), h), range80Coverage: covOf((t) => t === s.ticker) };
       // A stock with too few of its own predictions inherits the pool's verdict on whether there is an edge.
       const edge = (stats.n >= 120 ? stats : pooled[hi]!).edge === "detected";
       per.get(s.ticker)!.push({
