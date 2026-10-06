@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { z } from "zod";
@@ -255,9 +255,6 @@ export const extractJsonCandidates = (text: string): unknown[] => {
   if (whole !== undefined) return [whole];
   return objectSpans(t).map(tryParse).filter((v) => v !== undefined);
 };
-
-/** Pull a JSON object out of model text: tolerate ```json fences and leading/trailing prose. */
-export const extractJson = (text: string): unknown => extractJsonCandidates(text)[0];
 
 /** Shape-only description of a reply that held no parsable JSON (never its content): enough to tell a reply cut off
  * mid-object (starts with "{", no closing "}", "Unterminated string" / "Unexpected end") from prose or a syntax slip. */

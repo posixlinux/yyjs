@@ -60,7 +60,11 @@ export interface HttpClient {
 interface Entry {
   expires: number;
   value: Promise<unknown>;
+  owner: object; // the client whose signal and request budget produced the value
 }
+
+// Failures that belong to the producing client (its job was aborted or ran out of budget), not to the upstream.
+const PRODUCER_LOCAL = new Set(["aborted", "request_budget_exceeded"]);
 
 // One cache per fetch implementation: production shares the global fetch's cache, injected fakes stay isolated.
 const caches = new WeakMap<typeof fetch, Map<string, Entry>>();
@@ -77,14 +81,22 @@ export function createHttp(cfg: HttpConfig): HttpClient {
   if (!cache) caches.set(cfg.fetch, (cache = new Map()));
   const store = cache;
   let used = 0;
+  const self = {};
 
-  function memo<T>(key: string, ttlMs: number, produce: () => Promise<T>): Promise<T> {
+  function memo<T>(key: string, ttlMs: number, produce: () => Promise<T>, retry = true): Promise<T> {
     const now = Date.now();
     const hit = store.get(key);
-    if (hit && hit.expires > now) return hit.value as Promise<T>;
+    if (hit && hit.expires > now) {
+      if (hit.owner === self || !retry) return hit.value as Promise<T>;
+      // Joined another job's request: if that job was aborted or out of budget, fetch for ourselves once instead.
+      return (hit.value as Promise<T>).catch((e) => {
+        if (!(e instanceof CollectionError && PRODUCER_LOCAL.has(e.code)) || cfg.signal?.aborted) throw e;
+        return memo(key, ttlMs, produce, false);
+      });
+    }
     const value = produce();
     if (ttlMs > 0) {
-      store.set(key, { expires: now + ttlMs, value });
+      store.set(key, { expires: now + ttlMs, value, owner: self });
       while (store.size > MAX_ENTRIES) store.delete(store.keys().next().value as string);
       value.catch(() => {
         if (store.get(key)?.value === value) store.delete(key);

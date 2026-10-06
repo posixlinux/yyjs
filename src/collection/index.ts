@@ -26,7 +26,6 @@ import { extractMetrics } from "./extract.js";
 import { kstDate, parseAsOf } from "./text.js";
 
 export * from "./types.js";
-export { ALLOWED_HOSTS } from "./http.js";
 
 const MiB = 1024 * 1024;
 

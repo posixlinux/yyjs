@@ -34,10 +34,8 @@ import { verifyProposal } from "./verify.js";
 import { verifyStrategyDraft } from "./strategyVerify.js";
 
 export * from "./types.js";
-export { claudeArgs, agyArgs, codexArgs, codexEvents, AGY_DEFAULT_MODEL, MAX_ARGV_PROMPT_BYTES } from "./providers.js";
-export { Availability, isExpiredCode, parseResetMs } from "./availability.js";
-export { verifyProposal, observedNumericPaths, MODEL_ASSUMPTION_PREFIX } from "./verify.js";
-export { verifyStrategyDraft } from "./strategyVerify.js";
+export { claudeArgs, agyArgs, codexArgs, codexEvents, AGY_DEFAULT_MODEL } from "./providers.js";
+export { parseResetMs } from "./availability.js";
 
 const CACHE_MAX = 50;
 
@@ -60,8 +58,6 @@ type Inflight = { promise: Promise<AnalysisResult>; controller: AbortController;
 const inflight = new Map<string, Inflight>();
 const runnerIds = new WeakMap<Runner, number>();
 let nextRunnerId = 1;
-
-export const clearIntelligenceCache = () => cache.clear();
 
 /** Server configuration from env (paths are never request-controlled). */
 export const intelligenceOptionsFromEnv = (env: NodeJS.ProcessEnv = process.env): IntelligenceOptions => ({

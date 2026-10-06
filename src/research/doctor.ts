@@ -1,5 +1,4 @@
 import { tmpdir } from "node:os";
-import path from "node:path";
 import { checkReadiness } from "../intelligence/index.js";
 import { buildEnv, sanitize, spawnRunner } from "../intelligence/runner.js";
 import type { Runner } from "../intelligence/types.js";
