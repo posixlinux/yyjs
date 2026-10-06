@@ -1,6 +1,6 @@
 # KOSPI·KOSDAQ 제품 시장 분석 서버
 
-KOSPI·KOSDAQ 보통주 하나를 골라 **공시·시세·뉴스 자동 수집 → Claude + agy(Antigravity CLI) 이중 검토 → 결정론적 재무 모델 → 다음 분기말 비관·기본·낙관 시나리오 가격**을 계산하는 로컬 우선(local-first) 서버입니다. 매매·주문·배포 기능은 없습니다.
+KOSPI·KOSDAQ 보통주 하나를 골라 **공시·시세·뉴스 자동 수집 → 선택한 모델(기본 Claude, 또는 Codex·agy, 두 모델 교차검증 가능) 검토 → 결정론적 재무 모델 → 다음 분기말 비관·기본·낙관 시나리오 가격**을 계산하는 로컬 우선(local-first) 서버입니다. 매매·주문·배포 기능은 없습니다.
 
 - Node.js ≥ 22, TypeScript, Fastify, Zod, Vitest
 - **기본 워크플로는 공개 자료 자동 수집(`mode: "public"`)** 입니다: DART 정기보고서/재무제표 + Naver 시세·뉴스. 가상 데모(`demo`)는 명시적으로 요청할 때만 동작합니다. 수동 데이터셋 입력 경로는 없습니다.
@@ -26,7 +26,14 @@ flowchart TD
 
 ## 빠른 시작
 
-사전 준비: Node.js ≥ 22, **Claude Code CLI(`claude`)가 PATH에 있고 로그인되어 있을 것**, Antigravity CLI(`agy`)와 Google 계정(agy 로그인용). 둘 중 하나만 있어도 분석은 진행되지만 교차검증은 두 모델이 모두 살아 있을 때만 됩니다.
+사전 준비: Node.js ≥ 22, **Claude Code CLI(`claude`)가 PATH에 있고 로그인되어 있을 것**(기본 분석 모델). 선택 사항: OpenAI Codex CLI(`codex`, ChatGPT 계정 로그인), Antigravity CLI(`agy`)와 Google 계정. 분석 모델은 요청마다 고릅니다(아래 "분석 모델 선택").
+
+### 분석 모델 선택
+
+- 웹 화면의 **분석 모델** 또는 API `POST /v1/analyses`의 `models`(1~2개, 순서대로 작성 → 교차검증)로 고릅니다. **기본값은 Claude 단독**(`["claude"]`)이며 서버 기본값은 `.env`의 `INTELLIGENCE_MODELS`로 바꿀 수 있습니다(예: `claude,agy`).
+  - 모델 하나: 그 모델이 초안을 쓰고 별도 호출로 자체 감사합니다 → `single_model`, `crossChecked: false`.
+  - 모델 둘(예: `["claude","codex"]`): 앞 모델이 초안, 뒤 모델이 독립 감사 → 둘 다 승인하면 `accepted`. 한쪽이 만료되면 나머지 하나로 진행합니다.
+- **Codex 사용법**: `npm i -g @openai/codex` 후 `codex login`(ChatGPT 계정)을 한 번 하면 됩니다. `OPENAI_API_KEY`는 CLI에 전달하지 않습니다(유료 API 경로 없음). Codex는 `codex exec --json --ephemeral --sandbox read-only --ignore-user-config`로 빈 임시 폴더에서 실행되며, 응답 중 셸 명령 등 도구를 쓰면 그 응답은 버립니다(`TOOL_USE_DETECTED`). 모델·추론 강도는 `INTELLIGENCE_CODEX_MODEL`, `INTELLIGENCE_CODEX_EFFORT`로 지정합니다.
 
 ```bash
 npm install
@@ -55,14 +62,14 @@ npm start                   # 또는 개발용: npm run dev
   - 이름·티커 규칙에 기반한 **최선 노력(best-effort) 선별**이며 거래소가 부여한 공식 분류가 아닙니다. 새로운 명명 규칙의 상품은 `src/domain/security.ts`에서 보완하세요.
 - **기준일(asOf)은 항상 오늘(Asia/Seoul)**입니다. 공개 분석(`/v1/analyses` public, `/v1/research`)은 요청의 `asOf`를 무시합니다(데모 모드만 `asOf`를 씁니다).
 - **경쟁사는 자동으로 고릅니다.** `competitors`를 주지 않으면 네이버 증권의 동종업종 비교 목록에서 KOSPI·KOSDAQ 보통주 최대 6곳을 골라 DART 공시 매출을 수집하고, `evidence.competitorSelection: "naver_industry"`로 표시합니다. 같은 업종이라도 실제 제품 시장 경쟁사가 아닐 수 있으므로 모델이 걸러내고, 해외 경쟁사는 추정 규칙으로 추가합니다. 미국·일본 기업을 공시 수치로 비교하려면 API에서 `competitors`를 직접 지정하세요(지정하면 자동 선정 대신 그 목록을 씁니다).
-- `npm run doctor`는 증거 수집(DART 키)과 전체 분석(Claude 또는 agy 로그인, 둘 다면 교차검증)의 준비 상태를 따로 보고합니다.
+- `npm run doctor`는 증거 수집(DART 키)과 전체 분석(Claude·Codex·agy 중 로그인된 모델, 둘 이상이면 교차검증 가능)의 준비 상태를 따로 보고합니다(Codex는 `codex login status`로 확인).
 
 ## 라우트
 
 | 메서드 | 경로 | 설명 |
 |---|---|---|
 | GET | `/health` | 상태, 모델 버전, 작업 큐 통계, 연동 설정 여부(boolean만) |
-| POST | `/v1/analyses` | `{ticker, asOf?, mode?}`. **`mode` 기본 `public` → 비동기 작업 202**. `demo`는 동기 200 |
+| POST | `/v1/analyses` | `{ticker, asOf?, mode?, models?}` (`models`: `claude`/`codex`/`agy` 중 1~2개, 기본 `["claude"]`). **`mode` 기본 `public` → 비동기 작업 202**. `demo`는 동기 200 |
 | GET | `/v1/analyses/:id` | 작업 상태/결과 폴링 (`queued`/`running`/`completed`/`partial`/`failed`) |
 | POST | `/v1/research` | **근거 수집 전용 작업**(Claude/agy 호출 없음, 가치 산정 없음). 202 |
 | GET | `/v1/research/:id` | 근거 수집 작업 폴링 |
@@ -274,7 +281,7 @@ npm run smoke:job                          # 실제 수집기로 HTTP POST /v1/r
 src/domain/       스키마(Zod)·검증·시간 유틸
 src/model/        순수 결정론적 모델
 src/collection/   DART·Naver 공개 자료 수집 (다른 작성자)
-src/intelligence/ Claude+agy CLI 실행·검증·만료 처리
+src/intelligence/ Claude·Codex·agy CLI 실행·검증·만료 처리
 src/research/     근거→문서 변환, 작업 큐, 공개 분석 파이프라인, doctor
 src/http/         Fastify 라우트·오류·인증
 src/providers/    로컬 JSON 저장소(원자적 쓰기)

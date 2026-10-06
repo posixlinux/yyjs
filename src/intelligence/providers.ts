@@ -1,15 +1,15 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { z } from "zod";
 import { parseResetMs } from "./availability.js";
 import { buildEnv, sanitize } from "./runner.js";
-import { CLAUDE_EFFORT_LEVELS, DEFAULT_CLAUDE_EFFORT, LIMITS, type ClaudeEffort, type ProviderName, type ProviderStatus, type RunResult, type Runner } from "./types.js";
+import { CLAUDE_EFFORT_LEVELS, CODEX_EFFORT_LEVELS, DEFAULT_CLAUDE_EFFORT, LIMITS, type ClaudeEffort, type ProviderName, type ProviderStatus, type RunResult, type Runner } from "./types.js";
 
 export type ProviderConfig = {
   command: string;
   model?: string;
-  /** Claude Code --effort level (low/medium/high/xhigh/max). Default "high". */
+  /** Claude Code --effort level (low/medium/high/xhigh/max), or Codex model_reasoning_effort. */
   effort?: string;
   timeoutMs: number;
   runner: Runner;
@@ -85,6 +85,86 @@ export const agyArgs = (prompt: string, timeoutMs: number, model?: string): stri
   model || AGY_DEFAULT_MODEL,
 ];
 
+// ---- OpenAI Codex CLI (codex) --------------------------------------------------------------------------------
+//
+// Headless use of `codex exec`: the prompt is read from stdin ("-"), `--json` prints one JSON event per line
+// (thread.started, turn.started, item.completed {item:{type:"agent_message",text}}, turn.completed | turn.failed,
+// and transient {type:"error"} "Reconnecting..." notices), and `--output-last-message` writes the final answer to a
+// file. Login is the operator's own ChatGPT sign-in (`codex login`, stored under CODEX_HOME); OPENAI_API_KEY is never
+// forwarded (runner.ts env allowlist), so there is no paid API fallback.
+//
+// Isolation: an empty throwaway cwd, read-only sandbox, approvals never asked, web search off, the user's
+// config.toml (MCP servers, profiles) and execpolicy rules ignored, no session files. Codex can still try to run a
+// read-only shell command: any tool item in the event stream discards the reply, like Claude/agy tool use.
+
+export const codexArgs = (lastMessageFile: string, model?: string, effort?: string): string[] => [
+  "exec",
+  "--json",
+  "--ephemeral",
+  "--skip-git-repo-check",
+  "--sandbox",
+  "read-only",
+  "--ignore-user-config",
+  "--ignore-rules",
+  "--color",
+  "never",
+  "-c",
+  'approval_policy="never"',
+  "-c",
+  'web_search="disabled"',
+  ...(effort ? ["-c", `model_reasoning_effort="${effort}"`] : []),
+  ...(model ? ["--model", model] : []),
+  "--output-last-message",
+  lastMessageFile,
+  "-", // prompt on stdin
+];
+
+/** Validates INTELLIGENCE_CODEX_EFFORT; unset or unrecognised (diagnosed, never thrown) means the CLI's own default. */
+export const validateCodexEffort = (v: string | undefined): string | undefined => {
+  if (v === undefined || v === "") return undefined;
+  if ((CODEX_EFFORT_LEVELS as readonly string[]).includes(v)) return v;
+  console.warn(`[intel] DIAGNOSTIC: INTELLIGENCE_CODEX_EFFORT=${JSON.stringify(sanitize(v, undefined, 40))} is not one of ${CODEX_EFFORT_LEVELS.join("/")}; using the Codex CLI default.`);
+  return undefined;
+};
+
+const CODEX_TOOL_ITEMS = new Set(["command_execution", "file_change", "mcp_tool_call", "web_search", "patch_apply", "exec_command"]);
+
+type CodexEvents = { finalText: string | null; failure: string | null; toolUse: boolean; completed: boolean };
+
+/** Reads the `codex exec --json` event stream (unknown or malformed lines are ignored). */
+export const codexEvents = (raw: string): CodexEvents => {
+  const out: CodexEvents = { finalText: null, failure: null, toolUse: false, completed: false };
+  let lastError: string | null = null;
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (!t.startsWith("{")) continue;
+    const e = tryParse(t) as { type?: unknown; message?: unknown; error?: { message?: unknown } | string; item?: { type?: unknown; text?: unknown } } | undefined;
+    if (!e || typeof e !== "object") continue;
+    const item = e.item && typeof e.item === "object" ? e.item : null;
+    if (item && typeof item.type === "string" && CODEX_TOOL_ITEMS.has(item.type)) out.toolUse = true;
+    if (e.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") out.finalText = item.text;
+    if (e.type === "turn.completed") out.completed = true;
+    if (e.type === "turn.failed") out.failure = typeof e.error === "string" ? e.error : typeof e.error?.message === "string" ? e.error.message : "turn failed";
+    // Top-level "error" events include transient "Reconnecting..." notices; only the last one matters, and only when
+    // the turn never completed.
+    if (e.type === "error" && typeof e.message === "string" && !/^Reconnecting/i.test(e.message)) lastError = e.message;
+  }
+  if (!out.failure && !out.completed && lastError) out.failure = lastError;
+  return out;
+};
+
+const codexEnvelope = (raw: string, lastMessage: string | null): Envelope => {
+  const ev = codexEvents(raw);
+  if (ev.failure) {
+    const detail = sanitize(ev.failure);
+    return expiredFrom(detail, "codex") ?? { code: "BAD_ENVELOPE", message: `codex reported an error: ${detail}` };
+  }
+  if (ev.toolUse) return { code: "TOOL_USE_DETECTED", message: "codex attempted a tool call; result discarded" };
+  const text = lastMessage?.trim() ? lastMessage : ev.finalText;
+  if (!text?.trim()) return { code: "BAD_ENVELOPE", message: "codex produced no final message" };
+  return { text };
+};
+
 // ---- envelope handling --------------------------------------------------------------------------------------
 
 const status = (provider: ProviderName, code: string, message: string, t0: number, st: ProviderStatus["status"] = "error"): ProviderOutcome<never> => ({
@@ -118,7 +198,8 @@ const classify = (provider: ProviderName, r: RunResult, command: string, t0: num
   if (r.timedOut) return fail(provider, "TIMEOUT", `${provider} CLI timed out and was terminated`, t0);
   if (r.outputLimitExceeded) return fail(provider, "OUTPUT_LIMIT", `${provider} CLI output exceeded ${LIMITS.maxStdoutBytes} bytes and was terminated`, t0);
   if (r.exitCode !== 0) {
-    const detail = errorDetail(r);
+    const codexFailure = provider === "codex" ? codexEvents(r.stdout).failure : null;
+    const detail = codexFailure ? sanitize(codexFailure) : errorDetail(r);
     if (QUOTA_RE.test(detail)) return { ...fail(provider, "QUOTA", `${provider} quota or rate limit reached: ${detail}`, t0), cooldownMs: parseResetMs(detail) };
     if (AUTH_RE.test(detail)) return fail(provider, "AUTH_REQUIRED", `${provider} CLI is not authenticated; an operator must log in interactively (not attempted here): ${detail}`, t0);
     return fail(provider, "EXIT_NONZERO", `${provider} CLI exited with code ${r.exitCode}: ${detail}`, t0);
@@ -285,14 +366,18 @@ async function callProviderInner<S extends z.ZodType>(
 
   const dir = await mkdtemp(join(tmpdir(), `intel-${provider}-`)); // empty cwd: nothing to read even if a tool leaked
   try {
-    const args = provider === "claude" ? claudeArgs(cfg.model, cfg.effort) : agyArgs(prompt, cfg.timeoutMs, cfg.model);
+    const lastMessageFile = join(dir, "last-message.txt");
+    const args =
+      provider === "claude" ? claudeArgs(cfg.model, cfg.effort)
+      : provider === "codex" ? codexArgs(lastMessageFile, cfg.model, cfg.effort)
+      : agyArgs(prompt, cfg.timeoutMs, cfg.model);
 
     let result: RunResult;
     try {
       result = await cfg.runner({
         command: cfg.command,
         args,
-        stdin: provider === "claude" ? prompt : "",
+        stdin: provider === "agy" ? "" : prompt,
         env: buildEnv(cfg.env),
         cwd: dir,
         timeoutMs: cfg.timeoutMs,
@@ -311,7 +396,10 @@ async function callProviderInner<S extends z.ZodType>(
     const bad = classify(provider, result, cfg.command, t0);
     if (bad) return bad;
 
-    const env = provider === "claude" ? claudeEnvelope(result.stdout) : agyEnvelope(result.stdout);
+    const env =
+      provider === "claude" ? claudeEnvelope(result.stdout)
+      : provider === "codex" ? codexEnvelope(result.stdout, await readFile(lastMessageFile, "utf8").catch(() => null))
+      : agyEnvelope(result.stdout);
     if ("code" in env) return { ...fail(provider, env.code, env.message, t0), cooldownMs: env.cooldownMs };
 
     const candidates = extractJsonCandidates(env.text);

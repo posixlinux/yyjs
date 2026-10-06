@@ -150,7 +150,7 @@ describe("POST /v1/analyses (public default)", () => {
 
     const early = (await app.inject({ url: job.statusUrl })).json();
     expect(["queued", "running"]).toContain(early.status);
-    expect(early.request).toEqual({ ticker: "111110", asOf: AS_OF, mode: "public" });
+    expect(early.request).toEqual({ ticker: "111110", asOf: AS_OF, mode: "public", models: ["claude"] });
     expect(early.result).toBeUndefined();
 
     g.release();

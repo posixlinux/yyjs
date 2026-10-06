@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_CALL_TIMEOUT_MS, JOB_MAX_SEQUENTIAL_CALLS, JOB_OVERHEAD_MS } from "./intelligence/types.js";
+import { DEFAULT_CALL_TIMEOUT_MS, JOB_MAX_SEQUENTIAL_CALLS, JOB_OVERHEAD_MS, PROVIDER_NAMES, type ProviderName } from "./intelligence/types.js";
 import type { JobLimits } from "./research/jobs.js";
 
 export type Config = {
@@ -18,6 +18,9 @@ export type Config = {
   jobs: JobLimits;
   /** Path of the Antigravity CLI (`agy`; server config only, never request-controlled). */
   agyPath: string;
+  /** Models used by a public analysis that does not choose them (INTELLIGENCE_MODELS, default "claude"): the first
+   * drafts, an optional second one cross-checks. */
+  defaultModels: ProviderName[];
   /** Secret values that must be scrubbed from any response/log text. */
   secrets: () => string[];
   /** Booleans only: which optional integrations are configured. */
@@ -26,6 +29,14 @@ export type Config = {
    * client-side -- undefined (not set) means the funding-gap check uses 0 (no buffer), explicitly labelled as such. */
   strategyMinimumCashBufferKRW?: number;
 };
+
+/** "claude", "codex", "claude,agy", "codex+claude"...: one or two distinct known models; anything else is "claude". */
+export function parseModels(v: string | undefined): ProviderName[] {
+  const names = [...new Set((v ?? "").split(/[\s,+]+/).map((x) => x.trim().toLowerCase()).filter(Boolean))];
+  const ok = names.length >= 1 && names.length <= 2 && names.every((n) => (PROVIDER_NAMES as readonly string[]).includes(n));
+  if (v && !ok) console.warn(`[config] INTELLIGENCE_MODELS must name one or two of ${PROVIDER_NAMES.join("/")} (e.g. "claude" or "claude,agy"); using "claude".`);
+  return ok ? (names as ProviderName[]) : ["claude"];
+}
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 /** The installer puts `agy` in ~/.local/bin, which is often not on the PATH of a server process. */
@@ -101,6 +112,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       jobTimeoutMs,
     },
     agyPath: env.INTELLIGENCE_AGY_PATH || defaultAgyPath(env.HOME),
+    defaultModels: parseModels(env.INTELLIGENCE_MODELS),
     secrets: () => secretKeys.map((k) => (env[k] ?? "").trim()).filter(Boolean),
     capabilities: {
       dartConfigured: !!(env.DART_API_KEY ?? "").trim(),

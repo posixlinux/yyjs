@@ -11,7 +11,7 @@ export type DoctorReport = { ok: boolean; readiness: { evidence: boolean; fullAn
 
 // Paid/alternative model auth routes. They are NEVER forwarded to the CLI (see intelligence/runner.ts env allowlist),
 // so they cannot cause paid usage; the doctor only names them (never prints values).
-const PAID_ENV = ["GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_PROJECT", "GOOGLE_APPLICATION_CREDENTIALS"];
+const PAID_ENV = ["OPENAI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_PROJECT", "GOOGLE_APPLICATION_CREDENTIALS"];
 
 /**
  * Presence/config diagnostics. It never sends a model prompt (no quota use) and never prints secret values:
@@ -28,7 +28,7 @@ export async function runDoctor(opts: { env?: NodeJS.ProcessEnv; runner?: Runner
   add("node", major >= 22 ? "ok" : "fail", `Node.js ${process.versions.node} (>=22 required)`);
 
   const agyPath = env.INTELLIGENCE_AGY_PATH || defaultAgyPath(home);
-  const readiness = await checkReadiness({ runner, env, agyPath, claudePath: env.INTELLIGENCE_CLAUDE_PATH || undefined });
+  const readiness = await checkReadiness({ runner, env, agyPath, claudePath: env.INTELLIGENCE_CLAUDE_PATH || undefined, codexPath: env.INTELLIGENCE_CODEX_PATH || undefined });
 
   if (readiness.claude.available) add("claude-cli", "ok", `${readiness.claude.command} ${readiness.claude.version ?? ""}`.trim());
   else add("claude-cli", "warn", `${readiness.claude.error ?? "not runnable"} — install Claude Code and log in (analysis can still run with agy alone)`);
@@ -66,7 +66,20 @@ export async function runDoctor(opts: { env?: NodeJS.ProcessEnv; runner?: Runner
     add("agy-login", agyLoggedIn ? "ok" : "warn", agyLoggedIn ? "`agy models` lists models for the signed-in account (no prompt sent). Quota is only known at first use; an expired quota is skipped automatically." : "could not confirm an agy login (`agy models` returned no models); run `npm run agy:login` and sign in with Google");
   } else add("agy-cli", "warn", `${readiness.agy.error ?? "not runnable"} — install: curl -fsSL https://antigravity.google/cli/install.sh | bash, or set INTELLIGENCE_AGY_PATH (analysis can still run with Claude alone)`);
 
-  if (!readiness.ready) add("model-cli", "fail", "neither the Claude CLI nor the agy CLI is runnable: no model analysis is possible (evidence-only jobs still work)");
+  let codexLoggedIn = false;
+  if (readiness.codex.available) {
+    add("codex-cli", "ok", `${readiness.codex.command} ${readiness.codex.version ?? ""}`.trim());
+    // `codex login status` reads the stored credentials only (no prompt, no quota). Exit 0 = logged in.
+    try {
+      const r = await runner({ command: readiness.codex.command, args: ["login", "status"], stdin: "", env: buildEnv(env), cwd: tmpdir(), timeoutMs: 15_000, maxStdoutBytes: 20_000 });
+      codexLoggedIn = !r.spawnError && !r.timedOut && r.exitCode === 0 && !/not logged in/i.test(`${r.stdout}\n${r.stderr}`);
+    } catch {
+      codexLoggedIn = false;
+    }
+    add("codex-login", codexLoggedIn ? "ok" : "warn", codexLoggedIn ? "`codex login status` reports a login (no prompt sent)" : "could not confirm a Codex login; run `codex login` and sign in with your ChatGPT account (OPENAI_API_KEY is never used)");
+  } else add("codex-cli", "warn", `${readiness.codex.error ?? "not runnable"} — optional: npm i -g @openai/codex, or set INTELLIGENCE_CODEX_PATH (needed only to analyse with Codex)`);
+
+  if (!readiness.ready) add("model-cli", "fail", "none of the Claude, Codex or agy CLIs is runnable: no model analysis is possible (evidence-only jobs still work)");
 
   const paid = PAID_ENV.filter((k) => env[k]);
   add("paid-env", paid.length ? "warn" : "ok", paid.length ? `${paid.join(", ")} set in the environment — ignored: never forwarded to the Claude/agy CLI, so no paid fallback` : "no paid-route variables set");
@@ -80,22 +93,24 @@ export async function runDoctor(opts: { env?: NodeJS.ProcessEnv; runner?: Runner
   const evidence = dartKey; // Naver quote/news need no key; filings/statements (needed for any valuation) need DART
   const claudeOk = readiness.claude.available && claudeLoggedIn;
   const agyOk = readiness.agy.available && agyLoggedIn;
-  const dualModel = evidence && claudeOk && agyOk;
-  const fullAnalysis = evidence && (claudeOk || agyOk); // one usable model is enough: the other is skipped (no cross-check)
+  const codexOk = readiness.codex.available && codexLoggedIn;
+  const usable = [claudeOk && "Claude", codexOk && "Codex", agyOk && "agy"].filter((x): x is string => !!x);
+  const dualModel = evidence && usable.length >= 2;
+  const fullAnalysis = evidence && usable.length >= 1; // one usable model is enough (no cross-check)
   add("ready-evidence", evidence ? "ok" : "warn", evidence ? "evidence collection (POST /v1/research) is fully configured" : "evidence collection runs with Naver only; set DART_API_KEY for filings/statements");
   add(
     "ready-analysis",
     dualModel ? "ok" : "warn",
     dualModel
-      ? "full analysis with Claude + agy cross-check (POST /v1/analyses) is ready"
+      ? `full analysis (POST /v1/analyses) is ready with ${usable.join(", ")}; any two of them can cross-check`
       : fullAnalysis
-        ? `analysis runs with ${claudeOk ? "Claude" : "agy"} only (no cross-check): ${claudeOk ? "agy" : "Claude"} is not usable`
-        : `full analysis not ready: ${[!dartKey && "DART key", !claudeOk && "Claude (CLI/login)", !agyOk && "agy (CLI/login: npm run agy:login)"].filter(Boolean).join(", ")}`,
+        ? `analysis runs with ${usable[0]} only (no cross-check possible)`
+        : `full analysis not ready: ${[!dartKey && "DART key", !claudeOk && !codexOk && !agyOk && "a model CLI with a login (Claude, Codex: codex login, or agy: npm run agy:login)"].filter(Boolean).join(", ")}`,
   );
   return { ok: !items.some((i) => i.status === "fail"), readiness: { evidence, fullAnalysis, dualModel }, items };
 }
 
 export function formatDoctor(r: DoctorReport): string {
   const icon = { ok: "✔", warn: "!", fail: "✘" } as const;
-  return [...r.items.map((i) => `${icon[i.status]} ${i.name.padEnd(18)} ${i.detail}`), "", `증거 수집: ${r.readiness.evidence ? "준비됨" : "DART 키 필요"} / 전체 분석: ${r.readiness.dualModel ? "Claude+agy 교차검증 가능 (쿼터는 호출 시 확인, 만료되면 자동 제외)" : r.readiness.fullAnalysis ? "단일 모델만 가능(교차검증 없음)" : "미준비 (위 ! 항목 조치)"}`, r.ok ? "" : "설치/구성 실패: 위 ✘ 항목을 해결하세요"].join("\n");
+  return [...r.items.map((i) => `${icon[i.status]} ${i.name.padEnd(18)} ${i.detail}`), "", `증거 수집: ${r.readiness.evidence ? "준비됨" : "DART 키 필요"} / 전체 분석: ${r.readiness.dualModel ? "두 모델 교차검증 가능 (쿼터는 호출 시 확인, 만료되면 자동 제외)" : r.readiness.fullAnalysis ? "단일 모델만 가능(교차검증 없음)" : "미준비 (위 ! 항목 조치)"}`, r.ok ? "" : "설치/구성 실패: 위 ✘ 항목을 해결하세요"].join("\n");
 }
