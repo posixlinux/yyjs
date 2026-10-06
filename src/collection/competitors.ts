@@ -7,7 +7,6 @@ import { collectEdinetRevenue } from "./edinet.js";
 import { CollectionError, CollectionInputError, issue } from "./types.js";
 import type { AsOf } from "./text.js";
 import type { CollectionIssue, CompetitorEvidence, CompetitorMarket, ProviderName, ProviderReport } from "./types.js";
-export { calendarPeriodOf } from "./period.js";
 
 // Competitor revenue from the three disclosure systems this server supports for global comparison -- Korea (DART),
 // the United States (SEC EDGAR) and Japan (EDINET). Other countries are rejected at input: a comparison only ever

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { screen } from "../../src/strategy/screen.js";
 import { CandidateInputSchema, EarningsForecastSnapshotSchema, STRATEGY_SOURCE_KINDS } from "../../src/strategy/schema.js";
-import { DECISION_AT, HORIZON, TEST_CONFIG, makeCandidateWithTicker, makeCatalyst, makeConsensus, makeEligibleCandidate, makeForecast } from "./fixture.js";
+import { DECISION_AT, TEST_CONFIG, makeCandidateWithTicker, makeCatalyst, makeConsensus, makeEligibleCandidate, makeForecast } from "./fixture.js";
 
 const codesOf = (r: ReturnType<typeof screen>["evaluations"][number]) => (r.eligible ? [] : r.reasons.map((x) => x.code));
 
