@@ -3,9 +3,12 @@
 //   npm run forecast -- 005930 --peers 000660,035420  explicit peers   (--peer-count N, --json)
 //   npm run forecast -- --rank [--exchange KOSDAQ] [--count 30] [--horizon 1]   stocks most likely to rise
 //   npm run forecast -- --score                     score every logged forecast against later closes
+//   npm run forecast -- --check [ticker]            check each data source and which fields it really returns
 import { loadConfig } from "../src/config.js";
 import { ForecastService } from "../src/forecast/service.js";
 import { UniverseProvider } from "../src/research/universe.js";
+import { createHttp } from "../src/collection/http.js";
+import { loadIndex, loadStock, loadUsdKrw } from "../src/forecast/history.js";
 
 const argv = process.argv.slice(2);
 const flag = (name: string) => {
@@ -17,7 +20,38 @@ const svc = new ForecastService({ universe: new UniverseProvider(), logDir: conf
 const pct = (v: number | null | undefined, d = 1) => (v === null || v === undefined ? "-" : `${v >= 0 ? "+" : ""}${v.toFixed(d)}%`);
 const rate = (v: number | null | undefined) => (v === null || v === undefined ? "-" : `${(v * 100).toFixed(1)}%`);
 
-if (argv.includes("--rank")) {
+if (argv.includes("--check")) {
+  const ticker = argv.find((a) => /^[0-9][0-9A-Z]{5}$/i.test(a))?.toUpperCase() ?? "005930";
+  const http = createHttp({ fetch, timeoutMs: 15_000, maxBytes: 5 * 1024 * 1024, maxRequests: 20, secrets: [] });
+  const share = (n: number, of: number) => `${n}/${of}`;
+  try {
+    const s = await loadStock(http, ticker, { maxPages: 2 });
+    const b = s.bars;
+    console.log(`✔ 종목 시세 ${ticker} ${s.name ?? ""} (${s.exchange}): ${b.length}거래일 ${b[0]?.date}~${b.at(-1)?.date}`);
+    console.log(`  시가 ${share(b.filter((x) => x.open !== null).length, b.length)} · 고가 ${share(b.filter((x) => x.high !== null).length, b.length)} · 저가 ${share(b.filter((x) => x.low !== null).length, b.length)} · 거래량 ${share(b.filter((x) => x.volume !== null).length, b.length)} (없으면 해당 특징만 비어 있고 예측은 계속됩니다)`);
+    try {
+      const idx = await loadIndex(http, s.exchange, { maxPages: 1 });
+      console.log(idx.length ? `✔ ${s.exchange} 지수: ${idx.length}거래일, 최근 ${idx.at(-1)?.date} ${idx.at(-1)?.close}` : `✘ ${s.exchange} 지수: 응답은 왔지만 시세 행이 없습니다`);
+    } catch (e) {
+      console.log(`✘ ${s.exchange} 지수: ${(e as Error).message} (지수 특징 없이 예측합니다)`);
+    }
+    try {
+      const fx = await loadUsdKrw(http, b[0]!.date, b.at(-1)!.date);
+      console.log(fx.length ? `✔ 원/달러(ECB): ${fx.length}일, 최근 ${fx.at(-1)?.date} ${fx.at(-1)?.close}` : "✘ 원/달러: 환율 행이 없습니다");
+    } catch (e) {
+      console.log(`✘ 원/달러(ECB): ${(e as Error).message} (환율 특징 없이 예측합니다)`);
+    }
+  } catch (e) {
+    console.log(`✘ 종목 시세 ${ticker}: ${(e as Error).message} — 예측할 수 없습니다(네트워크·방화벽을 확인하세요)`);
+    process.exit(1);
+  }
+  try {
+    const u = await new UniverseProvider().get();
+    console.log(`✔ 종목 목록: ${u.items.length}개 보통주 (순위·동종 학습에 사용)`);
+  } catch (e) {
+    console.log(`✘ 종목 목록: ${(e as Error).message} (순위 기능과 자동 동종 선택을 쓸 수 없습니다)`);
+  }
+} else if (argv.includes("--rank")) {
   const r = await svc.rank({ exchange: flag("--exchange") === "KOSDAQ" ? "KOSDAQ" : "KOSPI", count: flag("--count") ? Number(flag("--count")) : undefined, horizon: (Number(flag("--horizon")) || 1) as 1 | 2 | 3 }).catch((e: Error) => {
     console.error(`순위 계산 실패: ${e.message}`);
     process.exit(1);
