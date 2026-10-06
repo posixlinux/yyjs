@@ -101,7 +101,7 @@ share one run) and the semaphore are process-wide.
 
 None added. Uses `zod` (already installed; `z.toJSONSchema` embeds `DatasetSchema` in the prompt), `node:*`, and the existing
 `src/domain/{schema,time}.ts`, `src/errors.ts`. Runtime needs at least one of the two CLIs; tests need nothing external (mock runner + a few
-real `node` child processes for the spawn tests). Tests live in `tests/intelligence.test.ts` (vitest default glob picks it up).
+real `node` child processes for the spawn tests). Tests live in `test/intelligence.test.ts` (vitest default glob picks it up).
 
 ## Isolation
 

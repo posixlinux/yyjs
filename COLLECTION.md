@@ -102,8 +102,8 @@ const evidence = await collectPublicEvidence({ ticker: "005930", asOf: "2026-09-
 - **추가 패키지 없음.** Node 내장 `fetch`, `AbortSignal`, `node:zlib`, `TextDecoder`만 사용한다(자체 ZIP 리더, 정규식 XML 처리). Node ≥ 22, `@types/node` 필요. `zod`/XML/ZIP 패키지는 필요 없다.
 - 상대 import는 `.js` 확장자를 사용한다(NodeNext/bundler 및 Vitest에서 동작). 지원하지 않는 TS 문법(enum, 매개변수 프로퍼티)은 쓰지 않았다.
 - 엔트리: `src/collection/index.ts`의 `collectPublicEvidence`. 타입은 같은 파일에서 재수출.
-- 테스트: `tests/collection.test.ts`(Vitest, 주입 fetch, 실제 네트워크 없음).
+- 테스트: `test/collection.test.ts`(Vitest, 주입 fetch, 실제 네트워크 없음).
 
 ## 검증 상태
 
-실제 Vitest 5(`npm test`)로 `tests/collection.test.ts` 58개 테스트(전체 6개 파일 161개)가 통과했고 `npm run build`(`tsc`, strict)도 오류 없이 끝났다. 테스트는 주입 fetch만 사용하며 실제 Naver 기사 페이지·DART 응답은 이 모듈의 자동 테스트에 포함되지 않았다(Naver 시세/뉴스/기사는 Codex가 실서버로 확인). `tsconfig`가 `src`만 포함하므로 테스트 파일은 `tsc`로 타입 검사되지 않는다.
+실제 Vitest 5(`npm test`)로 `test/collection.test.ts` 58개 테스트(전체 6개 파일 161개)가 통과했고 `npm run build`(`tsc`, strict)도 오류 없이 끝났다. 테스트는 주입 fetch만 사용하며 실제 Naver 기사 페이지·DART 응답은 이 모듈의 자동 테스트에 포함되지 않았다(Naver 시세/뉴스/기사는 Codex가 실서버로 확인). `tsconfig`가 `src`만 포함하므로 테스트 파일은 `tsc`로 타입 검사되지 않는다.

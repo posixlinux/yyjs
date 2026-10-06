@@ -11,7 +11,6 @@ import { formatDoctor, runDoctor } from "../src/research/doctor.js";
 import { buildDocuments, kstDate, truncateStatement } from "../src/research/evidence.js";
 import { AS_OF, makeDataset, NOW, tmpDir } from "../test/fixture.js";
 import { setup, type TestApp } from "../test/app.js";
-import { writeFile, mkdir } from "node:fs/promises";
 import { makeSingleQuarterCandidate } from "../test/strategy/fixture.js";
 
 // ---- fakes -----------------------------------------------------------------------------------------------------
@@ -103,7 +102,7 @@ function accepted(dataset: Dataset | null = makeDataset(), over: Partial<Analysi
     estimates: [],
     unavailable: [],
     strategy: { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null, unavailable: [{ field: "all", code: "NOT_PROVIDED", message: "the model did not provide the required strategy object" }] },
-    audit: { issues: [], excludedDocuments: [], auditSummary: "ok", auditedBy: "agy", independentAudit: true, limitations: [] },
+    audit: { issues: [], excludedDocuments: [], auditSummary: "ok", draftedBy: "claude", auditedBy: "agy", independentAudit: true, limitations: [] },
     generatedAt: NOW.toISOString(),
     ...over,
   };
@@ -189,7 +188,7 @@ describe("POST /v1/analyses (public default)", () => {
 
   it("defaults asOf to the Asia/Seoul calendar date (UTC 20:00 is already the next day in Seoul)", async () => {
     const now = new Date("2026-01-15T20:00:00Z");
-    const collect = vi.fn(async () => evidence());
+    const collect = vi.fn(async (_input: { asOf: string }) => evidence());
     const { app } = await setup({}, now, { collect, intelligence: async () => accepted(null) });
     const job = (await submit(app, { ticker: "111110" })).json();
     const { body } = await poll(app, job.statusUrl);
@@ -301,7 +300,7 @@ describe("partial results never carry a valuation", () => {
     const partial = accepted(null, {
       missingFields: ["shares.dilutedCommon", "markets[0].observations"],
       narrative: { product: "주력 제품은 반도체", industry: "업황은 회복 국면" },
-      audit: { issues: [{ code: "NO_DATASET", path: "dataset", message: "x" }], excludedDocuments: [], auditSummary: null, auditedBy: null, independentAudit: false, limitations: [] },
+      audit: { issues: [{ code: "NO_DATASET", path: "dataset", message: "x" }], excludedDocuments: [], auditSummary: null, draftedBy: null, auditedBy: null, independentAudit: false, limitations: [] },
     });
     const { body, intelligence } = await partialCase(ev, partial);
     noPrices(body);
@@ -345,7 +344,7 @@ describe("partial results never carry a valuation", () => {
     ds.competitors = [
       { id: "c1", name: "Alpha", marketId: "m1", revenue: ["2025Q1", "2025Q2", "2025Q3", "2025Q4"].map((q) => ({ quarter: q, revenue: 3e8, currency: "USD", basis: "quarterly" as const, source: { ...src, manualReference: "MODEL_ESTIMATE: 지식" }, estimate: { method: "model_knowledge" as const, basedOn: [], rationale: "분석가 지식" } })) },
     ];
-    const single = accepted(ds, { status: "single_model", crossChecked: false, audit: { issues: [], excludedDocuments: [], auditSummary: "ok", auditedBy: "claude", independentAudit: false, limitations: [] }, providers: { claude: ok("claude"), agy: err("agy", "QUOTA") }, unavailable: [{ provider: "agy", code: "QUOTA", message: "m", retryAfter: "2026-09-29T09:00:00.000Z", skippedWithoutCall: true }] });
+    const single = accepted(ds, { status: "single_model", crossChecked: false, audit: { issues: [], excludedDocuments: [], auditSummary: "ok", draftedBy: "claude", auditedBy: "claude", independentAudit: false, limitations: [] }, providers: { claude: ok("claude"), agy: err("agy", "QUOTA") }, unavailable: [{ provider: "agy", code: "QUOTA", message: "m", retryAfter: "2026-09-29T09:00:00.000Z", skippedWithoutCall: true }] });
     const { body } = await partialCase(evidence(), single);
     expect(body.status).toBe("completed");
     const r = body.result.report;
@@ -482,7 +481,7 @@ describe("partial results never carry a valuation", () => {
 
   it("a draft the review did not accept is valued provisionally when it passed the hard checks", async () => {
     const issues = [{ code: "AUDIT_UNCONFIRMED", path: "quote.priceKRW", message: "not confirmed" }];
-    const draft = accepted(null, { status: "partial", provisionalDataset: makeDataset(), audit: { issues, excludedDocuments: [], auditSummary: "x", auditedBy: "agy", independentAudit: true, limitations: [] } });
+    const draft = accepted(null, { status: "partial", provisionalDataset: makeDataset(), audit: { issues, excludedDocuments: [], auditSummary: "x", draftedBy: "claude", auditedBy: "agy", independentAudit: true, limitations: [] } });
     const { body } = await partialCase(evidence(), draft);
     expect(body.status).toBe("partial");
     expect(body.result.valuation).toMatchObject({ status: "available", grade: "provisional" });
@@ -493,7 +492,7 @@ describe("partial results never carry a valuation", () => {
 
   it("returns the raw draft dataset as rejected when the review produced no usable dataset", async () => {
     const raw = { ...makeDataset(), quote: { priceKRW: -1 } };
-    const draft = accepted(null, { status: "rejected", draftDataset: raw });
+    const draft = accepted(null, { status: "partial", draftDataset: raw });
     const { body } = await partialCase(evidence(), draft);
     noPrices(body);
     expect(body.result.partialReasons.map((r: any) => r.code)).toContain("RESEARCH_NOT_ACCEPTED");
