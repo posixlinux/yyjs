@@ -28,7 +28,7 @@ export type JobLimits = {
   jobTimeoutMs: number;
 };
 
-export type Work = (ctx: { signal: AbortSignal }) => Promise<JobOutcome>;
+export type Work = (ctx: { signal: AbortSignal; jobId?: string }) => Promise<JobOutcome>;
 
 export class JobManager {
   private jobs = new Map<string, Job>();
@@ -106,7 +106,7 @@ export class JobManager {
       job.startedAt = this.now();
       // The job is reported as soon as it finishes or is abandoned (timeout), but its slot is released only once the
       // work itself has settled: work that ignores the abort signal can never push concurrency past maxRunning.
-      const settled = Promise.resolve().then(() => work({ signal: controller.signal }));
+      const settled = Promise.resolve().then(() => work({ signal: controller.signal, jobId: job.id }));
       const done = this.execute(job, settled, controller);
       Promise.allSettled([done, settled]).then(() => {
         this.running.delete(job.id);

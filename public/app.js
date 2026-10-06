@@ -303,7 +303,13 @@ function renderReport(rep) {
   return section("분석 보고", ...parts);
 }
 
-function renderAnalysis(a, valuation) {
+const TIER = { high: ["추천 신뢰 등급 높음", "ok"], medium: ["추천 신뢰 등급 보통", "warn"], low: ["추천 신뢰 등급 낮음", "bad"] };
+const TIER_REASON = { PE_OUTSIDE_OBSERVED_RANGE: "가정한 PER이 실제 거래된 PER 범위를 벗어남", CONSENSUS_GAP_LARGE: "기본 시나리오가 컨센서스와 30% 넘게 다름", "provisional valuation": "잠정 가격", "single model (no cross-check)": "단일 모델(교차검증 없음)" };
+function renderQuality(q) {
+  if (!q || !q.tier) return null;
+  return el("p", {}, badge(TIER, q.tier), q.reasons.length ? ` ${q.reasons.map((x) => TIER_REASON[x] || x.replace(/^data grounding /, "데이터 근거 ")).join(" · ")}` : " 모든 점검 통과");
+}
+function renderAnalysis(a, valuation, quality) {
   if (!a) return null;
   const sc = a.scenarios || [];
   const th = el("tr", {}, el("th", { text: "" }), ...sc.map((s) => el("th", { text: { bear: "비관", base: "기본", bull: "낙관" }[s.scenario] || s.scenario })));
@@ -322,11 +328,12 @@ function renderAnalysis(a, valuation) {
     )));
   return section(`가치 계산 — 목표 분기 ${a.targetQuarter || ""}`,
     el("p", { class: "small", text: `현재가 ${won(a.facts && a.facts.quote && a.facts.quote.priceKRW)} 기준 · 밸류에이션 상태: ${valuation ? valuation.status : "-"}` }),
+    renderQuality(quality),
     valuation && valuation.grade === "provisional"
       ? el("div", { class: "box warn" }, el("strong", { text: "잠정 가격: " }), "일부 검증을 통과하지 못했거나 서버가 보정한 입력으로 계산했습니다. 아래 '주의 사항'을 확인하세요.")
       : null,
     table,
-    el("p", { class: "small", text: "목표가는 (다음 분기 EPS × 4) × 시나리오 PER 이며 실제 주가 예측이 아닌 밸류에이션 프록시입니다." }),
+    el("p", { class: "small", text: "목표가는 연간 EPS(직전 3개 분기 실적 + 예측 분기, 실적이 없으면 예측 분기 × 4) × 시나리오 PER 이며 실제 주가 예측이 아닌 밸류에이션 프록시입니다." }),
     (a.dataQuality && a.dataQuality.warnings || []).length ? el("ul", { class: "plain" }, a.dataQuality.warnings.map((w) => el("li", { text: w }))) : null,
     el("details", {}, el("summary", { text: "한계" }), el("ul", { class: "plain" }, (a.limitations || []).map((w) => el("li", { text: w })))));
 }
@@ -509,7 +516,7 @@ function renderJob(job, startedAt) {
 
     const rep = renderReport(r.report);
     if (rep) kids.push(rep);
-    const a = renderAnalysis(r.analysis, r.valuation);
+    const a = renderAnalysis(r.analysis, r.valuation, r.recommendationQuality);
     if (a) kids.push(a);
     for (const x of [renderStrategyAuto(r.strategyAuto), renderResearch(r.research), renderEvidence(r.evidence)]) if (x) kids.push(x);
 

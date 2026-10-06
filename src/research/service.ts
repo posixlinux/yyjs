@@ -13,6 +13,8 @@ import { buildDocuments, kstDate, summarizeEvidence, type BuiltDocuments } from 
 import { JobManager, type Job, type JobKind, type JobLimits, type JobOutcome, type Work } from "./jobs.js";
 import { evaluateAutoStrategy } from "../strategy/auto.js";
 import { deriveFundingPlan } from "../strategy/funding-derive.js";
+import { consensusGapCheck, peBandCheck, qualityTier } from "./quality.js";
+import { buildPredictionRecord, type PredictionRecord } from "./predictions.js";
 
 export type Collector = (input: { ticker: string; asOf: string; competitors?: string[] }, opts: { signal: AbortSignal }) => Promise<PublicEvidence>;
 /** `signal` aborts running CLI children (job timeout / server close). */
@@ -29,6 +31,8 @@ export type ResearchDeps = {
   strategyMinimumCashBufferKRW?: number;
   /** Models for an analysis that does not choose them (first drafts, optional second cross-checks). Default ["claude"]. */
   defaultModels?: ProviderName[];
+  /** Appends a finished analysis's predictions to the prediction log (scored later). Failures are reported, never fatal. */
+  recordPrediction?: (r: PredictionRecord) => Promise<void>;
 };
 
 /** blocking: no valuation is produced. warning: the valuation is still produced, but reported as provisional. */
@@ -179,7 +183,7 @@ export class ResearchService {
   // ---- full public analysis job -------------------------------------------------------------------------------
 
   private analysisWork(ticker: string, asOf: string, competitors: string[], models: ProviderName[]): Work {
-    return async ({ signal }) => {
+    return async ({ signal, jobId }) => {
       const got = await this.collectEvidence(ticker, asOf, competitors, signal);
       if ("outcome" in got) return got.outcome;
       const ev = got.ev;
@@ -248,6 +252,9 @@ export class ResearchService {
         }
       }
       if (reasons.some((r) => r.severity === "blocking")) analysis = null; // never a valuation next to a blocking problem
+      // Market-data sanity checks on the finished valuation: a P/E outside the range the stock actually traded at, or a
+      // base case far from the consensus, makes the price provisional instead of verified.
+      if (analysis) for (const w of [peBandCheck(analysis, ev.market.perReference), consensusGapCheck(analysis, ev.market.quarterlyConsensus ?? [])]) if (w) reasons.push(w);
       const provisional = reasons.some((r) => r.severity === "warning");
 
       // Top-level valuation status mirrors the real scenario valuations (non-positive common earnings => unavailable).
@@ -325,6 +332,16 @@ export class ResearchService {
         cashBufferConfigured: this.deps.strategyMinimumCashBufferKRW !== undefined,
       });
 
+      const report = analysis && research ? buildReport(analysis, research) : null;
+      const recommendationQuality = qualityTier({ grade: valuation.grade, crossChecked: !!research?.crossChecked, dataGrounding: report?.quality.dataGrounding ?? null, warnings: reasons.map((r) => r.code) });
+      if (this.deps.recordPrediction) {
+        const rec = buildPredictionRecord({
+          jobId: jobId ?? "unknown", recordedAt: this.deps.now().toISOString(), ticker, asOf, analysis, grade: valuation.grade, strategyAuto,
+          quarterlyConsensus: ev.market.quarterlyConsensus ?? [], quality: recommendationQuality, warnings: reasons.map((r) => r.code),
+        });
+        if (rec) await this.deps.recordPrediction(rec).catch(() => notes.push("예측 기록 파일(predictions.jsonl)에 저장하지 못했습니다."));
+      }
+
       const result = {
         mode: "public",
         ticker,
@@ -348,8 +365,9 @@ export class ResearchService {
           draftDataset, // null when no draft was produced; never persisted
         },
         analysis,
-        report: analysis && research ? buildReport(analysis, research) : null,
+        report,
         valuation,
+        recommendationQuality,
         partialReasons: reasons,
         missingInputs,
         notes,

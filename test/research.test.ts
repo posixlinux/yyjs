@@ -1408,3 +1408,28 @@ describe("doctor and scripts", () => {
     expect(await readFile(".env.example", "utf8")).not.toMatch(/=\s*[A-Za-z0-9]{20,}/);
   });
 });
+
+describe("market-data sanity checks and the prediction log", () => {
+  it("marks a P/E outside the traded range provisional, grades it, and logs the prediction", async () => {
+    const recorded: unknown[] = [];
+    const perReference = { ttmEpsKRW: 4000, quarters: ["2025Q1", "2025Q2", "2025Q3", "2025Q4"], latestClose: { date: "2026-01-10", closeKRW: 50000 }, current: 25, window: { from: "2025-06-01", to: "2026-01-10", sessions: 150, min: 20, median: 25, max: 30 }, sourceUrls: [] };
+    const t = await setup({}, NOW, { collect: async () => evidence({ market: { perReference } }), intelligence: async () => accepted(), recordPrediction: async (r) => void recorded.push(r) });
+    const job = (await submit(t.app)).json();
+    const { body } = await poll(t.app, job.statusUrl);
+    expect(body.result.partialReasons.map((r: any) => r.code)).toContain("PE_OUTSIDE_OBSERVED_RANGE");
+    expect(body.result.valuation.grade).toBe("provisional");
+    expect(body.result.recommendationQuality.tier).toBe("low");
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ jobId: job.id, ticker: "111110", valuation: { grade: "provisional" }, warnings: expect.arrayContaining(["PE_OUTSIDE_OBSERVED_RANGE"]) });
+  });
+
+  it("keeps a valuation verified when the P/E sits in the traded range, and survives a failing log", async () => {
+    const perReference = { ttmEpsKRW: 4000, quarters: ["2025Q1", "2025Q2", "2025Q3", "2025Q4"], latestClose: { date: "2026-01-10", closeKRW: 50000 }, current: 12, window: { from: "2025-06-01", to: "2026-01-10", sessions: 150, min: 8, median: 11, max: 14 }, sourceUrls: [] };
+    const t = await setup({}, NOW, { collect: async () => evidence({ market: { perReference } }), intelligence: async () => accepted(), recordPrediction: async () => { throw new Error("disk full"); } });
+    const job = (await submit(t.app)).json();
+    const { body } = await poll(t.app, job.statusUrl);
+    expect(body.result.partialReasons.map((r: any) => r.code)).not.toContain("PE_OUTSIDE_OBSERVED_RANGE");
+    expect(body.result.notes.join(" ")).toMatch(/예측 기록/);
+    expect(body.result.analysis).not.toBeNull();
+  });
+});

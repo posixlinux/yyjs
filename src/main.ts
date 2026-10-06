@@ -10,6 +10,7 @@ import { Service } from "./service.js";
 import { StrategyService } from "./strategy/service.js";
 import { ForecastService } from "./forecast/service.js";
 import { UniverseProvider } from "./research/universe.js";
+import { fileRecorder } from "./research/predictions.js";
 
 const config = loadConfig();
 if (!config.capabilities.dartConfigured)
@@ -29,6 +30,7 @@ const research = new ResearchService(
     secrets: config.secrets,
     strategyMinimumCashBufferKRW: config.strategyMinimumCashBufferKRW,
     defaultModels: config.defaultModels,
+    recordPrediction: fileRecorder(config.dataDir).record,
   },
   config.jobs,
   (asOf) => service.resolveAsOf(asOf),
