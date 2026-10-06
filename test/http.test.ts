@@ -15,7 +15,7 @@ describe("HTTP happy path", () => {
     const { app } = await setup();
     expect((await app.inject({ url: "/health" })).json().status).toBe("ok");
     const schema = (await app.inject({ url: "/v1/schema" })).json().schema;
-    expect(schema.properties.company.properties.exchange).toMatchObject({ const: "KOSPI" });
+    expect(schema.properties.company.properties.exchange).toMatchObject({ enum: ["KOSPI", "KOSDAQ"] });
   });
 
   it("rejects mode=manual and has no dataset ingestion route", async () => {

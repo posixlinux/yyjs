@@ -5,6 +5,7 @@ import type { CollectionOptions, PublicEvidence } from "../src/collection/index.
 import { createHttp } from "../src/collection/http.js";
 import { unzip } from "../src/collection/zip.js";
 import { deriveQ4 } from "../src/collection/dart.js";
+import { industryPeers } from "../src/collection/naver.js";
 import type { StatementSet } from "../src/collection/types.js";
 import { extractDocument, extractMetrics } from "../src/collection/extract.js";
 import { articleFetchUrl, parseArticle } from "../src/collection/articles.js";
@@ -363,12 +364,19 @@ describe("Naver provider", () => {
     expect(e.modelReady).toBe(false);
   });
 
-  it("rejects KOSDAQ listings and stops further Naver calls", async () => {
-    const f = fake((u) => (u.pathname.endsWith("/basic") ? json(basic({ stockExchangeType: { name: "KOSDAQ", code: "KQ", nameEng: "KOSDAQ" } })) : undefined));
+  it("accepts KOSDAQ listings", async () => {
+    const e = await run(fake((u) => (u.pathname.endsWith("/basic") ? json(basic({ stockExchangeType: { name: "KOSDAQ", code: "KQ", nameEng: "KOSDAQ" } })) : naverHandler(u))));
+    expect(e.issues.some((i) => i.code === "not_listed")).toBe(false);
+    expect(e.company.exchange).toBe("KOSDAQ");
+    expect(e.market.quote).not.toBeNull();
+  });
+
+  it("rejects listings outside KOSPI/KOSDAQ and stops further Naver calls", async () => {
+    const f = fake((u) => (u.pathname.endsWith("/basic") ? json(basic({ stockExchangeType: { name: "KONEX", code: "KN", nameEng: "KONEX" } })) : undefined));
     const e = await run(f);
     expect(e.status).toBe("failed");
     expect(e.providers.naver.status).toBe("failed");
-    expect(e.issues.some((i) => i.code === "not_kospi")).toBe(true);
+    expect(e.issues.some((i) => i.code === "not_listed")).toBe(true);
     expect(e.company.exchange).toBeNull();
     expect(e.market.quote).toBeNull();
     expect(f.calls).toHaveLength(1);
@@ -662,12 +670,17 @@ describe("DART provider", () => {
     expect(JSON.stringify(e)).not.toContain(KEY);
   });
 
-  it("rejects DART KOSDAQ companies (corp_cls != Y)", async () => {
-    const f = fake(either(naverHandler, dartHandler({ company: { corp_cls: "K" } })));
+  it("accepts DART KOSDAQ companies but reports a Naver/DART market conflict as unverified", async () => {
+    const e = await run(fake(either(naverHandler, dartHandler({ company: { corp_cls: "K" } }))), withKey);
+    expect(e.issues.some((i) => i.provider === "dart" && i.code === "not_listed")).toBe(false);
+    expect(e.company.exchange).toBeNull(); // Naver says KOSPI, DART says KOSDAQ
+  });
+
+  it("rejects DART companies outside KOSPI/KOSDAQ (corp_cls not Y/K)", async () => {
+    const f = fake(either(naverHandler, dartHandler({ company: { corp_cls: "N" } })));
     const e = await run(f, withKey);
     expect(e.providers.dart.status).toBe("failed");
-    expect(e.issues.some((i) => i.provider === "dart" && i.code === "not_kospi")).toBe(true);
-    expect(e.company.exchange).toBeNull(); // conflicting exchange evidence is not reported as verified
+    expect(e.issues.some((i) => i.provider === "dart" && i.code === "not_listed")).toBe(true);
     expect(f.calls.some((u) => u.pathname === "/api/list.json")).toBe(false);
   });
 
@@ -1278,5 +1291,15 @@ describe("single-quarter public consensus", () => {
     expect(e.market.news.length).toBeGreaterThan(0);
     expect(e.market.quarterlyConsensus).toEqual([]);
     expect(e.providers.naver.status).toBe("ok");
+  });
+});
+
+describe("automatic competitors (Naver same-industry list)", () => {
+  it("keeps KOSPI/KOSDAQ common stocks only, drops the ticker itself, ETFs, preferred shares, other markets and duplicates", () => {
+    const peer = (itemCode: string, code: string, stockEndType = "stock") => ({ itemCode, stockName: `n${itemCode}`, stockEndType, stockExchangeType: { code } });
+    expect(industryPeers([peer("000660", "KS"), peer("005930", "KS"), peer("240810", "KQ"), peer("069500", "KS", "etf"), peer("123450", "KN"), peer("000660", "KS"), null], "005930"))
+      .toEqual([{ ticker: "000660", name: "n000660", exchange: "KOSPI" }, { ticker: "240810", name: "n240810", exchange: "KOSDAQ" }]);
+    expect(industryPeers([peer("005935", "KS"), { ...peer("000660", "KS"), stockName: "SK하이닉스" }], "005930").map((p) => p.ticker)).toEqual(["000660"]); // preferred dropped
+    expect(industryPeers(undefined, "005930")).toEqual([]);
   });
 });

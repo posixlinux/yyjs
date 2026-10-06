@@ -87,8 +87,10 @@ describe("schema", () => {
     return DatasetSchema.safeParse(ds).success;
   };
   it("accepts the fixture", () => expect(parse(() => {})).toBe(true));
-  it("requires exchange KOSPI and a six-digit ticker", () => {
-    expect(parse((d) => (d.company.exchange = "KOSDAQ"))).toBe(false);
+  it("requires exchange KOSPI or KOSDAQ and a six-character KRX ticker", () => {
+    expect(parse((d) => (d.company.exchange = "KOSDAQ"))).toBe(true);
+    expect(parse((d) => ((d.company as any).exchange = "KONEX"))).toBe(false);
+    expect(parse((d) => (d.company.ticker = "0126Z0"))).toBe(true);
     expect(parse((d) => (d.company.ticker = "5930"))).toBe(false);
   });
   it("requires source url or manual reference, and a real date", () => {

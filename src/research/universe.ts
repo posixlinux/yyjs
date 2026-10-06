@@ -1,16 +1,18 @@
-import { classifySecurity } from "../domain/security.js";
+import { KRX_TICKER, classifySecurity, exchangeOf } from "../domain/security.js";
+import type { ListedExchange } from "../domain/security.js";
 
-// Selectable list of KOSPI common stocks for the web UI, from Naver's public market-cap listing
+// Selectable list of KOSPI and KOSDAQ common stocks for the web UI, from Naver's public market-cap listings
 // (fixed host/path, no user-supplied URL). ETF/ETN are dropped by `stockEndType`; preferred shares, REITs,
 // infrastructure funds and SPACs by the same rules the analysis gate uses. Cached in memory; a failed refresh
 // serves the stale list.
 
-export type UniverseItem = { ticker: string; name: string; marketCapKRW: number };
+export type UniverseItem = { ticker: string; name: string; exchange: ListedExchange; marketCapKRW: number };
 export type Universe = { items: UniverseItem[]; fetchedAt: string; scanned: number };
 
-const LIST_URL = "https://m.stock.naver.com/api/stocks/marketValue/KOSPI";
+const MARKETS: ListedExchange[] = ["KOSPI", "KOSDAQ"];
+const LIST_URL = (m: ListedExchange) => `https://m.stock.naver.com/api/stocks/marketValue/${m}`;
 const PAGE_SIZE = 100;
-const MAX_PAGES = 40; // hard cap on upstream requests (KOSPI incl. ETFs is ~2,500 rows)
+const MAX_PAGES = 40; // per market, hard cap on upstream requests (KOSPI incl. ETFs is ~2,500 rows, KOSDAQ ~1,800)
 const CONCURRENCY = 4;
 
 type Fetch = typeof fetch;
@@ -18,9 +20,9 @@ type Fetch = typeof fetch;
 const rec = (v: unknown): Record<string, unknown> | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
 const text = (v: unknown) => (typeof v === "string" ? v : typeof v === "number" ? String(v) : "");
 
-async function page(fetchFn: Fetch, n: number, signal?: AbortSignal): Promise<{ rows: unknown[]; total: number }> {
+async function page(fetchFn: Fetch, market: ListedExchange, n: number, signal?: AbortSignal): Promise<{ rows: unknown[]; total: number }> {
   const timeout = AbortSignal.timeout(15_000);
-  const res = await fetchFn(`${LIST_URL}?page=${n}&pageSize=${PAGE_SIZE}`, {
+  const res = await fetchFn(`${LIST_URL(market)}?page=${n}&pageSize=${PAGE_SIZE}`, {
     headers: { accept: "application/json", "user-agent": "yyjs-universe/1" },
     redirect: "manual",
     signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
@@ -37,12 +39,12 @@ export function toItem(raw: unknown): UniverseItem | null {
   if (!o) return null;
   const ticker = text(o.itemCode);
   const name = text(o.stockName).trim();
-  const ex = rec(o.stockExchangeType);
-  if (!/^\d{6}$/.test(ticker) || !name || (ex && text(ex.code) !== "KS")) return null;
+  const exchange = exchangeOf(text(rec(o.stockExchangeType)?.code));
+  if (!KRX_TICKER.test(ticker) || !name || !exchange) return null;
   if (classifySecurity({ ticker, names: [name], endType: text(o.stockEndType) }).length) return null;
   // marketValue is in 억원 ("15,755,721" = 1,575조 5,721억)
   const eok = Number(text(o.marketValue).replace(/,/g, ""));
-  return { ticker, name, marketCapKRW: Number.isFinite(eok) ? eok * 100_000_000 : 0 };
+  return { ticker, name, exchange, marketCapKRW: Number.isFinite(eok) ? eok * 100_000_000 : 0 };
 }
 
 export class UniverseProvider {
@@ -67,14 +69,7 @@ export class UniverseProvider {
 
   private async load(signal?: AbortSignal): Promise<Universe> {
     const fetchFn = this.opts.fetch ?? fetch;
-    const first = await page(fetchFn, 1, signal);
-    const pages = Math.min(MAX_PAGES, Math.max(1, Math.ceil(first.total / PAGE_SIZE)));
-    const rows = [...first.rows];
-    let next = 2;
-    const worker = async () => {
-      for (let n = next++; n <= pages; n = next++) rows.push(...(await page(fetchFn, n, signal)).rows);
-    };
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pages - 1) }, worker));
+    const rows = (await Promise.all(MARKETS.map((m) => this.market(fetchFn, m, signal)))).flat();
     const seen = new Set<string>();
     const items: UniverseItem[] = [];
     for (const r of rows) {
@@ -85,6 +80,18 @@ export class UniverseProvider {
     items.sort((a, b) => b.marketCapKRW - a.marketCapKRW || a.ticker.localeCompare(b.ticker));
     this.cached = { items, fetchedAt: (this.opts.now ?? (() => new Date()))().toISOString(), scanned: rows.length };
     return this.cached;
+  }
+
+  private async market(fetchFn: Fetch, m: ListedExchange, signal?: AbortSignal): Promise<unknown[]> {
+    const first = await page(fetchFn, m, 1, signal);
+    const pages = Math.min(MAX_PAGES, Math.max(1, Math.ceil(first.total / PAGE_SIZE)));
+    const rows = [...first.rows];
+    let next = 2;
+    const worker = async () => {
+      for (let n = next++; n <= pages; n = next++) rows.push(...(await page(fetchFn, m, n, signal)).rows);
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pages - 1) }, worker));
+    return rows;
   }
 
   static search(u: Universe, query: string | undefined, limit: number): { total: number; items: UniverseItem[] } {

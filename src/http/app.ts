@@ -92,16 +92,16 @@ export function buildApp(
     return sendFile(reply, name, type);
   });
 
-  // KOSPI common stocks (no ETF/preferred/REIT...) for the picker; public data, cached server-side.
+  // KOSPI and KOSDAQ common stocks (no ETF/preferred/REIT...) for the picker; public data, cached server-side.
   app.get("/v1/universe", async (req) => {
     const q = z.object({ query: z.string().max(50).optional(), limit: z.coerce.number().int().min(1).max(500).default(50) }).parse(req.query);
     let u;
     try {
       u = await universe.get();
     } catch {
-      throw new AppError(502, "UNIVERSE_UNAVAILABLE", "Could not load the KOSPI stock list from Naver Finance", undefined, "Enter a six-digit ticker manually.");
+      throw new AppError(502, "UNIVERSE_UNAVAILABLE", "Could not load the KOSPI/KOSDAQ stock list from Naver Finance", undefined, "Enter a six-digit ticker manually.");
     }
-    return { fetchedAt: u.fetchedAt, commonStocksOnly: true, ...UniverseProvider.search(u, q.query, q.limit) };
+    return { fetchedAt: u.fetchedAt, markets: ["KOSPI", "KOSDAQ"], commonStocksOnly: true, ...UniverseProvider.search(u, q.query, q.limit) };
   });
 
   app.get("/v1/schema", async () => ({

@@ -60,3 +60,15 @@ export const isCommonStock = (f: SecurityFacts): boolean => classifySecurity(f).
 
 /** One-line, user-facing reason list. */
 export const describeRejections = (r: SecurityRejection[]): string => r.map((x) => x.message).join("; ");
+
+// ---- listing ---------------------------------------------------------------------------------------------------
+// Analysis covers KOSPI and KOSDAQ listings; classifySecurity above still limits it to common shares.
+
+/** Six-character KRX code: numeric (005930) or the newer alphanumeric series (0126Z0). */
+export const KRX_TICKER = /^[0-9][0-9A-Z]{5}$/;
+
+export type ListedExchange = "KOSPI" | "KOSDAQ";
+
+/** Naver `stockExchangeType.code` ("KS"/"KQ") or DART `corp_cls` ("Y"/"K") -> exchange; anything else is null. */
+export const exchangeOf = (code: string): ListedExchange | null =>
+  code === "KS" || code === "Y" ? "KOSPI" : code === "KQ" || code === "K" ? "KOSDAQ" : null;

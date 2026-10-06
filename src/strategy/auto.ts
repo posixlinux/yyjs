@@ -159,8 +159,8 @@ function validateForecastIdentity(ticker: string, forecast: EarningsForecastSnap
 
   if (forecast.ticker !== ticker) add("FORECAST_TICKER_MISMATCH", `forecast ticker ${forecast.ticker} does not match the requested ticker ${ticker}`);
   if (!forecast.company || forecast.scope !== "consolidated") add("FORECAST_COMPANY_SCOPE_MISSING", "forecast company/exchange/security type and consolidated scope must be declared");
-  else if (forecast.company.exchange !== "KOSPI" || forecast.company.securityType !== "common_stock" || classifySecurity({ ticker, names: [forecast.company.name] }).length)
-    add("FORECAST_NOT_KOSPI_COMMON", "forecast does not declare a KOSPI common share passing the security filter");
+  else if (!["KOSPI", "KOSDAQ"].includes(forecast.company.exchange) || forecast.company.securityType !== "common_stock" || classifySecurity({ ticker, names: [forecast.company.name] }).length)
+    add("FORECAST_NOT_KOSPI_COMMON", "forecast does not declare a KOSPI/KOSDAQ common share passing the security filter");
 
   const decisionDate = seoulDateOf(decisionAt);
   const forecastQuarters = forecast.quarters.map((q) => q.quarter);

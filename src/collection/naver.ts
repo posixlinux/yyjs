@@ -1,5 +1,6 @@
 import type { HttpClient } from "./http.js";
-import { classifySecurity, describeRejections } from "../domain/security.js";
+import { KRX_TICKER, classifySecurity, describeRejections, exchangeOf } from "../domain/security.js";
+import type { ListedExchange } from "../domain/security.js";
 import { CollectionError, issue } from "./types.js";
 import type { AnnualFinance, CollectionIssue, DailyClose, NewsItem, QuoteEvidence, QuarterlyActual, ReferenceMetric, QuarterlyConsensus } from "./types.js";
 import { asRecord, clip, kstDate, naverDateTime, parseAmount, plainText, str } from "./text.js";
@@ -14,6 +15,9 @@ const MAX_SEARCH_ITEMS = 160;
 export interface NaverResult {
   name: string | null;
   exchangeVerified: boolean;
+  exchange: ListedExchange | null;
+  /** Naver's same-industry comparison list (KOSPI/KOSDAQ stocks), in Naver's order; the ticker itself excluded. */
+  industryPeers: IndustryPeer[];
   quote: QuoteEvidence | null;
   referenceMetrics: ReferenceMetric[];
   quarterlyConsensus: QuarterlyConsensus[];
@@ -23,6 +27,8 @@ export interface NaverResult {
   news: NewsItem[];
   issues: CollectionIssue[];
 }
+
+export type IndustryPeer = { ticker: string; name: string; exchange: ListedExchange };
 
 interface NaverCtx {
   ticker: string;
@@ -36,17 +42,17 @@ interface NaverCtx {
 export const normalizeTitle = (t: string): string => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
 export async function collectNaver(c: NaverCtx): Promise<NaverResult> {
-  const out: NaverResult = { name: null, exchangeVerified: false, quote: null, referenceMetrics: [], quarterlyConsensus: [], quarterlyActuals: [], dailyCloses: [], annualFinance: [], news: [], issues: [] };
+  const out: NaverResult = { name: null, exchangeVerified: false, exchange: null, industryPeers: [], quote: null, referenceMetrics: [], quarterlyConsensus: [], quarterlyActuals: [], dailyCloses: [], annualFinance: [], news: [], issues: [] };
   const get = (path: string) => c.http.json(`${API}${path}`, { headers: HEADERS, ttlMs: c.ttlMs });
 
-  // 1. basic: exact ticker + KOSPI verification gate everything else.
+  // 1. basic: exact ticker + KOSPI/KOSDAQ listing gate everything else.
   const basic = asRecord(await get(`/stock/${c.ticker}/basic`));
   if (!basic || str(basic.itemCode) !== c.ticker) throw new CollectionError("invalid_response", "Naver basic response does not match the requested ticker");
   const ex = asRecord(basic.stockExchangeType) ?? {};
   const exchange = { code: str(ex.code), name: str(ex.name), nameEng: str(ex.nameEng) };
-  const isKospi = exchange.code === "KS" && [exchange.name, exchange.nameEng].some((n) => n.toUpperCase() === "KOSPI");
-  if (!isKospi) {
-    out.issues.push(issue("naver", "not_kospi", `Ticker ${c.ticker} is not a KOSPI listing (Naver reports ${exchange.nameEng || exchange.name || exchange.code || "unknown"})`));
+  out.exchange = exchangeOf(exchange.code);
+  if (!out.exchange) {
+    out.issues.push(issue("naver", "not_listed", `Ticker ${c.ticker} is not a KOSPI/KOSDAQ listing (Naver reports ${exchange.nameEng || exchange.name || exchange.code || "unknown"})`));
     return out;
   }
   out.exchangeVerified = true;
@@ -84,6 +90,7 @@ export async function collectNaver(c: NaverCtx): Promise<NaverResult> {
   const [ref, news, consensus, prices, annual] = await Promise.allSettled([collectReference(c, get), collectNews(c, get), collectQuarterlyConsensus(c, get), collectDailyCloses(c, get), collectAnnualFinance(c, get)]);
   if (ref.status === "fulfilled") {
     out.referenceMetrics = ref.value.metrics;
+    out.industryPeers = ref.value.peers;
     out.issues.push(...ref.value.issues);
   } else out.issues.push(toIssue("reference_failed", ref.reason));
   if (news.status === "fulfilled") {
@@ -237,9 +244,10 @@ async function collectReference(c: NaverCtx, get: (p: string) => Promise<unknown
   const raw = asRecord(await get(`/stock/${c.ticker}/integration`));
   const infos = raw?.totalInfos;
   if (!Array.isArray(infos)) throw new CollectionError("invalid_response", "Naver integration response has no totalInfos");
+  const peers = industryPeers(raw?.industryCompareInfo, c.ticker);
   if (kstDate(Date.parse(c.nowIso)) > c.asOf.dateKst) {
     issues.push(issue("naver", "snapshot_after_asOf", "Naver integration values are a current snapshot; excluded for a historical asOf to avoid lookahead", "warning"));
-    return { metrics: [], issues };
+    return { metrics: [], peers, issues };
   }
   const metrics: ReferenceMetric[] = [];
   for (const item of infos.slice(0, 40)) {
@@ -261,7 +269,22 @@ async function collectReference(c: NaverCtx, get: (p: string) => Promise<unknown
       sourceUrl: `${API}/stock/${c.ticker}/integration`,
     });
   }
-  return { metrics, issues };
+  return { metrics, peers, issues };
+}
+
+/** Naver's 동종업종 비교 list: KOSPI/KOSDAQ common stocks only, deduplicated, the ticker itself dropped. */
+export function industryPeers(raw: unknown, self: string): IndustryPeer[] {
+  const out: IndustryPeer[] = [];
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const o = asRecord(item);
+    const ticker = str(o?.itemCode);
+    const exchange = exchangeOf(str(asRecord(o?.stockExchangeType)?.code));
+    if (!o || !exchange || !KRX_TICKER.test(ticker) || ticker === self || out.some((p) => p.ticker === ticker)) continue;
+    const name = clip(str(o.stockName), 80);
+    if (classifySecurity({ ticker, names: [name], endType: str(o.stockEndType) || null }).length) continue; // preferred, ETF, REIT...
+    out.push({ ticker, name, exchange });
+  }
+  return out;
 }
 
 function newsUrl(officeId: string, articleId: string, mobile: unknown): string | null {

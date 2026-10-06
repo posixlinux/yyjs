@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>KOSPI 제품 시장 분석</title>
+<title>KOSPI·KOSDAQ 제품 시장 분석</title>
 <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
 <header class="top">
-  <h1>KOSPI 제품 시장 분석</h1>
-  <p class="sub">일반주(보통주)만 분석합니다 — 우선주·ETF·리츠·인프라펀드·스팩 제외. 결과는 투자 권고가 아니며 목표가는 밸류에이션 프록시입니다.</p>
+  <h1>KOSPI·KOSDAQ 제품 시장 분석</h1>
+  <p class="sub">KOSPI·KOSDAQ 보통주를 오늘 기준으로 분석하며(우선주·ETF·리츠·인프라펀드·스팩 제외), 경쟁사는 네이버 동종업종 목록에서 자동으로 고릅니다. 결과는 투자 권고가 아니며 목표가는 밸류에이션 프록시입니다.</p>
 </header>
 
 <main>
@@ -20,23 +20,12 @@
         <label for="q">종목명 또는 번호 검색</label>
         <input id="q" type="search" inputmode="search" placeholder="예: 삼성전자 또는 005930" maxlength="50">
       </div>
-      <div id="list" class="list" role="listbox" aria-label="KOSPI 일반주 목록"></div>
+      <div id="list" class="list" role="listbox" aria-label="KOSPI·KOSDAQ 보통주 목록"></div>
       <p id="listInfo" class="hint"></p>
 
-      <div class="row inline">
-        <div>
-          <label for="ticker">선택된 종목 번호</label>
-          <input id="ticker" inputmode="numeric" pattern="\d{6}" maxlength="6" placeholder="6자리" required>
-        </div>
-        <div>
-          <label for="asOf">기준일 (비우면 오늘)</label>
-          <input id="asOf" type="date">
-        </div>
-      </div>
-
       <div class="row">
-        <label for="competitors">비교할 경쟁사 (선택 · 한국·미국·일본만 · 쉼표로 구분, 최대 6개)</label>
-        <input id="competitors" placeholder="예: KR:000270, US:F, JP:7203" maxlength="120" autocomplete="off">
+        <label for="ticker">선택된 종목 번호</label>
+        <input id="ticker" pattern="[0-9][0-9A-Za-z]{5}" maxlength="6" placeholder="6자리" autocapitalize="characters" required>
       </div>
 
       <fieldset class="modes">
