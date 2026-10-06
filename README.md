@@ -280,6 +280,10 @@ npm run typecheck    # src·test·scripts 전체 타입 검사 (npm run build �
 npm run doctor       # 환경 점검 (--json 지원)
 npm run smoke:public -- 005930             # 실제 Naver(+DART 키 있으면 DART) 수집 스모크, LLM 미사용 (--no-dart 로 DART 제외)
 npm run smoke:job                          # 실제 수집기로 HTTP POST /v1/research → 폴링 (인프로세스, LLM 미사용)
+npm run forecast -- --check                # 단기 예측 자료 출처 점검 (시세·지수·환율·종목 목록)
+npm run forecast -- 005930                 # 1~3거래일 예측 + 백테스트 (--rank 순위, --score 채점)
+npm run forecast:synthetic                 # 단기 예측 합성 벤치마크 (네트워크 불필요)
+npm run predictions:score                  # 분석 예측 기록(목표가·한 분기 추정)을 실제 EPS·주가로 채점
 ```
 
 ```
