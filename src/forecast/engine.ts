@@ -266,14 +266,18 @@ export type BacktestStats = {
   /** Accuracy on the 30% most confident predictions. */
   confidentAccuracy: number | null;
   confidentN: number;
+  /** Reliability table: predictions bucketed by probability of a rise, with the share that actually rose. */
+  calibration: { from: number; to: number; n: number; meanPredicted: number; actualUpRate: number }[];
   edge: "detected" | "none";
 };
+
+const CAL_BINS: [number, number][] = [[0, 0.45], [0.45, 0.5], [0.5, 0.55], [0.55, 1]];
 
 export function backtestStats(oos: OosPrediction[], horizon: number): BacktestStats {
   const n = oos.length;
   const pct = (v: number) => (Math.exp(v) - 1) * 100;
   if (!n)
-    return { horizon, n: 0, from: null, to: null, accuracy: null, alwaysUpAccuracy: null, momentumAccuracy: null, pValueVsCoin: null, pValueVsClimatology: null, pValueVsBestBaseline: null, brier: null, brierBaseRate: null, meanAbsErrorPct: null, zeroForecastMaePct: null, upDownSpreadPct: null, confidentAccuracy: null, confidentN: 0, edge: "none" };
+    return { horizon, n: 0, from: null, to: null, accuracy: null, alwaysUpAccuracy: null, momentumAccuracy: null, pValueVsCoin: null, pValueVsClimatology: null, pValueVsBestBaseline: null, brier: null, brierBaseRate: null, meanAbsErrorPct: null, zeroForecastMaePct: null, upDownSpreadPct: null, confidentAccuracy: null, confidentN: 0, calibration: [], edge: "none" };
   const up = (v: number) => v > 0;
   const hits = oos.filter((o) => (o.p > 0.5) === up(o.actual)).length;
   const ups = oos.filter((o) => up(o.actual)).length;
@@ -315,6 +319,10 @@ export function backtestStats(oos: OosPrediction[], horizon: number): BacktestSt
     upDownSpreadPct: saidUp.length && saidDown.length ? avg(saidUp) - avg(saidDown) : null,
     confidentAccuracy: confHits / conf.length,
     confidentN: conf.length,
+    calibration: CAL_BINS.map(([from, to]) => {
+      const xs = oos.filter((o) => o.p >= from && (o.p < to || to === 1));
+      return { from, to, n: xs.length, meanPredicted: xs.reduce((a, o) => a + o.p, 0) / xs.length, actualUpRate: xs.filter((o) => up(o.actual)).length / xs.length };
+    }).filter((b) => b.n > 0),
     // Skill must beat the coin and the always-same-direction rule significantly AND improve the probability score.
     // (Beating the simple momentum rule as well is reported via pValueVsBestBaseline, not required.)
     edge: nEff >= 100 && pClimate < 0.05 && brier < brierBase ? "detected" : "none",

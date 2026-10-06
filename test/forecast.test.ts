@@ -254,3 +254,19 @@ describe("corporate actions", () => {
     expect(adjustCorporateActions(real).adjusted).toEqual([]);
   });
 });
+
+describe("robustness to sparse data", () => {
+  it("forecasts from closes alone (no open/high/low/volume) and reports a calibration table", () => {
+    const strip = (bars: Bar[]) => bars.map((b) => ({ ...b, open: null, high: null, low: null, volume: null }));
+    const index = market(500, 0, 61);
+    const series = [0, 1, 2].map((i) => ({ ticker: `50000${i}`, bars: strip(market(500, 0.3, 62 + i)), index: [] as Bar[] }));
+    const f = forecast(series[0]!, series.slice(1));
+    expect(index.length).toBe(500);
+    for (const h of f.horizons) {
+      expect(Number.isFinite(h.probabilityUp)).toBe(true);
+      expect(Number.isFinite(h.expectedReturnPct)).toBe(true);
+      expect(h.backtest.calibration.reduce((n, b) => n + b.n, 0)).toBe(h.backtest.n);
+    }
+    expect(f.horizons[0]!.backtest.edge).toBe("detected"); // momentum still found without OHLV or index
+  }, 180_000);
+});
