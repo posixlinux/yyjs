@@ -542,7 +542,7 @@ function renderJob(job, startedAt) {
 
 // ---- short-term forecast ----------------------------------------------------------------------------------------
 
-const CONF = { high: ["신뢰도 높음", "ok"], medium: ["신뢰도 보통", "warn"], low: ["신뢰도 낮음 (검증된 우위 없음)", "bad"] };
+const CONF = { high: ["높음", "ok"], medium: ["보통", "warn"], low: ["낮음 · 우위 없음", "bad"] };
 const rate = (v) => (typeof v === "number" && Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : "-");
 function renderForecast(r) {
   const rows = r.horizons.map((h) => {
@@ -559,9 +559,9 @@ function renderForecast(r) {
   return el("div", {},
     el("h2", { text: `${r.ticker} 단기 주가 예측` }),
     el("p", { class: "small", text: `기준일 ${r.asOfDate} 종가 ${won(r.lastCloseKRW)} · 학습 종목 ${r.trainedOn.tickers.length}개 · 표본 ${r.trainedOn.samples.toLocaleString("ko-KR")}개` }),
-    el("table", {},
+    el("div", { class: "tablewrap" }, el("table", {},
       el("thead", {}, el("tr", {}, ...["기간", "방향·확률", "예상 등락(가격)", "80% 범위", "신뢰도", "백테스트 적중률"].map((t) => el("th", { text: t })))),
-      el("tbody", {}, ...rows)),
+      el("tbody", {}, ...rows))),
     el("ul", { class: "small" }, ...r.notes.map((n) => el("li", { text: n }))),
     el("p", { class: "small", text: "확률은 과거 표본 외(out-of-sample) 예측으로 보정한 값입니다. 백테스트에서 단순 기준(항상 상승·모멘텀)을 유의하게 넘지 못하면 신뢰도 '낮음'이며, 그 방향은 동전 던지기와 다르지 않습니다. 투자 권고가 아닙니다." }));
 }
@@ -571,7 +571,7 @@ function renderRanking(r) {
   return el("div", {},
     el("h2", { text: `${r.exchange} 상위 종목 ${r.horizon}거래일 상승 확률 순위` }),
     el("p", { class: "small", text: `종목군 워크포워드 백테스트: 적중 ${rate(b.accuracy)} (n=${b.n}; 항상상승 ${rate(b.alwaysUpAccuracy)}, 모멘텀 ${rate(b.momentumAccuracy)}; 80% 범위 실제 적중 ${rate(b.range80Coverage)}) · 우위 ${b.edge === "detected" ? "있음" : "없음"}` }),
-    el("table", {},
+    el("div", { class: "tablewrap" }, el("table", {},
       el("thead", {}, el("tr", {}, ...["순위", "종목", "상승 확률", "예상 등락", "80% 범위", "신뢰도", "종목 백테스트"].map((t) => el("th", { text: t })))),
       el("tbody", {}, ...r.ranked.map((x, i) => el("tr", {},
         el("td", { text: String(i + 1) }),
@@ -580,7 +580,7 @@ function renderRanking(r) {
         el("td", { text: `${pct(x.expectedReturnPct)} (${won(x.lastCloseKRW * (1 + x.expectedReturnPct / 100))})` }),
         el("td", { text: `${pct(x.range80Pct[0])} ~ ${pct(x.range80Pct[1])}` }),
         el("td", {}, badge(CONF, x.confidence), x.actionable ? el("span", { class: "badge ok", text: "비용 넘는 기대수익" }) : null),
-        el("td", { text: `${rate(x.backtestAccuracy)} (n=${x.backtestN})` }))))),
+        el("td", { text: `${rate(x.backtestAccuracy)} (n=${x.backtestN})` })))))),
     el("ul", { class: "small" }, ...r.notes.map((n) => el("li", { text: n }))));
 }
 
@@ -590,9 +590,11 @@ $("rank").addEventListener("click", async () => {
   $("go").disabled = $("rank").disabled = true;
   const out = $("out");
   out.hidden = false;
-  out.replaceChildren(el("p", { class: "small", text: "코스피 상위 30종목의 시세 이력을 받아 한 번에 학습·백테스트하는 중입니다 (1~2분)…" }));
+  const ex = $("rankExchange") ? $("rankExchange").value : "KOSPI";
+  const hz = $("rankHorizon") ? $("rankHorizon").value : "1";
+  out.replaceChildren(el("p", { class: "small", text: `${ex === "KOSDAQ" ? "코스닥" : "코스피"} 상위 30종목의 시세 이력을 받아 한 번에 학습·백테스트하는 중입니다 (1~2분)…` }));
   try {
-    out.replaceChildren(renderRanking(await api("/v1/forecast-ranking?exchange=KOSPI&count=30&horizon=1", { headers: headers() })));
+    out.replaceChildren(renderRanking(await api(`/v1/forecast-ranking?exchange=${ex}&count=30&horizon=${hz}`, { headers: headers() })));
   } catch (e) {
     out.replaceChildren(el("div", { class: "box bad" }, el("strong", { text: `${e.code || "ERROR"}: ` }), e.message));
   } finally {

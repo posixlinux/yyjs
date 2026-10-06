@@ -9,7 +9,7 @@
 <body>
 <header class="top">
   <h1>KOSPI·KOSDAQ 제품 시장 분석</h1>
-  <p class="sub">KOSPI·KOSDAQ 보통주를 오늘 기준으로 분석하며(우선주·ETF·리츠·인프라펀드·스팩 제외), 경쟁사는 네이버 동종업종 목록에서 자동으로 고릅니다. 결과는 투자 권고가 아니며 목표가는 밸류에이션 프록시입니다.</p>
+  <p class="sub">KOSPI·KOSDAQ 보통주를 오늘 기준으로 분석하며(우선주·ETF·리츠·인프라펀드·스팩 제외), 경쟁사는 네이버 동종업종 목록에서 자동으로 고릅니다. 단기 주가 예측(1~3거래일)은 백테스트 적중률과 함께 표시됩니다. 결과는 투자 권고가 아니며 목표가는 밸류에이션 프록시입니다.</p>
 </header>
 
 <main>
@@ -61,7 +61,9 @@
       </div>
 
       <button id="go" type="submit">분석 시작</button>
-      <button id="rank" type="button" class="secondary">오를 확률 순위 (코스피 상위 30종목, 다음 거래일)</button>
+      <button id="rank" type="button" class="secondary">오를 확률 순위</button>
+      <label class="inline">시장 <select id="rankExchange"><option value="KOSPI">코스피 상위 30</option><option value="KOSDAQ">코스닥 상위 30</option></select></label>
+      <label class="inline">기간 <select id="rankHorizon"><option value="1">다음 거래일</option><option value="2">2거래일</option><option value="3">3거래일</option></select></label>
     </form>
   </section>
 
