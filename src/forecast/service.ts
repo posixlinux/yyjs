@@ -7,7 +7,7 @@ import type { UniverseProvider } from "../research/universe.js";
 import type { ListedExchange } from "../domain/security.js";
 import { DEFAULT_OPTIONS, type EngineOptions, type ForecastResult, type Series } from "./engine.js";
 import { loadHistory, loadIndex, loadStock, type Bar, type StockHistory } from "./history.js";
-import { runEngine } from "./runner.js";
+import { runEngine, runMany } from "./runner.js";
 
 // Short-term forecast service: loads the target's history and that of liquid peers on the same exchange (pooled
 // training: one stock has too few sessions for a stable model), runs the engine, caches the result for the trading
@@ -136,6 +136,57 @@ export class ForecastService {
     this.cache.set(key, { at: now, result });
     await this.log(result).catch(() => result.notes.push("예측 기록 파일에 저장하지 못했습니다."));
     return { ...result, peerFailures };
+  }
+
+  /**
+   * "Which stocks are most likely to rise": one pooled model over the largest `count` stocks of an exchange, ranked
+   * by the probability of a rise over `horizon` sessions. Low-confidence rows stay in the list, flagged.
+   */
+  async rank(opts: { exchange?: ListedExchange; count?: number; horizon?: 1 | 2 | 3 } = {}) {
+    const exchange = opts.exchange ?? "KOSPI";
+    const count = Math.min(opts.count ?? 30, MAX_PEERS);
+    const horizon = opts.horizon ?? 1;
+    if (!this.deps.universe) throw new AppError(503, "UNIVERSE_UNAVAILABLE", "No stock list is configured for ranking");
+    let tickers: { ticker: string; name: string }[];
+    try {
+      tickers = (await this.deps.universe.get()).items.filter((i) => i.exchange === exchange).slice(0, count).map((i) => ({ ticker: i.ticker, name: i.name }));
+    } catch {
+      throw new AppError(502, "UNIVERSE_UNAVAILABLE", "Could not load the KOSPI/KOSDAQ stock list from Naver Finance");
+    }
+    const pages = this.deps.pages ?? 12;
+    const http = this.http((2 + pages) * (count + 2));
+    const index = await this.cached(this.indexes, `${exchange}|${pages}`, () => loadIndex(http, exchange, { maxPages: pages })).catch((e: Error) => {
+      throw new AppError(502, "HISTORY_UNAVAILABLE", `Could not load the ${exchange} index: ${e.message}`);
+    });
+    const series: Series[] = [];
+    const failures: string[] = [];
+    for (let i = 0; i < tickers.length; i += 4) {
+      const got = await Promise.allSettled(tickers.slice(i, i + 4).map((t) => this.cached(this.stocks, `${t.ticker}|${pages}`, () => loadStock(http, t.ticker, { maxPages: pages }))));
+      got.forEach((g, j) => (g.status === "fulfilled" ? series.push({ ticker: g.value.ticker, bars: g.value.bars, index }) : failures.push(tickers[i + j]!.ticker)));
+    }
+    if (series.length < 3) throw new AppError(502, "HISTORY_UNAVAILABLE", "Too few price histories could be loaded to rank");
+    const { results, pooled } = await runMany(series, { ...DEFAULT_OPTIONS, ...this.deps.options });
+    const name = new Map(tickers.map((t) => [t.ticker, t.name]));
+    const rows = results
+      .map((r) => {
+        const h = r.horizons.find((x) => x.horizon === horizon)!;
+        return { ticker: r.ticker, name: name.get(r.ticker) ?? null, asOfDate: r.asOfDate, lastCloseKRW: r.lastCloseKRW, probabilityUp: h.probabilityUp, expectedReturnPct: h.expectedReturnPct, range80Pct: h.range80Pct, confidence: h.confidence, backtestAccuracy: h.backtest.accuracy, backtestN: h.backtest.n };
+      })
+      .sort((a, b) => b.probabilityUp - a.probabilityUp || b.expectedReturnPct - a.expectedReturnPct);
+    for (const r of results) await this.log(r).catch(() => undefined);
+    return {
+      exchange,
+      horizon,
+      ranked: rows,
+      pooledBacktest: pooled.find((p) => p.horizon === horizon)!,
+      failures,
+      notes: [
+        pooled.find((p) => p.horizon === horizon)!.edge === "detected"
+          ? "이 종목군 전체의 워크포워드 백테스트에서 단순 기준을 유의하게 넘었습니다. 그래도 개별 종목의 신뢰도와 범위를 함께 보세요."
+          : "이 종목군 전체의 워크포워드 백테스트에서 단순 기준을 유의하게 넘지 못했습니다. 순위는 동전 던지기와 크게 다르지 않을 수 있습니다.",
+        "투자 권고가 아닙니다.",
+      ],
+    };
   }
 
   private get logFile() {

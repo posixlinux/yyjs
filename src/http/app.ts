@@ -173,6 +173,11 @@ export function buildApp(
       if (r.length) throw new AppError(422, "NOT_COMMON_STOCK", `Ticker ${ticker} is not a KOSPI/KOSDAQ common stock: ${describeRejections(r)}`, r);
       return forecasts.run(ticker, { peers: q.peers, peerCount: q.peerCount });
     });
+    app.get("/v1/forecast-ranking", async (req) => {
+      requireKey(req.headers);
+      const q = z.object({ exchange: z.enum(["KOSPI", "KOSDAQ"]).default("KOSPI"), count: z.coerce.number().int().min(3).max(40).default(30), horizon: z.coerce.number().int().min(1).max(3).default(1) }).parse(req.query);
+      return forecasts.rank({ exchange: q.exchange, count: q.count, horizon: q.horizon as 1 | 2 | 3 });
+    });
     app.get("/v1/forecast-scores", async (req) => {
       requireKey(req.headers);
       return forecasts.scoreLog();

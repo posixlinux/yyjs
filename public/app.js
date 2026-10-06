@@ -559,6 +559,41 @@ function renderForecast(r) {
     el("p", { class: "small", text: "확률은 과거 표본 외(out-of-sample) 예측으로 보정한 값입니다. 백테스트에서 단순 기준(항상 상승·모멘텀)을 유의하게 넘지 못하면 신뢰도 '낮음'이며, 그 방향은 동전 던지기와 다르지 않습니다. 투자 권고가 아닙니다." }));
 }
 
+function renderRanking(r) {
+  const b = r.pooledBacktest;
+  return el("div", {},
+    el("h2", { text: `${r.exchange} 상위 종목 ${r.horizon}거래일 상승 확률 순위` }),
+    el("p", { class: "small", text: `종목군 워크포워드 백테스트: 적중 ${rate(b.accuracy)} (n=${b.n}; 항상상승 ${rate(b.alwaysUpAccuracy)}, 모멘텀 ${rate(b.momentumAccuracy)}) · 우위 ${b.edge === "detected" ? "있음" : "없음"}` }),
+    el("table", {},
+      el("thead", {}, el("tr", {}, ...["순위", "종목", "상승 확률", "예상 등락", "80% 범위", "신뢰도", "종목 백테스트"].map((t) => el("th", { text: t })))),
+      el("tbody", {}, ...r.ranked.map((x, i) => el("tr", {},
+        el("td", { text: String(i + 1) }),
+        el("td", { text: `${x.name || ""} (${x.ticker})` }),
+        el("td", { text: rate(x.probabilityUp) }),
+        el("td", { text: `${pct(x.expectedReturnPct)} (${won(x.lastCloseKRW * (1 + x.expectedReturnPct / 100))})` }),
+        el("td", { text: `${pct(x.range80Pct[0])} ~ ${pct(x.range80Pct[1])}` }),
+        el("td", {}, badge(CONF, x.confidence)),
+        el("td", { text: `${rate(x.backtestAccuracy)} (n=${x.backtestN})` }))))),
+    el("ul", { class: "small" }, ...r.notes.map((n) => el("li", { text: n }))));
+}
+
+$("rank").addEventListener("click", async () => {
+  if (running) return;
+  running = true;
+  $("go").disabled = $("rank").disabled = true;
+  const out = $("out");
+  out.hidden = false;
+  out.replaceChildren(el("p", { class: "small", text: "코스피 상위 30종목의 시세 이력을 받아 한 번에 학습·백테스트하는 중입니다 (1~2분)…" }));
+  try {
+    out.replaceChildren(renderRanking(await api("/v1/forecast-ranking?exchange=KOSPI&count=30&horizon=1", { headers: headers() })));
+  } catch (e) {
+    out.replaceChildren(el("div", { class: "box bad" }, el("strong", { text: `${e.code || "ERROR"}: ` }), e.message));
+  } finally {
+    running = false;
+    $("go").disabled = $("rank").disabled = false;
+  }
+});
+
 // ---- run ----------------------------------------------------------------------------------------------------------
 
 // The model choice only applies to a full analysis.

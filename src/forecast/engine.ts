@@ -8,6 +8,8 @@ import { applyPlatt, fitGbm, fitLogistic, fitPlatt, fitRidge, fitScaler, gbmProb
 // near the base rate instead of confident guesses.
 
 export const HORIZONS = [1, 2, 3] as const;
+/** Sessions a stock needs before it can be forecast at all. */
+export const MIN_HISTORY_FOR = MIN_HISTORY + 1;
 export type Horizon = (typeof HORIZONS)[number];
 
 export type Series = { ticker: string; bars: Bar[]; index: Bar[] };
@@ -345,67 +347,80 @@ export type ForecastResult = {
   notes: string[];
 };
 
-/** Fits on all known outcomes, predicts the next 1..3 sessions for `target`, and calibrates on the walk-forward. */
-export function forecast(target: Series, peers: Series[] = [], o: EngineOptions = DEFAULT_OPTIONS): ForecastResult {
-  const all = [target, ...peers.filter((p) => p.ticker !== target.ticker)];
-  const samples = buildSamples(all);
-  const last = target.bars.length - 1;
-  if (last < MIN_HISTORY) throw new Error(`Need at least ${MIN_HISTORY + 1} sessions of ${target.ticker}; have ${target.bars.length}`);
-  const lastDate = target.bars[last]!.date;
-  const xNow = samples.find((s) => s.ticker === target.ticker && s.date === lastDate)!.x;
-  const lastClose = target.bars[last]!.close;
-  const horizons: HorizonForecast[] = [];
+/**
+ * Trains once on the pooled series (walk-forward + stacking + calibration per horizon) and forecasts the next 1..3
+ * sessions for every series in `targets` (default: all). Backtest stats are per stock; `pooled` is over every stock.
+ */
+export function forecastMany(series: Series[], o: EngineOptions = DEFAULT_OPTIONS, targets?: string[]): { results: ForecastResult[]; pooled: BacktestStats[] } {
+  const samples = buildSamples(series);
+  const want = series.filter((s) => (!targets || targets.includes(s.ticker)) && s.bars.length > MIN_HISTORY);
+  const per = new Map<string, HorizonForecast[]>(want.map((s) => [s.ticker, []]));
+  const pooled: BacktestStats[] = [];
+  const pct = (v: number) => (Math.exp(v) - 1) * 100;
+  const lastOf = new Map(want.map((s) => [s.ticker, samples.findLast((x) => x.ticker === s.ticker)!]));
   for (const [hi, h] of HORIZONS.entries()) {
     const first = walkForward(samples, hi, o);
     const oosAll = stack(first, o.step);
-    const oos = oosAll.filter((x) => x.ticker === target.ticker);
-    const stats = backtestStats(oos, h);
+    pooled.push(backtestStats(oosAll, h));
     const model = fit(samples.filter((s) => Number.isFinite(s.fwd[hi]!)).slice(-o.maxTrain), hi, o);
     if (!model) throw new Error(`Not enough history to train the ${h}-session model`);
-    const raw0 = predict(model, xNow, h);
     const meta = fitMeta(first);
-    const now = { ...raw0, past: xNow[PAST[hi]!]!, ret1: xNow[PAST[0]!]! };
-    const raw = meta ? metaPredict(meta, now) : { ...raw0, p: (raw0.p + raw0.pg) / 2 };
-    // Calibrate on every out-of-sample prediction (pooled is steadier than the target's alone).
+    // Calibrate on every out-of-sample prediction (pooled is steadier than one stock's alone).
     const calib = oosAll.length >= 100 ? fitPlatt(oosAll.map((x) => x.p), oosAll.map((x) => (x.actual > 0 ? 1 : 0))) : null;
-    const pUp = calib ? applyPlatt(calib, raw.p) : model.baseRate;
-    // Expected return: OOS slope of realized on predicted, clamped to [0, 1] (shrinks a noisy ridge toward zero).
-    // In volatility units: OOS slope of realized on predicted (clamped to [0, 1]) and residual quantiles, rescaled by
-    // this stock's current volatility.
+    // Expected return, in volatility units: OOS slope of realized on predicted (clamped to [0, 1], which shrinks a
+    // noisy regression toward zero) and residual quantiles, rescaled by each stock's current volatility.
     const zr = oosAll.map((x) => x.r / x.scale), za = oosAll.map((x) => x.actual / x.scale);
     let slope = 0, icpt = 0;
     if (oosAll.length >= 100) {
-      const mx = zr.reduce((s, v) => s + v, 0) / zr.length;
-      const my = za.reduce((s, v) => s + v, 0) / za.length;
-      const cov = zr.reduce((s, v, i) => s + (v - mx) * (za[i]! - my), 0);
-      const vx = zr.reduce((s, v) => s + (v - mx) ** 2, 0);
+      const mx = zr.reduce((a, v) => a + v, 0) / zr.length;
+      const my = za.reduce((a, v) => a + v, 0) / za.length;
+      const cov = zr.reduce((a, v, i) => a + (v - mx) * (za[i]! - my), 0);
+      const vx = zr.reduce((a, v) => a + (v - mx) ** 2, 0);
       slope = vx > 0 ? Math.max(0, Math.min(1, cov / vx)) : 0;
       icpt = my - slope * mx;
     }
-    const scaleNow = volScale(xNow, h);
-    const exp = (icpt + slope * (raw.r / scaleNow)) * scaleNow;
-    const resid = za.map((v, i) => (v - (icpt + slope * zr[i]!)) * scaleNow);
-    const lo = resid.length >= 50 ? quantile(resid, 0.1) : NaN;
-    const hiQ = resid.length >= 50 ? quantile(resid, 0.9) : NaN;
-    const pct = (v: number) => (Math.exp(v) - 1) * 100;
-    const edge = stats.edge === "detected";
-    horizons.push({
-      horizon: h,
-      probabilityUp: pUp,
-      rawProbabilityUp: raw.p,
-      direction: pUp >= 0.5 ? "up" : "down",
-      confidence: !edge ? "low" : Math.abs(pUp - 0.5) >= 0.1 ? "high" : "medium",
-      expectedReturnPct: pct(exp),
-      range80Pct: [pct(exp + lo), pct(exp + hiQ)],
-      expectedPriceKRW: lastClose * Math.exp(exp),
-      backtest: stats,
-    });
+    const resid = za.map((v, i) => v - (icpt + slope * zr[i]!));
+    const qLo = resid.length >= 50 ? quantile(resid, 0.1) : NaN, qHi = resid.length >= 50 ? quantile(resid, 0.9) : NaN;
+    for (const s of want) {
+      const xNow = lastOf.get(s.ticker)!.x;
+      const raw0 = predict(model, xNow, h);
+      const now = { ...raw0, past: xNow[PAST[hi]!]!, ret1: xNow[PAST[0]!]! };
+      const raw = meta ? metaPredict(meta, now) : { ...raw0, p: (raw0.p + raw0.pg) / 2 };
+      const pUp = calib ? applyPlatt(calib, raw.p) : model.baseRate;
+      const scaleNow = volScale(xNow, h);
+      const exp = (icpt + slope * (raw.r / scaleNow)) * scaleNow;
+      const stats = backtestStats(oosAll.filter((x) => x.ticker === s.ticker), h);
+      // A stock with too few of its own predictions inherits the pool's verdict on whether there is an edge.
+      const edge = (stats.n >= 120 ? stats : pooled[hi]!).edge === "detected";
+      per.get(s.ticker)!.push({
+        horizon: h,
+        probabilityUp: pUp,
+        rawProbabilityUp: raw.p,
+        direction: pUp >= 0.5 ? "up" : "down",
+        confidence: !edge ? "low" : Math.abs(pUp - 0.5) >= 0.1 ? "high" : "medium",
+        expectedReturnPct: pct(exp),
+        range80Pct: [pct(exp + qLo * scaleNow), pct(exp + qHi * scaleNow)],
+        expectedPriceKRW: s.bars.at(-1)!.close * Math.exp(exp),
+        backtest: stats,
+      });
+    }
   }
-  const notes = [
-    "단기 주가는 대부분 잡음입니다. 방향을 얼마나 믿을지는 예측값이 아니라 백테스트 적중률이 알려 줍니다.",
-    "상승 확률은 워크포워드 표본 외 예측으로 보정한 값이라, 검증된 예측력이 없으면 과거 상승일 비율 근처에 머뭅니다.",
-    "투자 권고가 아닙니다. 가격은 네이버 일별 종가(액면분할·배당 미조정)입니다.",
-  ];
-  if (horizons.every((h) => h.backtest.edge === "none")) notes.unshift("어느 기간도 워크포워드 백테스트에서 단순 기준(동전·항상 같은 방향)을 유의하게 넘지 못했습니다. 이번 방향은 동전 던지기로 보세요.");
-  return { ticker: target.ticker, asOfDate: target.bars[last]!.date, lastCloseKRW: lastClose, horizons, trainedOn: { tickers: all.map((s) => s.ticker), samples: samples.length }, featureNames: [...FEATURE_NAMES, ...CROSS_NAMES], notes };
+  const results = want.map((s): ForecastResult => {
+    const horizons = per.get(s.ticker)!;
+    const notes = [
+      "단기 주가는 대부분 잡음입니다. 방향을 얼마나 믿을지는 예측값이 아니라 백테스트 적중률이 알려 줍니다.",
+      "상승 확률은 워크포워드 표본 외 예측으로 보정한 값이라, 검증된 예측력이 없으면 과거 상승일 비율 근처에 머뭅니다.",
+      "투자 권고가 아닙니다. 가격은 네이버 일별 종가(액면분할·배당 미조정)입니다.",
+    ];
+    if (horizons.every((h) => h.confidence === "low")) notes.unshift("어느 기간도 워크포워드 백테스트에서 단순 기준(동전·항상 같은 방향)을 유의하게 넘지 못했습니다. 이번 방향은 동전 던지기로 보세요.");
+    return { ticker: s.ticker, asOfDate: s.bars.at(-1)!.date, lastCloseKRW: s.bars.at(-1)!.close, horizons, trainedOn: { tickers: series.map((x) => x.ticker), samples: samples.length }, featureNames: [...FEATURE_NAMES, ...CROSS_NAMES], notes };
+  });
+  return { results, pooled };
+}
+
+/** Fits on all known outcomes, predicts the next 1..3 sessions for `target`, and calibrates on the walk-forward. */
+export function forecast(target: Series, peers: Series[] = [], o: EngineOptions = DEFAULT_OPTIONS): ForecastResult {
+  if (target.bars.length <= MIN_HISTORY) throw new Error(`Need at least ${MIN_HISTORY + 1} sessions of ${target.ticker}; have ${target.bars.length}`);
+  const all = [target, ...peers.filter((p) => p.ticker !== target.ticker)];
+  return forecastMany(all, o, [target.ticker]).results[0]!;
 }

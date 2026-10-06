@@ -1,6 +1,7 @@
 // Short-term forecast from the command line (live Naver data):
 //   npm run forecast -- 005930                      forecast + backtest, pooled with the 20 largest peers
 //   npm run forecast -- 005930 --peers 000660,035420  explicit peers   (--peer-count N, --json)
+//   npm run forecast -- --rank [--exchange KOSDAQ] [--count 30] [--horizon 1]   stocks most likely to rise
 //   npm run forecast -- --score                     score every logged forecast against later closes
 import { loadConfig } from "../src/config.js";
 import { ForecastService } from "../src/forecast/service.js";
@@ -16,7 +17,19 @@ const svc = new ForecastService({ universe: new UniverseProvider(), logDir: conf
 const pct = (v: number | null | undefined, d = 1) => (v === null || v === undefined ? "-" : `${v >= 0 ? "+" : ""}${v.toFixed(d)}%`);
 const rate = (v: number | null | undefined) => (v === null || v === undefined ? "-" : `${(v * 100).toFixed(1)}%`);
 
-if (argv.includes("--score")) {
+if (argv.includes("--rank")) {
+  const r = await svc.rank({ exchange: flag("--exchange") === "KOSDAQ" ? "KOSDAQ" : "KOSPI", count: flag("--count") ? Number(flag("--count")) : undefined, horizon: (Number(flag("--horizon")) || 1) as 1 | 2 | 3 }).catch((e: Error) => {
+    console.error(`순위 계산 실패: ${e.message}`);
+    process.exit(1);
+  });
+  if (argv.includes("--json")) console.log(JSON.stringify(r, null, 2));
+  else {
+    const b = r.pooledBacktest;
+    console.log(`${r.exchange} 상위 종목 ${r.horizon}거래일 상승 확률 순위 · 종목군 백테스트 적중 ${rate(b.accuracy)} (n=${b.n}, 항상상승 ${rate(b.alwaysUpAccuracy)}, 모멘텀 ${rate(b.momentumAccuracy)}) · 우위 ${b.edge === "detected" ? "있음" : "없음"}`);
+    r.ranked.forEach((x, i) => console.log(`${String(i + 1).padStart(2)}. ${x.ticker} ${(x.name ?? "").padEnd(12)} 상승확률 ${rate(x.probabilityUp)} 예상 ${pct(x.expectedReturnPct, 2)} (80% ${pct(x.range80Pct[0])}~${pct(x.range80Pct[1])}) 신뢰도 ${x.confidence}`));
+    for (const n of r.notes) console.log(`- ${n}`);
+  }
+} else if (argv.includes("--score")) {
   const { scores, summary } = await svc.scoreLog();
   if (argv.includes("--json")) console.log(JSON.stringify({ scores, summary }, null, 2));
   else {

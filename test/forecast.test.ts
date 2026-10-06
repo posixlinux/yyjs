@@ -192,6 +192,27 @@ describe("forecast service and API", () => {
     expect(later[2]!.actualReturnPct).toBeCloseTo((all[402]!.close / Math.round(all[399]!.close) - 1) * 100, 1);
     await app.close();
   }, 120_000);
+  it("ranks the largest stocks of an exchange by the probability of a rise (one pooled model)", async () => {
+    const index = market(320, 0, 6);
+    const markets: Record<string, Bar[]> = Object.fromEntries(["111110", "222220", "333330", "444440", "555550"].map((t, i) => [t, market(320, 0.3, 70 + i)]));
+    const { f } = naverFake(markets, index);
+    const universe = { get: async () => ({ fetchedAt: "2026-10-06T00:00:00Z", scanned: 6, items: [...Object.keys(markets), "666660"].map((t, i) => ({ ticker: t, name: `Co${i}`, exchange: "KOSPI", marketCapKRW: 100 - i })) }) };
+    const svc = new ForecastService({ fetch: f, pages: 6, universe: universe as never });
+    const base = await setup();
+    const app = buildApp(base.service, base.research, base.config, undefined, undefined, svc);
+    const res = await app.inject({ method: "GET", url: "/v1/forecast-ranking?count=6&horizon=1" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.ranked).toHaveLength(5);
+    expect(body.failures).toEqual(["666660"]);
+    const p = body.ranked.map((r: { probabilityUp: number }) => r.probabilityUp);
+    expect([...p].sort((a, b) => b - a)).toEqual(p);
+    expect(body.ranked[0].name).toMatch(/^Co/);
+    expect(body.pooledBacktest.n).toBeGreaterThan(500);
+    expect((await app.inject({ method: "GET", url: "/v1/forecast-ranking?exchange=NYSE" })).statusCode).toBe(400);
+    await app.close();
+  }, 180_000);
+
   it("shares one computation between identical concurrent requests and reuses peer histories", async () => {
     const index = market(300, 0, 6);
     const markets = { "111110": market(300, 0.3, 8), "222220": market(300, 0.3, 9), "333330": market(300, 0.3, 10) };
