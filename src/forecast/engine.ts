@@ -475,8 +475,10 @@ export function forecastMany(series: Series[], o: EngineOptions = DEFAULT_OPTION
       const scaleNow = volScale(xNow, h);
       const exp = (icpt + slope * (raw.r / scaleNow)) * scaleNow;
       const stats = { ...backtestStats(oosAll.filter((x) => x.ticker === s.ticker), h), range80Coverage: covOf((t) => t === s.ticker) };
-      // A stock with too few of its own predictions inherits the pool's verdict on whether there is an edge.
-      const edge = (stats.n >= 120 ? stats : pooled[hi]!).edge === "detected";
+      // The pool's test is far better powered than one stock's (~20x the predictions), so it decides whether there
+      // is an edge; a stock only keeps it if its own record is not worse than its own always-same-direction rule.
+      const own = stats.accuracy !== null && stats.alwaysUpAccuracy !== null ? stats.accuracy >= Math.max(stats.alwaysUpAccuracy, 1 - stats.alwaysUpAccuracy) : true;
+      const edge = pooled[hi]!.edge === "detected" && (stats.n < 120 || own);
       per.get(s.ticker)!.push({
         horizon: h,
         probabilityUp: pUp,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backtestStats, buildSamples, forecast, pValueAbove, walkForward, DEFAULT_OPTIONS } from "../src/forecast/engine.js";
+import { backtestStats, buildSamples, forecast, forecastMany, pValueAbove, walkForward, DEFAULT_OPTIONS } from "../src/forecast/engine.js";
 import { alignLagged, context, features, FEATURE_NAMES } from "../src/forecast/features.js";
 import { createHttp } from "../src/collection/http.js";
 import { loadUsdKrw } from "../src/forecast/history.js";
@@ -398,4 +398,16 @@ describe("review fixes", () => {
     await svc.rank({ count: 3 });
     expect(calls.length).toBe(n);
   }, 120_000);
+});
+
+describe("pooled confidence", () => {
+  it("lets stocks share a pool-wide edge their own short records cannot prove, and never invents one", () => {
+    const index = market(700, 0, 90);
+    const pool = (phi: number) => Array.from({ length: 8 }, (_, j) => ({ ticker: `9${String(j).padStart(4, "0")}0`, bars: market(700, phi, 300 + j), index }));
+    const withEdge = forecastMany(pool(0.2));
+    expect(withEdge.pooled[0]!.edge).toBe("detected");
+    expect(withEdge.results.filter((r) => r.horizons[0]!.confidence !== "low").length).toBeGreaterThanOrEqual(5);
+    const noEdge = forecastMany(pool(0));
+    expect(noEdge.results.every((r) => r.horizons.every((h) => h.confidence === "low" && !h.actionable))).toBe(true);
+  }, 300_000);
 });
