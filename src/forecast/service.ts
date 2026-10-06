@@ -125,12 +125,20 @@ export class ForecastService {
     const http = this.http((2 + pages * 2) * (2 + Math.min(MAX_PEERS, opts.peers?.length ?? peerCount)));
     const stock = (t: string) => this.cached(this.stocks, `${t}|${pages}`, () => loadAdjusted(http, t, pages));
     const indexNotes: string[] = [];
-    // The index only feeds market features: without it the forecast still runs (those features stay empty).
-    const index = (ex: ListedExchange) =>
-      this.cached(this.indexes, `${ex}|${pages}`, () => loadIndex(http, ex, { maxPages: pages })).catch(() => {
-        if (!indexNotes.length) indexNotes.push(`${ex} 지수 시세를 받지 못해 지수 관련 특징 없이 계산했습니다.`);
-        return [] as Bar[];
-      });
+    // The index only feeds market features: without it the forecast still runs (those features stay empty). One
+    // attempt per exchange per forecast, so a failing index is not re-requested for every peer.
+    const indexOnce = new Map<ListedExchange, Promise<Bar[]>>();
+    const index = (ex: ListedExchange) => {
+      let p = indexOnce.get(ex);
+      if (!p) {
+        p = this.cached(this.indexes, `${ex}|${pages}`, () => loadIndex(http, ex, { maxPages: pages })).catch(() => {
+          indexNotes.push(`${ex} 지수 시세를 받지 못해 지수 관련 특징 없이 계산했습니다.`);
+          return [] as Bar[];
+        });
+        indexOnce.set(ex, p);
+      }
+      return p;
+    };
     let target;
     try {
       const s = await stock(ticker);
@@ -156,7 +164,9 @@ export class ForecastService {
     try {
       result = await runEngine({ ticker, bars: target.bars, index: target.index, fx }, peers.map((p) => ({ ...p, fx })), { ...DEFAULT_OPTIONS, ...this.deps.options });
     } catch (e) {
-      throw new AppError(422, "INSUFFICIENT_HISTORY", (e as Error).message);
+      const m = (e as Error).message;
+      if (/^Need at least|^Not enough history/.test(m)) throw new AppError(422, "INSUFFICIENT_HISTORY", m);
+      throw new AppError(503, "FORECAST_FAILED", `The forecast computation failed: ${m}`, undefined, "Retry later; a computation that exceeded its time limit was stopped.");
     }
     result.notes.push(...indexNotes, ...fxNotes);
     if (target.adjusted.length) result.notes.push(`가격제한폭(±30%)을 넘는 변동을 액면분할·병합으로 보고 이전 가격을 보정했습니다: ${target.adjusted.join(", ")}.`);
