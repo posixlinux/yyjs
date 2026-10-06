@@ -12,7 +12,8 @@ export const HORIZONS = [1, 2, 3] as const;
 export const MIN_HISTORY_FOR = MIN_HISTORY + 1;
 export type Horizon = (typeof HORIZONS)[number];
 
-export type Series = { ticker: string; bars: Bar[]; index: Bar[] };
+/** `fx`: USD/KRW reference rates by date (optional; features stay NaN without it). */
+export type Series = { ticker: string; bars: Bar[]; index: Bar[]; fx?: Bar[] };
 
 export type EngineOptions = {
   /** Retrain every `step` test dates. */
@@ -68,7 +69,7 @@ function peerStats(rows: { date: string; x: number[] }[]) {
 export function buildSamples(series: Series[]): Sample[] {
   const out: Sample[] = [];
   for (const s of series) {
-    const ctx = context(s.bars, s.index);
+    const ctx = context(s.bars, s.index, s.fx);
     for (let t = MIN_HISTORY - 1; t < s.bars.length; t++) {
       out.push({
         ticker: s.ticker,

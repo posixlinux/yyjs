@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { backtestStats, buildSamples, forecast, pValueAbove, walkForward, DEFAULT_OPTIONS } from "../src/forecast/engine.js";
-import { context, features, FEATURE_NAMES } from "../src/forecast/features.js";
+import { alignLagged, context, features, FEATURE_NAMES } from "../src/forecast/features.js";
+import { createHttp } from "../src/collection/http.js";
+import { loadUsdKrw } from "../src/forecast/history.js";
 import { parseBars, type Bar } from "../src/forecast/history.js";
 import { fitLogistic, fitRidge, solveSpd } from "../src/forecast/model.js";
 
@@ -70,6 +72,18 @@ describe("forecast model pieces", () => {
 });
 
 describe("point-in-time features", () => {
+  it("uses only USD/KRW rates published before the session (one-day lag) and parses Frankfurter ranges", async () => {
+    const bars = [{ date: "2026-01-05" }, { date: "2026-01-06" }, { date: "2026-01-07" }] as Bar[];
+    const fx = [{ date: "2026-01-05", close: 1400 }, { date: "2026-01-06", close: 1410 }, { date: "2026-01-07", close: 1420 }] as Bar[];
+    expect(alignLagged(bars, fx)).toEqual([NaN, 1400, 1410]);
+    const f = (async (u: string) => {
+      expect(String(u)).toBe("https://api.frankfurter.dev/v1/2026-01-05..2026-01-07?base=USD&symbols=KRW");
+      return new Response(JSON.stringify({ base: "USD", rates: { "2026-01-06": { KRW: 1410.5 }, "2026-01-05": { KRW: 1400 }, bad: { KRW: 1 } } }));
+    }) as typeof fetch;
+    const http = createHttp({ fetch: f, timeoutMs: 1000, maxBytes: 1e6, maxRequests: 2, secrets: [] });
+    expect((await loadUsdKrw(http, "2026-01-05", "2026-01-07")).map((b) => [b.date, b.close])).toEqual([["2026-01-05", 1400], ["2026-01-06", 1410.5]]);
+  });
+
   it("never read bars after t", () => {
     const bars = market(200, 0, 1);
     const idx = market(200, 0, 2);
@@ -220,8 +234,9 @@ describe("forecast service and API", () => {
     const svc = new ForecastService({ fetch: f, pages: 5 });
     const [a, b] = await Promise.all([svc.run("111110", { peers: ["222220", "333330"] }), svc.run("111110", { peers: ["222220", "333330"] })]);
     expect(a).toBe(b);
-    const before = calls.length;
+    const naver = () => calls.filter((p) => p.startsWith("/api/")).length; // a failed FX lookup is retried, histories are not
+    const before = naver();
     await svc.run("222220", { peers: ["111110", "333330"] }); // every history is cached now
-    expect(calls.length).toBe(before);
+    expect(naver()).toBe(before);
   }, 120_000);
 });

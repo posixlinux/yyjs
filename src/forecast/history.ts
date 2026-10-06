@@ -63,3 +63,19 @@ export async function loadHistory(http: HttpClient, ticker: string, opts: { maxP
   const stock = await loadStock(http, ticker, opts);
   return { ...stock, index: await loadIndex(http, stock.exchange, opts), indexName: stock.exchange };
 }
+
+/**
+ * USD/KRW ECB reference rates (Frankfurter) between two dates, oldest first, as close-only bars. Each rate is dated
+ * by its ECB publication day; the feature code lags it by a session (see alignLagged).
+ */
+export async function loadUsdKrw(http: HttpClient, from: string, to: string, ttlMs = 6 * 3600_000): Promise<Bar[]> {
+  const raw = asRecord(await http.json(`https://api.frankfurter.dev/v1/${from}..${to}?base=USD&symbols=KRW`, { headers: { accept: "application/json" }, ttlMs }));
+  const rates = asRecord(raw?.rates);
+  if (!rates) throw new CollectionError("invalid_response", "Frankfurter response has no rates");
+  return Object.entries(rates)
+    .flatMap(([date, v]) => {
+      const krw = Number(asRecord(v)?.KRW);
+      return /^\d{4}-\d{2}-\d{2}$/.test(date) && krw > 0 ? [{ date, open: null, high: null, low: null, close: krw, volume: null }] : [];
+    })
+    .sort((a, b) => a.date.localeCompare(b.date));
+}

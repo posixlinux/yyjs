@@ -16,7 +16,7 @@ const PATH_RULES: Record<string, { path: RegExp; query: boolean }> = {
   "data.sec.gov": { path: /^\/api\/xbrl\/companyfacts\/CIK\d{10}\.json$/, query: false },
   "api.edinet-fsa.go.jp": { path: /^\/api\/v2\/documents(?:\.json|\/[A-Z0-9]{8})$/, query: true },
   "disclosure2dl.edinet-fsa.go.jp": { path: /^\/searchdocument\/codelist\/Edinetcode\.zip$/, query: false },
-  "api.frankfurter.dev": { path: /^\/v1\/\d{4}-\d{2}-\d{2}$/, query: true },
+  "api.frankfurter.dev": { path: /^\/v1\/\d{4}-\d{2}-\d{2}(?:\.\.\d{4}-\d{2}-\d{2})?$/, query: true }, // one day or a range
 };
 
 export interface HttpConfig {

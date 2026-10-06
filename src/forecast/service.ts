@@ -6,7 +6,7 @@ import { AppError } from "../errors.js";
 import type { UniverseProvider } from "../research/universe.js";
 import type { ListedExchange } from "../domain/security.js";
 import { DEFAULT_OPTIONS, type EngineOptions, type ForecastResult, type Series } from "./engine.js";
-import { loadHistory, loadIndex, loadStock, type Bar, type StockHistory } from "./history.js";
+import { loadHistory, loadIndex, loadStock, loadUsdKrw, type Bar, type StockHistory } from "./history.js";
 import { runEngine, runMany } from "./runner.js";
 
 // Short-term forecast service: loads the target's history and that of liquid peers on the same exchange (pooled
@@ -56,6 +56,18 @@ export class ForecastService {
   private inflight = new Map<string, Promise<ForecastResult & { peerFailures: string[] }>>();
   private stocks = new Map<string, { at: number; value: Promise<StockHistory> }>();
   private indexes = new Map<string, { at: number; value: Promise<Bar[]> }>();
+
+  /** USD/KRW over the bars' span; [] (features stay empty) when the rate source is unreachable. */
+  private async fx(http: ReturnType<ForecastService["http"]>, bars: Bar[], notes: string[]): Promise<Bar[]> {
+    if (!bars.length) return [];
+    const from = bars[0]!.date, to = bars.at(-1)!.date;
+    try {
+      return await this.cached(this.indexes, `fx|${from}|${to}`, () => loadUsdKrw(http, from, to));
+    } catch {
+      notes.push("원/달러 환율 이력을 받지 못해 환율 특징 없이 계산했습니다.");
+      return [];
+    }
+  }
 
   private cached<T>(m: Map<string, { at: number; value: Promise<T> }>, key: string, load: () => Promise<T>): Promise<T> {
     const now = Date.now();
@@ -125,12 +137,15 @@ export class ForecastService {
       }));
       got.forEach((g, j) => (g.status === "fulfilled" ? peers.push(g.value) : peerFailures.push(tickers[i + j]!)));
     }
+    const fxNotes: string[] = [];
+    const fx = await this.fx(http, target.index.length ? target.index : target.bars, fxNotes);
     let result: ForecastResult;
     try {
-      result = await runEngine({ ticker, bars: target.bars, index: target.index }, peers, { ...DEFAULT_OPTIONS, ...this.deps.options });
+      result = await runEngine({ ticker, bars: target.bars, index: target.index, fx }, peers.map((p) => ({ ...p, fx })), { ...DEFAULT_OPTIONS, ...this.deps.options });
     } catch (e) {
       throw new AppError(422, "INSUFFICIENT_HISTORY", (e as Error).message);
     }
+    result.notes.push(...fxNotes);
     if (target.name) result.notes.push(`${target.name} (${target.exchange}), 시장 지수 ${target.indexName} 사용.`);
     if (peerFailures.length) result.notes.push(`시세 이력을 받지 못해 제외한 동종 종목: ${peerFailures.join(", ")}.`);
     this.cache.set(key, { at: now, result });
@@ -165,7 +180,9 @@ export class ForecastService {
       got.forEach((g, j) => (g.status === "fulfilled" ? series.push({ ticker: g.value.ticker, bars: g.value.bars, index }) : failures.push(tickers[i + j]!.ticker)));
     }
     if (series.length < 3) throw new AppError(502, "HISTORY_UNAVAILABLE", "Too few price histories could be loaded to rank");
-    const { results, pooled } = await runMany(series, { ...DEFAULT_OPTIONS, ...this.deps.options });
+    const fxNotes: string[] = [];
+    const fx = await this.fx(http, index, fxNotes);
+    const { results, pooled } = await runMany(series.map((s) => ({ ...s, fx })), { ...DEFAULT_OPTIONS, ...this.deps.options });
     const name = new Map(tickers.map((t) => [t.ticker, t.name]));
     const rows = results
       .map((r) => {
@@ -184,6 +201,7 @@ export class ForecastService {
         pooled.find((p) => p.horizon === horizon)!.edge === "detected"
           ? "이 종목군 전체의 워크포워드 백테스트에서 단순 기준을 유의하게 넘었습니다. 그래도 개별 종목의 신뢰도와 범위를 함께 보세요."
           : "이 종목군 전체의 워크포워드 백테스트에서 단순 기준을 유의하게 넘지 못했습니다. 순위는 동전 던지기와 크게 다르지 않을 수 있습니다.",
+        ...fxNotes,
         "투자 권고가 아닙니다.",
       ],
     };
