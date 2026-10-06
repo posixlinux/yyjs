@@ -186,7 +186,7 @@ export type Scenario = (typeof SCENARIOS)[number];
 
 // Competitors for global comparison: Korea, US and Japan only ("KR:000660", "US:MU", "JP:8035"), normalized to upper case.
 const competitorIds = z
-  .array(z.string().trim().toUpperCase().pipe(z.string().regex(/^(KR:\d{6}|US:[A-Z][A-Z0-9.-]{0,9}|JP:[0-9][0-9A-Z]{3})$/, "KR:000660, US:MU or JP:8035 (Korea, US and Japan only)")))
+  .array(z.string().trim().toUpperCase().pipe(z.string().regex(/^(KR:[0-9][0-9A-Z]{5}|US:[A-Z][A-Z0-9.-]{0,9}|JP:[0-9][0-9A-Z]{3})$/, "KR:000660, US:MU or JP:8035 (Korea, US and Japan only)")))
   .max(6)
   .transform((a) => [...new Set(a)]);
 

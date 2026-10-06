@@ -369,5 +369,5 @@ function requiredInputs(e: PublicEvidence): RequiredInput[] {
 
 /** Naver's same-industry peers as KR competitors, in Naver's order (it lists the closest names first). */
 function autoCompetitors(peers: { ticker: string }[], self: string): CompetitorId[] {
-  return parseCompetitorIds(peers.filter((p) => /^\d{6}$/.test(p.ticker)).slice(0, MAX_COMPETITORS).map((p) => `KR:${p.ticker}`), self);
+  return parseCompetitorIds(peers.filter((p) => KRX_TICKER.test(p.ticker)).slice(0, MAX_COMPETITORS).map((p) => `KR:${p.ticker}`), self);
 }
