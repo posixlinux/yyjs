@@ -302,3 +302,35 @@ describe("degraded data sources", () => {
     expect(indexCalls).toBe(1); // not retried for every peer
   }, 120_000);
 });
+
+describe("daily forecast schedule", () => {
+  it("runs once per KST weekday after the configured time", async () => {
+    const { isDue, parseDailyTime } = await import("../src/forecast/schedule.js");
+    const at = parseDailyTime("16:10")!;
+    expect(parseDailyTime("25:00")).toBeNull();
+    const kst = (iso: string) => new Date(Date.parse(`${iso}+09:00`));
+    expect(isDue(kst("2026-10-07T16:09:00"), at, null)).toBe(false); // Wednesday, too early
+    expect(isDue(kst("2026-10-07T16:10:00"), at, null)).toBe(true);
+    expect(isDue(kst("2026-10-07T20:00:00"), at, "2026-10-07")).toBe(false); // already ran today
+    expect(isDue(kst("2026-10-10T17:00:00"), at, "2026-10-09")).toBe(false); // Saturday
+  });
+
+  it("ranks both exchanges, scores the log and writes a summary, once per day", async () => {
+    const { startDailyForecasts } = await import("../src/forecast/schedule.js");
+    const { readFile } = await import("node:fs/promises");
+    const dir = await mkdtemp(path.join(tmpdir(), "daily-"));
+    const calls: string[] = [];
+    const svc = {
+      rank: async ({ exchange }: { exchange: string }) => (calls.push(exchange), exchange === "KOSDAQ" ? Promise.reject(new Error("down")) : { ranked: [1, 2], pooledBacktest: { accuracy: 0.52, edge: "none" }, failures: [] }),
+      scoreLog: async () => (calls.push("score"), { summary: { pending: 0 } }),
+    };
+    const d = startDailyForecasts(svc as never, { at: 16 * 60 + 10, dir, now: () => new Date(Date.parse("2026-10-07T16:30:00+09:00")) });
+    await d.tick();
+    await d.tick(); // same day: no second run
+    d.stop();
+    expect(calls).toEqual(["KOSPI", "KOSDAQ", "score"]);
+    const out = JSON.parse(await readFile(path.join(dir, "forecast-daily.json"), "utf8"));
+    expect(out.KOSPI).toMatchObject({ ranked: 2, pooledAccuracy: 0.52 });
+    expect(out.KOSDAQ).toEqual({ error: "down" });
+  });
+});
