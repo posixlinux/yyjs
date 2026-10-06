@@ -1,3 +1,4 @@
+import { KRX_TICKER } from "../domain/security.js";
 import { createHttp } from "./http.js";
 import type { HttpClient } from "./http.js";
 import { collectDartRevenue } from "./dart.js";
@@ -14,7 +15,7 @@ export { calendarPeriodOf } from "./period.js";
 
 export const MAX_COMPETITORS = 6;
 const CODE: Record<CompetitorMarket, RegExp> = {
-  KR: /^\d{6}$/, // KRX ticker
+  KR: KRX_TICKER, // KRX ticker (005930, new alphanumeric codes such as 0009K0)
   US: /^[A-Z][A-Z0-9.-]{0,9}$/, // EDGAR ticker (BRK-B ...)
   JP: /^[0-9][0-9A-Z]{3}$/, // TSE securities code (7203, 130A ...)
 };

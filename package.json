@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.check.json",
     "start": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/main.js",
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
     "test": "vitest run",

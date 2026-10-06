@@ -16,7 +16,9 @@ console.log(
       ticker,
       asOf,
       status: ev.status,
-      providers: Object.fromEntries(Object.entries(ev.providers).map(([k, v]) => [k, v.status])),
+      providers: Object.fromEntries(
+        Object.entries(ev.providers).map(([k, v]) => [k, !v ? null : "status" in v ? v.status : Object.fromEntries(Object.entries(v).map(([m, r]) => [m, r?.status]))]),
+      ),
       company: ev.company,
       quote: ev.market.quote && { close: ev.market.quote.close, tradedAt: ev.market.quote.tradedAt, tradedOnAsOfDate: ev.market.quote.tradedOnAsOfDate },
       news: ev.market.news.length,

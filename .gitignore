@@ -5,7 +5,10 @@ data/records/*
 data/cache/
 !data/records/.gitkeep
 *.tmp
+.tmp-*
 *.log
 .test-tmp/
 .tools/
 tmp/
+pnpm-lock.yaml
+yarn.lock

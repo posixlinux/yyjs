@@ -272,6 +272,7 @@ Market(T) = Market(L) / s[L의 분기] × (1+gq)^n × s[T의 분기] × c
 ```bash
 npm run build        # tsc
 npm test             # vitest (실제 네트워크/LLM 호출 없음: 수집기와 모델은 주입된 가짜로 검증)
+npm run typecheck    # src·test·scripts 전체 타입 검사 (npm run build 는 src 만 컴파일)
 npm run doctor       # 환경 점검 (--json 지원)
 npm run smoke:public -- 005930             # 실제 Naver(+DART 키 있으면 DART) 수집 스모크, LLM 미사용 (--no-dart 로 DART 제외)
 npm run smoke:job                          # 실제 수집기로 HTTP POST /v1/research → 폴링 (인프로세스, LLM 미사용)
