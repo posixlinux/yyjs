@@ -1,3 +1,4 @@
+import { isValidDate } from "../domain/time.js";
 import { CollectionInputError } from "./types.js";
 
 const ENT: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
@@ -64,7 +65,8 @@ export function parseAsOf(input: string): AsOf {
   } else {
     throw new CollectionInputError("asOf must be YYYY-MM-DD or an ISO timestamp with timezone");
   }
-  if (Number.isNaN(cutoffMs) || (dateOnly && kstDate(cutoffMs) !== input)) {
+  // Date.parse rolls impossible days over ("2026-02-30T10:00Z" -> March 2), so the calendar date is checked itself.
+  if (Number.isNaN(cutoffMs) || !isValidDate(input.slice(0, 10)) || (dateOnly && kstDate(cutoffMs) !== input)) {
     throw new CollectionInputError("asOf is not a valid date");
   }
   return { input, cutoffMs, cutoff: new Date(cutoffMs).toISOString(), dateKst: kstDate(cutoffMs), dateOnly };
