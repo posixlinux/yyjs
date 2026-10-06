@@ -50,15 +50,28 @@ export function toItem(raw: unknown): UniverseItem | null {
 export class UniverseProvider {
   private cached: Universe | null = null;
   private inflight: Promise<Universe> | null = null;
+  private failure: { at: number; error: unknown } | null = null;
 
   constructor(
-    private opts: { fetch?: Fetch; now?: () => Date; ttlMs?: number } = {},
+    private opts: { fetch?: Fetch; now?: () => Date; ttlMs?: number; retryAfterMs?: number } = {},
   ) {}
 
   async get(signal?: AbortSignal): Promise<Universe> {
     const now = (this.opts.now ?? (() => new Date()))().getTime();
     if (this.cached && now - Date.parse(this.cached.fetchedAt) < (this.opts.ttlMs ?? 6 * 3600_000)) return this.cached;
-    this.inflight ??= this.load(signal).finally(() => (this.inflight = null));
+    // After a failed load, wait before hitting Naver again: /v1/universe is unauthenticated, and each load is dozens
+    // of upstream requests.
+    if (this.failure && now - this.failure.at < (this.opts.retryAfterMs ?? 60_000)) {
+      if (this.cached) return this.cached;
+      throw this.failure.error;
+    }
+    this.inflight ??= this.load(signal)
+      .then((u) => ((this.failure = null), u))
+      .catch((error) => {
+        this.failure = { at: now, error };
+        throw error;
+      })
+      .finally(() => (this.inflight = null));
     try {
       return await this.inflight;
     } catch (e) {
@@ -96,7 +109,7 @@ export class UniverseProvider {
 
   static search(u: Universe, query: string | undefined, limit: number): { total: number; items: UniverseItem[] } {
     const q = query?.trim().toLowerCase();
-    const hits = q ? u.items.filter((i) => i.ticker.startsWith(q) || i.name.toLowerCase().includes(q)) : u.items;
+    const hits = q ? u.items.filter((i) => i.ticker.toLowerCase().startsWith(q) || i.name.toLowerCase().includes(q)) : u.items; // tickers may be alphanumeric (0009K0)
     return { total: hits.length, items: hits.slice(0, limit) };
   }
 }
