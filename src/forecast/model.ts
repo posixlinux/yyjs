@@ -197,69 +197,90 @@ export function fitGbm(X: number[][], y: number[], o: { rounds?: number; rate?: 
   const rounds = o.rounds ?? 60, rate = o.rate ?? 0.05, minLeaf = o.minLeaf ?? Math.max(30, Math.floor(X.length * 0.02)), lam = o.lambda ?? 5;
   const n = X.length, d = X[0]?.length ?? 0;
   const edges = binEdges(X);
-  const B = X.map((r) => r.map((v, j) => binOf(edges[j]!, v)));
+  // Bin index of every (row, feature) in one flat byte array: the split search below is all histogram sums.
+  const B = new Uint8Array(n * d);
+  for (let i = 0; i < n; i++) for (let j = 0; j < d; j++) B[i * d + j] = binOf(edges[j]!, X[i]![j]!);
   const pos = y.reduce((s, v) => s + v, 0) / Math.max(1, n);
   const base = Math.log(Math.max(1e-6, pos) / Math.max(1e-6, 1 - pos));
-  const F = new Array<number>(n).fill(base);
+  const F = new Float64Array(n).fill(base);
+  const g = new Float64Array(n), h = new Float64Array(n);
+  const G = new Float64Array(BINS + 1), Hh = new Float64Array(BINS + 1), C = new Int32Array(BINS + 1);
   const trees: Stump[] = [];
-  const leaf = (G: number, H: number) => -G / (H + lam);
-  // Best split of `idx` on any feature: returns [feature, bin threshold, gain].
-  const bestSplit = (idx: number[], g: number[], h: number[]) => {
-    let best: [number, number, number] = [-1, 0, 0];
-    let Gt = 0, Ht = 0;
-    for (const i of idx) (Gt += g[i]!), (Ht += h[i]!);
+  const leaf = (Gs: number, Hs: number) => -Gs / (Hs + lam);
+  const sums = (idx: Int32Array) => {
+    let Gs = 0, Hs = 0;
+    for (let k = 0; k < idx.length; k++) (Gs += g[idx[k]!]!), (Hs += h[idx[k]!]!);
+    return [Gs, Hs] as const;
+  };
+  // Best split of `idx` on any feature: [feature, bin threshold, gain].
+  const bestSplit = (idx: Int32Array): [number, number, number] => {
+    let bf = -1, bt = 0, bg = 0;
+    const [Gt, Ht] = sums(idx);
     const parent = (Gt * Gt) / (Ht + lam);
     for (let j = 0; j < d; j++) {
       const nb = edges[j]!.length + 1;
       if (nb < 2) continue;
-      const G = new Array<number>(nb).fill(0), H = new Array<number>(nb).fill(0), C = new Array<number>(nb).fill(0);
-      for (const i of idx) {
-        const b = B[i]![j]!;
+      G.fill(0, 0, nb);
+      Hh.fill(0, 0, nb);
+      C.fill(0, 0, nb);
+      for (let k = 0; k < idx.length; k++) {
+        const i = idx[k]!;
+        const b = B[i * d + j]!;
         G[b] += g[i]!;
-        H[b] += h[i]!;
+        Hh[b] += h[i]!;
         C[b]++;
       }
       let gl = 0, hl = 0, cl = 0;
       for (let b = 0; b < nb - 1; b++) {
         gl += G[b]!;
-        hl += H[b]!;
+        hl += Hh[b]!;
         cl += C[b]!;
         if (cl < minLeaf || idx.length - cl < minLeaf) continue;
         const gr = Gt - gl, hr = Ht - hl;
         const gain = (gl * gl) / (hl + lam) + (gr * gr) / (hr + lam) - parent;
-        if (gain > best[2]) best = [j, b, gain];
+        if (gain > bg) (bf = j), (bt = b), (bg = gain);
       }
     }
-    return best;
+    return [bf, bt, bg];
   };
-  const all = Array.from({ length: n }, (_, i) => i);
+  const part = (idx: Int32Array, f: number, t: number): [Int32Array, Int32Array] => {
+    let nl = 0;
+    for (let k = 0; k < idx.length; k++) if (B[idx[k]! * d + f]! <= t) nl++;
+    const L = new Int32Array(nl), R = new Int32Array(idx.length - nl);
+    let a = 0, c = 0;
+    for (let k = 0; k < idx.length; k++) {
+      const i = idx[k]!;
+      if (B[i * d + f]! <= t) L[a++] = i;
+      else R[c++] = i;
+    }
+    return [L, R];
+  };
+  const all = Int32Array.from({ length: n }, (_, i) => i);
   for (let r = 0; r < rounds; r++) {
-    const g = new Array<number>(n), h = new Array<number>(n);
     for (let i = 0; i < n; i++) {
       const p = sigmoid(F[i]!);
       const w = o.weights?.[i] ?? 1;
       g[i] = (p - y[i]!) * w;
       h[i] = Math.max(1e-6, p * (1 - p)) * w;
     }
-    const sum = (idx: number[]) => idx.reduce((a, i) => [a[0]! + g[i]!, a[1]! + h[i]!], [0, 0]);
-    const [f, t, gain] = bestSplit(all, g, h);
+    const [f, t, gain] = bestSplit(all);
     if (f < 0 || gain <= 0) break;
-    const L = all.filter((i) => B[i]![f]! <= t), R = all.filter((i) => B[i]![f]! > t);
-    const child = (idx: number[]): Stump | number => {
-      const [cf, ct, cg] = bestSplit(idx, g, h);
-      if (cf < 0 || cg <= 0) {
-        const [G, H] = sum(idx);
-        return leaf(G, H);
-      }
-      const l = idx.filter((i) => B[i]![cf]! <= ct), rr = idx.filter((i) => B[i]![cf]! > ct);
-      const [Gl, Hl] = sum(l), [Gr, Hr] = sum(rr);
-      return { f: cf, t: ct, left: leaf(Gl, Hl), right: leaf(Gr, Hr) };
+    const [L, R] = part(all, f, t);
+    const child = (idx: Int32Array): Stump | number => {
+      const [cf, ct, cg] = bestSplit(idx);
+      if (cf < 0 || cg <= 0) return leaf(...sums(idx));
+      const [l, rr] = part(idx, cf, ct);
+      return { f: cf, t: ct, left: leaf(...sums(l)), right: leaf(...sums(rr)) };
     };
     const tree: Stump = { f, t, left: child(L), right: child(R) };
     trees.push(tree);
-    for (let i = 0; i < n; i++) F[i] += rate * evalTree(tree, B[i]!);
+    for (let i = 0; i < n; i++) F[i] += rate * evalTreeFlat(tree, B, i * d);
   }
   return { base, trees, rate, edges };
+}
+
+function evalTreeFlat(t: Stump | number, B: Uint8Array, off: number): number {
+  return typeof t === "number" ? t : evalTreeFlat(B[off + t.f]! <= t.t ? t.left : t.right, B, off);
 }
 
 function evalTree(t: Stump | number, b: number[]): number {
