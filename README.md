@@ -10,18 +10,18 @@ KOSPI·KOSDAQ 보통주 하나를 골라 **공시·시세·뉴스 자동 수집 
 
 ```mermaid
 flowchart TD
-  A[POST /v1/analyses ticker + asOf] --> B[제한된 비동기 작업 202]
-  B --> C[DART 정기보고서 · 재무제표]
-  B --> D[Naver 시세 · 뉴스 · 기사 본문]
-  C --> E[출처·날짜가 붙은 근거 문서]
+  A["POST /v1/analyses ticker"] --> B["제한된 비동기 작업 202"]
+  B --> C["DART 정기보고서 · 재무제표 · 경쟁사 공시"]
+  B --> D["Naver 시세 · 뉴스 · 기사 본문 · 동종업종"]
+  C --> E["출처·날짜가 붙은 근거 문서"]
   D --> E
-  E --> F[Claude CLI: 구조화 초안]
-  F --> G[agy(Antigravity CLI): 독립 감사]
+  E --> F["Claude CLI: 구조화 초안"]
+  F --> G["agy(Antigravity CLI): 독립 감사"]
   E --> G
-  G --> H[출처·숫자·범위·기간 검증<br/>+ 시장/티커/시세 대조]
-  H --> I[결정론적 시장·이익 모델]
-  H --> J[partial: 근거 · 서술 · 부족 입력 · 사유]
-  I --> K[다음 분기말 비관·기본·낙관 가격]
+  G --> H["출처·숫자·범위·기간 검증<br/>+ 시장/티커/시세 대조"]
+  H --> I["결정론적 시장·이익 모델"]
+  H --> J["partial: 근거 · 서술 · 부족 입력 · 사유"]
+  I --> K["다음 분기말 비관·기본·낙관 가격"]
 ```
 
 ## 빠른 시작
