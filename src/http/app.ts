@@ -93,8 +93,9 @@ export function buildApp(
   });
 
   // KOSPI and KOSDAQ common stocks (no ETF/preferred/REIT...) for the picker; public data, cached server-side.
+  // The web UI loads the whole list at once (limit up to 5000 covers every listed common stock) and searches locally.
   app.get("/v1/universe", async (req) => {
-    const q = z.object({ query: z.string().max(50).optional(), limit: z.coerce.number().int().min(1).max(500).default(50) }).parse(req.query);
+    const q = z.object({ query: z.string().max(50).optional(), limit: z.coerce.number().int().min(1).max(5000).default(50) }).parse(req.query);
     let u;
     try {
       u = await universe.get();

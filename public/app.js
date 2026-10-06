@@ -53,46 +53,160 @@ async function api(path, init) {
 }
 
 // ---- stock picker -------------------------------------------------------------------------------------------------
+// The full KOSPI/KOSDAQ common-stock list is fetched once and searched locally (name, 초성, ticker); the dropdown
+// renders matches in chunks as it scrolls so every stock is reachable without drawing thousands of rows at once.
 
-let debounce;
-let searchSeq = 0;
-async function loadList() {
-  const q = $("q").value.trim();
-  const seq = ++searchSeq;
-  $("listInfo").textContent = "목록을 불러오는 중…";
-  try {
-    const r = await api(`/v1/universe?limit=60${q ? `&query=${encodeURIComponent(q)}` : ""}`);
-    if (seq !== searchSeq) return;
-    const list = $("list");
-    list.replaceChildren(...r.items.map((it) => {
-      const cap = it.marketCapKRW > 0 ? big(it.marketCapKRW) : "";
-      const n = el("div", { class: "item", role: "option", tabindex: "0", "data-ticker": it.ticker, "aria-selected": $("ticker").value === it.ticker },
-        el("span", {}, el("strong", { text: it.name }), " ", el("span", { class: "code", text: `${it.ticker} · ${it.exchange === "KOSDAQ" ? "코스닥" : "코스피"}` })),
-        el("span", { class: "cap", text: cap }));
-      return n;
-    }));
-    $("listInfo").textContent = r.total ? `KOSPI·KOSDAQ 보통주 ${r.total.toLocaleString("ko-KR")}종목 중 ${r.items.length}개 표시 (시가총액 순)` : "검색 결과가 없습니다. 6자리 종목 번호를 직접 입력할 수도 있습니다.";
-  } catch (e) {
-    if (seq !== searchSeq) return;
-    $("list").replaceChildren();
-    $("listInfo").textContent = `목록을 불러오지 못했습니다 (${e.message}). 6자리 종목 번호를 직접 입력하세요.`;
-  }
+const CHO = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ";
+const norm = (s) => String(s || "").toLowerCase().replace(/\s+/g, "");
+const choseong = (s) => Array.from(String(s || "")).map((ch) => {
+  const c = ch.charCodeAt(0) - 0xac00;
+  return c >= 0 && c < 11172 ? CHO[Math.floor(c / 588)] : ch.toLowerCase();
+}).join("").replace(/\s+/g, "");
+
+const CHUNK = 150;
+let universe = [];
+let universeError = null;
+let matches = [];
+let shown = 0;
+let active = -1;
+let pickedLabel = ""; // the search box shows the picked stock; treat that text as an empty query
+
+const exLabel = (ex) => (ex === "KOSDAQ" ? "코스닥" : "코스피");
+const isOpen = () => !$("list").hidden;
+function setOpen(open) {
+  $("list").hidden = !open;
+  $("q").setAttribute("aria-expanded", String(open));
+  if (!open) { active = -1; $("q").setAttribute("aria-activedescendant", ""); }
 }
-const pick = (node) => {
-  if (!node || !node.dataset.ticker) return;
-  $("ticker").value = node.dataset.ticker;
-  for (const n of $("list").children) n.setAttribute("aria-selected", String(n === node));
-};
-$("list").addEventListener("click", (e) => pick(e.target.closest(".item")));
-$("list").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(e.target.closest(".item")); }
+
+async function loadUniverse() {
+  $("listInfo").textContent = "KOSPI·KOSDAQ 종목 목록을 불러오는 중…";
+  try {
+    const r = await api("/v1/universe?limit=5000");
+    const items = Array.isArray(r && r.items) ? r.items : [];
+    universe = items.map((it) => ({ ...it, key: norm(it.name), cho: choseong(it.name) }));
+    universeError = universe.length ? null : "빈 목록";
+  } catch (e) {
+    universeError = e.message || "알 수 없는 오류";
+  }
+  refresh();
+}
+
+function search(qRaw) {
+  const q = norm(qRaw);
+  const market = $("market").value;
+  const sort = $("sort").value;
+  const choOnly = q && /^[ㄱ-ㅎ]+$/.test(q);
+  const out = [];
+  for (const it of universe) {
+    if (market && it.exchange !== market) continue;
+    let rank = 0;
+    if (q) {
+      const t = it.ticker.toLowerCase();
+      if (t === q) rank = 0;
+      else if (t.startsWith(q)) rank = 1;
+      else if (it.key === q) rank = 2;
+      else if (it.key.startsWith(q)) rank = 3;
+      else if (it.key.includes(q)) rank = 4;
+      else if (choOnly && it.cho.startsWith(q)) rank = 5;
+      else if (choOnly && it.cho.includes(q)) rank = 6;
+      else continue;
+    }
+    out.push([rank, it]);
+  }
+  const by = sort === "name" ? (a, b) => a.name.localeCompare(b.name, "ko")
+    : sort === "ticker" ? (a, b) => a.ticker.localeCompare(b.ticker)
+    : (a, b) => b.marketCapKRW - a.marketCapKRW || a.ticker.localeCompare(b.ticker);
+  out.sort((a, b) => a[0] - b[0] || by(a[1], b[1]));
+  return out.map((x) => x[1]);
+}
+
+function optionNode(it, i) {
+  const cap = it.marketCapKRW > 0 ? big(it.marketCapKRW) : "";
+  return el("div", { class: "item", role: "option", id: `opt-${i}`, "data-idx": i, "aria-selected": $("ticker").value === it.ticker },
+    el("span", {}, el("strong", { text: it.name }), " ", el("span", { class: "code", text: `${it.ticker} · ${exLabel(it.exchange)}` })),
+    el("span", { class: "cap", text: cap }));
+}
+function renderMore() {
+  const next = matches.slice(shown, shown + CHUNK);
+  $("list").append(...next.map((it, k) => optionNode(it, shown + k)));
+  shown += next.length;
+}
+
+function refresh() {
+  matches = search($("q").value === pickedLabel ? "" : $("q").value);
+  shown = 0;
+  active = -1;
+  $("list").replaceChildren();
+  $("list").scrollTop = 0;
+  renderMore();
+  if (!matches.length) $("list").append(el("div", { class: "empty", text: universe.length ? "검색 결과가 없습니다." : "목록을 불러오지 못했습니다." }));
+  const kospi = universe.filter((i) => i.exchange === "KOSPI").length;
+  $("listInfo").textContent = universeError
+    ? `종목 목록을 불러오지 못했습니다 (${universeError}). 아래에 6자리 종목 번호를 직접 입력하세요.`
+    : `KOSPI 보통주 ${kospi.toLocaleString("ko-KR")} · KOSDAQ 보통주 ${(universe.length - kospi).toLocaleString("ko-KR")}종목 중 ${matches.length.toLocaleString("ko-KR")}종목 해당`;
+}
+
+function setActive(i) {
+  if (!matches.length) return;
+  active = Math.max(0, Math.min(matches.length - 1, i));
+  while (active >= shown) renderMore();
+  for (const n of $("list").children) if (n.dataset && n.dataset.idx !== undefined) n.classList.toggle("active", Number(n.dataset.idx) === active);
+  $("q").setAttribute("aria-activedescendant", `opt-${active}`);
+  const node = document.getElementById(`opt-${active}`);
+  if (node && node.scrollIntoView) node.scrollIntoView({ block: "nearest" });
+}
+
+function pick(i) {
+  const it = matches[i];
+  if (!it) return;
+  $("ticker").value = it.ticker;
+  $("q").value = pickedLabel = `${it.name} (${it.ticker})`;
+  $("listInfo").textContent = `선택: ${it.name} · ${it.ticker} · ${exLabel(it.exchange)}${it.marketCapKRW > 0 ? ` · 시가총액 ${big(it.marketCapKRW)}` : ""}`;
+  setOpen(false);
+}
+
+$("list").addEventListener("mousedown", (e) => e.preventDefault()); // keep focus in the search box
+$("list").addEventListener("click", (e) => {
+  const n = e.target.closest(".item");
+  if (n) pick(Number(n.dataset.idx));
+});
+$("list").addEventListener("scroll", () => {
+  const l = $("list");
+  if (shown < matches.length && l.scrollTop + l.clientHeight >= l.scrollHeight - 200) renderMore();
 });
 $("q").addEventListener("input", () => {
-  clearTimeout(debounce);
   const q = $("q").value.trim();
   if (/^[0-9][0-9A-Za-z]{5}$/.test(q)) $("ticker").value = q.toUpperCase(); // typing a full ticker selects it
-  debounce = setTimeout(loadList, 250);
+  refresh();
+  setOpen(true);
+  if (q && matches.length) setActive(0);
 });
+$("q").addEventListener("focus", () => { $("q").select(); refresh(); setOpen(true); });
+$("q").addEventListener("blur", () => setOpen(false));
+$("q").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!isOpen()) { refresh(); setOpen(true); }
+    setActive(active < 0 ? 0 : active + (e.key === "ArrowDown" ? 1 : -1));
+  } else if (e.key === "PageDown" || e.key === "PageUp") {
+    if (!isOpen()) return;
+    e.preventDefault();
+    setActive(active + (e.key === "PageDown" ? 10 : -10));
+  } else if (e.key === "Enter") {
+    if (isOpen() && active >= 0) { e.preventDefault(); pick(active); }
+  } else if (e.key === "Escape") {
+    if (isOpen()) { e.preventDefault(); setOpen(false); }
+  }
+});
+$("qToggle").addEventListener("mousedown", (e) => e.preventDefault());
+$("qToggle").addEventListener("click", () => {
+  if (isOpen()) return setOpen(false);
+  $("q").focus(); // focus handler opens the list; open explicitly too in case the box already had focus
+  refresh();
+  setOpen(true);
+});
+for (const id of ["market", "sort"]) $(id).addEventListener("change", () => { refresh(); if (document.activeElement === $("q")) setOpen(true); });
 
 // ---- rendering ----------------------------------------------------------------------------------------------------
 
@@ -466,5 +580,5 @@ $("form").addEventListener("submit", async (ev) => {
     $("keyRow").hidden = !apiKeyRequired;
     if (apiKeyRequired) { try { $("apiKey").value = sessionStorage.getItem("yyKey") || ""; } catch { /* ignore */ } }
   } catch { /* health unavailable: keep defaults */ }
-  loadList();
+  loadUniverse();
 })();

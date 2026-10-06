@@ -66,6 +66,7 @@ npm start                   # 또는 개발용: npm run dev
 | GET | `/v1/analyses/:id` | 작업 상태/결과 폴링 (`queued`/`running`/`completed`/`partial`/`failed`) |
 | POST | `/v1/research` | **근거 수집 전용 작업**(Claude/agy 호출 없음, 가치 산정 없음). 202 |
 | GET | `/v1/research/:id` | 근거 수집 작업 폴링 |
+| GET | `/v1/universe?query=&limit=` | KOSPI·KOSDAQ 보통주 목록(네이버 증권, 서버 캐시). `limit` 최대 5000 — 웹 화면은 전체 목록을 한 번 받아 종목명·초성·번호로 검색하고 드롭다운에서 고릅니다 |
 | GET | `/v1/companies?query=` | 데모(가상) 종목 검색 |
 | GET | `/v1/companies/:ticker` | 데모(가상) 종목 프로파일 |
 | GET | `/v1/schema` | 데이터셋 JSON Schema (`result.research.draftDataset.dataset`의 형식) |
