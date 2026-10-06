@@ -192,4 +192,15 @@ describe("forecast service and API", () => {
     expect(later[2]!.actualReturnPct).toBeCloseTo((all[402]!.close / Math.round(all[399]!.close) - 1) * 100, 1);
     await app.close();
   }, 120_000);
+  it("shares one computation between identical concurrent requests and reuses peer histories", async () => {
+    const index = market(300, 0, 6);
+    const markets = { "111110": market(300, 0.3, 8), "222220": market(300, 0.3, 9), "333330": market(300, 0.3, 10) };
+    const { f, calls } = naverFake(markets, index);
+    const svc = new ForecastService({ fetch: f, pages: 5 });
+    const [a, b] = await Promise.all([svc.run("111110", { peers: ["222220", "333330"] }), svc.run("111110", { peers: ["222220", "333330"] })]);
+    expect(a).toBe(b);
+    const before = calls.length;
+    await svc.run("222220", { peers: ["111110", "333330"] }); // every history is cached now
+    expect(calls.length).toBe(before);
+  }, 120_000);
 });

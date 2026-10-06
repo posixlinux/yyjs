@@ -4,8 +4,10 @@ import { createHttp } from "../collection/http.js";
 import { CollectionError } from "../collection/types.js";
 import { AppError } from "../errors.js";
 import type { UniverseProvider } from "../research/universe.js";
-import { DEFAULT_OPTIONS, forecast, type EngineOptions, type ForecastResult, type Series } from "./engine.js";
-import { loadHistory, type Bar } from "./history.js";
+import type { ListedExchange } from "../domain/security.js";
+import { DEFAULT_OPTIONS, type EngineOptions, type ForecastResult, type Series } from "./engine.js";
+import { loadHistory, loadIndex, loadStock, type Bar, type StockHistory } from "./history.js";
+import { runEngine } from "./runner.js";
 
 // Short-term forecast service: loads the target's history and that of liquid peers on the same exchange (pooled
 // training: one stock has too few sessions for a stable model), runs the engine, caches the result for the trading
@@ -47,9 +49,24 @@ export type ForecastScore = {
 };
 
 const MAX_PEERS = 40;
+const HISTORY_TTL_MS = 30 * 60_000; // daily bars change once a day; peers are shared between forecasts
 
 export class ForecastService {
   private cache = new Map<string, { at: number; result: ForecastResult }>();
+  private inflight = new Map<string, Promise<ForecastResult & { peerFailures: string[] }>>();
+  private stocks = new Map<string, { at: number; value: Promise<StockHistory> }>();
+  private indexes = new Map<string, { at: number; value: Promise<Bar[]> }>();
+
+  private cached<T>(m: Map<string, { at: number; value: Promise<T> }>, key: string, load: () => Promise<T>): Promise<T> {
+    const now = Date.now();
+    const hit = m.get(key);
+    if (hit && now - hit.at < HISTORY_TTL_MS) return hit.value;
+    const value = load();
+    m.set(key, { at: now, value });
+    value.catch(() => m.get(key)?.value === value && m.delete(key));
+    if (m.size > 200) m.delete(m.keys().next().value as string);
+    return value;
+  }
 
   constructor(private deps: ForecastDeps = {}) {}
 
@@ -69,18 +86,30 @@ export class ForecastService {
     }
   }
 
-  async run(ticker: string, opts: { peers?: string[]; peerCount?: number } = {}): Promise<ForecastResult & { peerFailures: string[] }> {
+  /** Same request in flight -> the same promise (a double click or two tabs never doubles the work). */
+  run(ticker: string, opts: { peers?: string[]; peerCount?: number } = {}): Promise<ForecastResult & { peerFailures: string[] }> {
+    const key = `${ticker}|${(opts.peers ?? []).join(",")}|${opts.peerCount ?? 20}`;
+    const running = this.inflight.get(key);
+    if (running) return running;
+    const p = this.compute(ticker, key, opts).finally(() => this.inflight.delete(key));
+    this.inflight.set(key, p);
+    return p;
+  }
+
+  private async compute(ticker: string, key: string, opts: { peers?: string[]; peerCount?: number }): Promise<ForecastResult & { peerFailures: string[] }> {
     const peerCount = opts.peerCount ?? 20;
-    const key = `${ticker}|${(opts.peers ?? []).join(",")}|${peerCount}`;
     const now = (this.deps.now ?? (() => new Date()))().getTime();
     const hit = this.cache.get(key);
     if (hit && now - hit.at < 30 * 60_000) return { ...hit.result, peerFailures: [] };
 
     const pages = this.deps.pages ?? 12;
     const http = this.http((2 + pages * 2) * (2 + Math.min(MAX_PEERS, opts.peers?.length ?? peerCount)));
+    const stock = (t: string) => this.cached(this.stocks, `${t}|${pages}`, () => loadStock(http, t, { maxPages: pages }));
+    const index = (ex: ListedExchange) => this.cached(this.indexes, `${ex}|${pages}`, () => loadIndex(http, ex, { maxPages: pages }));
     let target;
     try {
-      target = await loadHistory(http, ticker, { maxPages: pages });
+      const s = await stock(ticker);
+      target = { ...s, index: await index(s.exchange), indexName: s.exchange };
     } catch (e) {
       if (e instanceof CollectionError && e.code === "not_listed") throw new AppError(422, "NOT_LISTED", e.message);
       throw new AppError(502, "HISTORY_UNAVAILABLE", `Could not load ${ticker}'s price history: ${(e as Error).message}`);
@@ -90,12 +119,15 @@ export class ForecastService {
     const tickers = await this.peerTickers(ticker, target.exchange, opts.peers, peerCount);
     // Bounded concurrency; a failing peer is skipped, never fatal.
     for (let i = 0; i < tickers.length; i += 4) {
-      const got = await Promise.allSettled(tickers.slice(i, i + 4).map((t) => loadHistory(http, t, { maxPages: pages })));
-      got.forEach((g, j) => (g.status === "fulfilled" ? peers.push({ ticker: g.value.ticker, bars: g.value.bars, index: g.value.index }) : peerFailures.push(tickers[i + j]!)));
+      const got = await Promise.allSettled(tickers.slice(i, i + 4).map(async (t) => {
+        const s = await stock(t);
+        return { ticker: s.ticker, bars: s.bars, index: await index(s.exchange) };
+      }));
+      got.forEach((g, j) => (g.status === "fulfilled" ? peers.push(g.value) : peerFailures.push(tickers[i + j]!)));
     }
     let result: ForecastResult;
     try {
-      result = forecast({ ticker, bars: target.bars, index: target.index }, peers, { ...DEFAULT_OPTIONS, ...this.deps.options });
+      result = await runEngine({ ticker, bars: target.bars, index: target.index }, peers, { ...DEFAULT_OPTIONS, ...this.deps.options });
     } catch (e) {
       throw new AppError(422, "INSUFFICIENT_HISTORY", (e as Error).message);
     }

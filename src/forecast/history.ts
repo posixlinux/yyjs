@@ -42,16 +42,24 @@ async function pages(http: HttpClient, path: string, maxPages: number, ttlMs: nu
   return [...all.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
-export type History = { ticker: string; name: string | null; exchange: ListedExchange; bars: Bar[]; index: Bar[]; indexName: string };
+export type StockHistory = { ticker: string; name: string | null; exchange: ListedExchange; bars: Bar[] };
+export type History = StockHistory & { index: Bar[]; indexName: string };
 
-/** The stock's bars and its exchange index (KOSPI or KOSDAQ) over up to `maxPages` x 60 sessions. */
-export async function loadHistory(http: HttpClient, ticker: string, opts: { maxPages?: number; ttlMs?: number } = {}): Promise<History> {
+export async function loadStock(http: HttpClient, ticker: string, opts: { maxPages?: number; ttlMs?: number } = {}): Promise<StockHistory> {
   const maxPages = opts.maxPages ?? 12; // ~720 sessions (about three years)
   const ttlMs = opts.ttlMs ?? 10 * 60_000;
   const basic = asRecord(await http.json(`${API}/stock/${ticker}/basic`, { headers: HEADERS, ttlMs }));
   if (!basic || str(basic.itemCode) !== ticker) throw new CollectionError("invalid_response", "Naver basic response does not match the requested ticker");
   const exchange = exchangeOf(str(asRecord(basic.stockExchangeType)?.code));
   if (!exchange) throw new CollectionError("not_listed", `Ticker ${ticker} is not a KOSPI/KOSDAQ listing`);
-  const [bars, index] = await Promise.all([pages(http, `/stock/${ticker}/price`, maxPages, ttlMs), pages(http, `/index/${exchange}/price`, maxPages, ttlMs)]);
-  return { ticker, name: str(basic.stockName) || null, exchange, bars, index, indexName: exchange };
+  return { ticker, name: str(basic.stockName) || null, exchange, bars: await pages(http, `/stock/${ticker}/price`, maxPages, ttlMs) };
+}
+
+export const loadIndex = (http: HttpClient, exchange: ListedExchange, opts: { maxPages?: number; ttlMs?: number } = {}): Promise<Bar[]> =>
+  pages(http, `/index/${exchange}/price`, opts.maxPages ?? 12, opts.ttlMs ?? 10 * 60_000);
+
+/** The stock's bars and its exchange index (KOSPI or KOSDAQ) over up to `maxPages` x 60 sessions. */
+export async function loadHistory(http: HttpClient, ticker: string, opts: { maxPages?: number; ttlMs?: number } = {}): Promise<History> {
+  const stock = await loadStock(http, ticker, opts);
+  return { ...stock, index: await loadIndex(http, stock.exchange, opts), indexName: stock.exchange };
 }
