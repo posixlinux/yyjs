@@ -25,8 +25,9 @@ const tri = (v: z.ZodNumber) =>
     .strict()
     .refine((t) => t.bear <= t.base && t.base <= t.bull, "must satisfy bear <= base <= bull");
 
-const assumption = <T extends z.ZodType>(value: T, rationaleRequired = false) =>
-  z.object({ value, source: SourceSchema, rationale: rationaleRequired ? text(500) : text(500).optional() }).strict();
+// Two helpers rather than a boolean flag, so the inferred type says exactly whether `rationale` may be omitted.
+const assumption = <T extends z.ZodType>(value: T) => z.object({ value, source: SourceSchema, rationale: text(500).optional() }).strict();
+const justifiedAssumption = <T extends z.ZodType>(value: T) => z.object({ value, source: SourceSchema, rationale: text(500) }).strict();
 
 // Finite, bounded magnitudes: zod rejects NaN/Infinity, the caps stop overflow to Infinity (JSON null) in later arithmetic.
 const MAX_AMOUNT = 1e18;
@@ -159,7 +160,7 @@ export const DatasetSchema = z
     residual: assumption(
       z.object({ annualGrowth: tri(growth), operatingMargin: tri(margin) }).strict(),
     ).optional(), // required when products cover < 98% of company revenue
-    earningsBridge: assumption(
+    earningsBridge: justifiedAssumption(
       z
         .object({
           netInterestKRW: z.number().min(-MAX_AMOUNT).max(MAX_AMOUNT), // next-quarter net interest income (+) / expense (-)
@@ -170,7 +171,6 @@ export const DatasetSchema = z
           preferredClaimsKRW: z.number().min(0).max(MAX_AMOUNT),
         })
         .strict(),
-      true,
     ),
     valuation: z.object({ peMultiple: assumption(tri(z.number().min(3).max(40))) }).strict(),
   })
