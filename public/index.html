@@ -52,6 +52,7 @@
           <p class="hint">모델 하나만 고르면 그 모델이 초안 작성과 자체 감사를 모두 맡아 교차검증 없이 결과를 냅니다. 두 모델을 고르면 앞의 모델이 작성하고 뒤의 모델이 독립적으로 감사합니다.</p>
         </div>
         <label><input type="radio" name="mode" value="research"> 증거 수집만 (모델 미사용, 쿼터 소모 없음)</label>
+        <label><input type="radio" name="mode" value="forecast"> 단기 주가 예측 (1~3거래일 방향·등락폭, 백테스트 포함 · 모델 미사용)</label>
       </fieldset>
 
       <div id="keyRow" class="row" hidden>

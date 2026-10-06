@@ -99,10 +99,10 @@ export class ForecastService {
     } catch (e) {
       throw new AppError(422, "INSUFFICIENT_HISTORY", (e as Error).message);
     }
-    if (target.name) result.notes.push(`${target.name} (${target.exchange}); index ${target.indexName}.`);
-    if (peerFailures.length) result.notes.push(`Peers skipped (history unavailable): ${peerFailures.join(", ")}.`);
+    if (target.name) result.notes.push(`${target.name} (${target.exchange}), 시장 지수 ${target.indexName} 사용.`);
+    if (peerFailures.length) result.notes.push(`시세 이력을 받지 못해 제외한 동종 종목: ${peerFailures.join(", ")}.`);
     this.cache.set(key, { at: now, result });
-    await this.log(result).catch(() => result.notes.push("The forecast could not be written to the forecast log."));
+    await this.log(result).catch(() => result.notes.push("예측 기록 파일에 저장하지 못했습니다."));
     return { ...result, peerFailures };
   }
 

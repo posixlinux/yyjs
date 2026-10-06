@@ -349,10 +349,10 @@ export function forecast(target: Series, peers: Series[] = [], o: EngineOptions 
     });
   }
   const notes = [
-    "Short-term prices are mostly noise; the backtest accuracy, not the forecast, says how much to trust a direction.",
-    "probabilityUp is calibrated on walk-forward out-of-sample predictions: without proven skill it stays near the historical share of rising sessions.",
-    "Not investment advice. Prices are Naver daily closes (not adjusted for splits or dividends).",
+    "단기 주가는 대부분 잡음입니다. 방향을 얼마나 믿을지는 예측값이 아니라 백테스트 적중률이 알려 줍니다.",
+    "상승 확률은 워크포워드 표본 외 예측으로 보정한 값이라, 검증된 예측력이 없으면 과거 상승일 비율 근처에 머뭅니다.",
+    "투자 권고가 아닙니다. 가격은 네이버 일별 종가(액면분할·배당 미조정)입니다.",
   ];
-  if (horizons.every((h) => h.backtest.edge === "none")) notes.unshift("No horizon beat the naive baselines significantly in the walk-forward backtest: treat these directions as coin flips.");
+  if (horizons.every((h) => h.backtest.edge === "none")) notes.unshift("어느 기간도 워크포워드 백테스트에서 단순 기준(동전·항상 같은 방향)을 유의하게 넘지 못했습니다. 이번 방향은 동전 던지기로 보세요.");
   return { ticker: target.ticker, asOfDate: target.bars[last]!.date, lastCloseKRW: lastClose, horizons, trainedOn: { tickers: all.map((s) => s.ticker), samples: samples.length }, featureNames: FEATURE_NAMES, notes };
 }

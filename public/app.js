@@ -533,11 +533,37 @@ function renderJob(job, startedAt) {
   return updateAndMaybeStop;
 }
 
+// ---- short-term forecast ----------------------------------------------------------------------------------------
+
+const CONF = { high: ["신뢰도 높음", "ok"], medium: ["신뢰도 보통", "warn"], low: ["신뢰도 낮음 (검증된 우위 없음)", "bad"] };
+const rate = (v) => (typeof v === "number" && Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : "-");
+function renderForecast(r) {
+  const rows = r.horizons.map((h) => {
+    const up = h.direction === "up";
+    const b = h.backtest;
+    return el("tr", {},
+      el("td", { text: `${h.horizon}거래일 후` }),
+      el("td", {}, el("strong", { text: up ? "▲ 상승" : "▼ 하락" }), ` ${rate(up ? h.probabilityUp : 1 - h.probabilityUp)}`),
+      el("td", { text: `${pct(h.expectedReturnPct)} (${won(h.expectedPriceKRW)})` }),
+      el("td", { text: `${pct(h.range80Pct[0])} ~ ${pct(h.range80Pct[1])}` }),
+      el("td", {}, badge(CONF, h.confidence)),
+      el("td", { text: `${rate(b.accuracy)} (n=${b.n}; 항상상승 ${rate(b.alwaysUpAccuracy)}, 모멘텀 ${rate(b.momentumAccuracy)}; 확신 상위30% ${rate(b.confidentAccuracy)})` }));
+  });
+  return el("div", {},
+    el("h2", { text: `${r.ticker} 단기 주가 예측` }),
+    el("p", { class: "small", text: `기준일 ${r.asOfDate} 종가 ${won(r.lastCloseKRW)} · 학습 종목 ${r.trainedOn.tickers.length}개 · 표본 ${r.trainedOn.samples.toLocaleString("ko-KR")}개` }),
+    el("table", {},
+      el("thead", {}, el("tr", {}, ...["기간", "방향·확률", "예상 등락(가격)", "80% 범위", "신뢰도", "백테스트 적중률"].map((t) => el("th", { text: t })))),
+      el("tbody", {}, ...rows)),
+    el("ul", { class: "small" }, ...r.notes.map((n) => el("li", { text: n }))),
+    el("p", { class: "small", text: "확률은 과거 표본 외(out-of-sample) 예측으로 보정한 값입니다. 백테스트에서 단순 기준(항상 상승·모멘텀)을 유의하게 넘지 못하면 신뢰도 '낮음'이며, 그 방향은 동전 던지기와 다르지 않습니다. 투자 권고가 아닙니다." }));
+}
+
 // ---- run ----------------------------------------------------------------------------------------------------------
 
 // The model choice only applies to a full analysis.
 $("form").addEventListener("change", (e) => {
-  if (e.target && e.target.name === "mode") $("models").disabled = e.target.value === "research";
+  if (e.target && e.target.name === "mode") $("models").disabled = e.target.value !== "analysis";
 });
 
 let running = false;
@@ -560,6 +586,12 @@ $("form").addEventListener("submit", async (ev) => {
   const out = $("out");
   let updateJob = null;
   try {
+    if (mode === "forecast") {
+      out.hidden = false;
+      out.replaceChildren(el("p", { class: "small", text: "시세 이력을 내려받아 학습·백테스트하는 중입니다 (동종 대형주 20개 포함, 30초~1분)…" }));
+      out.replaceChildren(renderForecast(await api(`/v1/forecast/${ticker}`, { headers: headers() })));
+      return;
+    }
     const started = await api(mode === "research" ? "/v1/research" : "/v1/analyses", { method: "POST", headers: headers(), body: JSON.stringify(mode === "research" ? body : { ...body, mode: "public", models }) });
     out.hidden = false;
     // Render once while waiting. Status updates must not replace the DOM (or reset selection/expanded details).
