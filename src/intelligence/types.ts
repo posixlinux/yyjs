@@ -166,8 +166,15 @@ export type Runner = (req: RunRequest) => Promise<RunResult>;
 export type IntelligenceOptions = {
   claudePath?: string; // server config only
   agyPath?: string; // Antigravity CLI (`agy`), server config only
+  codexPath?: string; // OpenAI Codex CLI (`codex`), server config only
   claudeModel?: string;
   agyModel?: string; // model for the agy provider (default: an independent Gemini model)
+  codexModel?: string; // model for the codex provider (default: the Codex CLI's own default)
+  /** Codex `model_reasoning_effort` (minimal/low/medium/high/xhigh). Default: the Codex CLI's own default. */
+  codexEffort?: string;
+  /** Which models analyse, in order of preference: the first usable one drafts, the next independently audits.
+   *  One or two distinct providers. Library default ["claude", "agy"]; the HTTP server defaults to ["claude"]. */
+  models?: ProviderName[];
   /** Claude Code --effort level (low/medium/high/xhigh/max). Default "medium" for this structured extraction task;
    *  an unrecognised value is diagnosed (logged) and falls back to the default. Override with INTELLIGENCE_CLAUDE_EFFORT env. */
   claudeEffort?: string;
@@ -184,8 +191,13 @@ export type IntelligenceOptions = {
   jobTimeoutMs?: number;
 };
 
-/** "agy" = Google Antigravity CLI (runs Gemini models). */
-export type ProviderName = "claude" | "agy";
+/** "agy" = Google Antigravity CLI (runs Gemini models); "codex" = OpenAI Codex CLI (ChatGPT login). */
+export const PROVIDER_NAMES = ["claude", "codex", "agy"] as const;
+export type ProviderName = (typeof PROVIDER_NAMES)[number];
+/** Library default when IntelligenceOptions.models is unset (Claude drafts, agy audits). */
+export const DEFAULT_MODELS: readonly ProviderName[] = ["claude", "agy"];
+/** Codex `model_reasoning_effort` values accepted by the Codex CLI. */
+export const CODEX_EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 export type ProviderStatus = {
   provider: ProviderName;
   status: "ok" | "error" | "skipped";
@@ -240,7 +252,7 @@ export type AnalysisResult = {
   citations: Citation[]; // only citations that passed verification
   assumptions: Proposal["assumptions"];
   disagreements: string[];
-  providers: Record<ProviderName, ProviderStatus>;
+  providers: Partial<Record<ProviderName, ProviderStatus>>; // only the selected models
   crossChecked: boolean; // true only when both providers ran (draft + independent audit by the OTHER provider)
   estimates: EstimateSummary[]; // inferred (not source-read) revenue inputs of the accepted dataset, for the report
   unavailable: ProviderUnavailable[]; // expired providers that were skipped instead of failing the analysis
@@ -249,6 +261,7 @@ export type AnalysisResult = {
     issues: Issue[]; // every reason the dataset was rejected
     excludedDocuments: string[]; // published after asOf, never shown to the models
     auditSummary: string | null;
+    draftedBy: ProviderName | null; // who drafted the dataset
     auditedBy: ProviderName | null; // who audited the draft
     independentAudit: boolean; // false when the drafting provider also audited (the other one was unavailable)
     limitations: string[];
@@ -258,8 +271,9 @@ export type AnalysisResult = {
 
 export type Readiness = {
   ready: boolean; // at least one provider CLI is runnable
-  dual: boolean; // both are runnable (cross-check possible)
+  dual: boolean; // at least two are runnable (cross-check possible)
   claude: { command: string; available: boolean; version?: string; error?: string };
   agy: { command: string; available: boolean; version?: string; error?: string };
+  codex: { command: string; available: boolean; version?: string; error?: string };
   notes: string[];
 };

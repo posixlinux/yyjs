@@ -5,17 +5,19 @@ import { resolve } from "node:path";
 import { isValidDate } from "../domain/time.js";
 import { AppError, type Issue } from "../errors.js";
 import { Availability, isExpiredCode } from "./availability.js";
-import { abortedStatus, AGY_DEFAULT_MODEL, callProvider, skipped, validateClaudeEffort, type ProviderConfig, type ProviderOutcome } from "./providers.js";
+import { abortedStatus, AGY_DEFAULT_MODEL, callProvider, skipped, validateClaudeEffort, validateCodexEffort, type ProviderConfig, type ProviderOutcome } from "./providers.js";
 import { auditPrompt, draftPrompt, strategyPrompt, fundingPrompt } from "./prompts.js";
 import { buildEnv, sanitize, Semaphore, spawnRunner } from "./runner.js";
 import {
   AuditSchema,
   DEFAULT_CALL_TIMEOUT_MS,
   DEFAULT_MAX_CONCURRENT,
+  DEFAULT_MODELS,
   EvidenceInputSchema,
   JOB_MAX_SEQUENTIAL_CALLS,
   JOB_OVERHEAD_MS,
   LIMITS,
+  PROVIDER_NAMES,
   ProposalSchema,
   StrategyProposalSchema,
   FundingProposalSchema,
@@ -32,7 +34,7 @@ import { verifyProposal } from "./verify.js";
 import { verifyStrategyDraft } from "./strategyVerify.js";
 
 export * from "./types.js";
-export { claudeArgs, agyArgs, AGY_DEFAULT_MODEL, MAX_ARGV_PROMPT_BYTES } from "./providers.js";
+export { claudeArgs, agyArgs, codexArgs, codexEvents, AGY_DEFAULT_MODEL, MAX_ARGV_PROMPT_BYTES } from "./providers.js";
 export { Availability, isExpiredCode, parseResetMs } from "./availability.js";
 export { verifyProposal, observedNumericPaths, MODEL_ASSUMPTION_PREFIX } from "./verify.js";
 export { verifyStrategyDraft } from "./strategyVerify.js";
@@ -43,7 +45,7 @@ const LIMITATIONS = [
   "Exact matching proves a quote exists in a supplied document and a number is derivable from it; it cannot prove the number means what the model claims. Semantic truth rests on the independent audit by the second model and on human review.",
   "Compound Korean amounts (e.g. '1조 2,345억') are not parsed; a citation must quote one number with one unit.",
   "Both providers are LLMs reading the same supplied documents; agreement is not proof. Forecast fields are assumptions, not facts.",
-  "Claude and agy (Antigravity CLI, Gemini models) use the operator's own logins and quotas. A provider whose login/quota has expired is skipped, and an agy audit that fails for any reason is replaced by a Claude self-audit; with only one provider the dataset is NOT cross-checked (status single_model).",
+  "Claude, Codex (OpenAI Codex CLI) and agy (Antigravity CLI, Gemini models) use the operator's own logins and quotas. Only the selected models are called; a provider whose login/quota has expired is skipped, and a Codex/agy audit that fails for any reason is replaced by a self-audit of the drafting model; with only one usable model the dataset is NOT cross-checked (status single_model).",
 ];
 
 // ---- shared state: bounded CLI concurrency, result cache, in-flight de-duplication ----------------------------
@@ -65,8 +67,11 @@ export const clearIntelligenceCache = () => cache.clear();
 export const intelligenceOptionsFromEnv = (env: NodeJS.ProcessEnv = process.env): IntelligenceOptions => ({
   claudePath: env.INTELLIGENCE_CLAUDE_PATH || undefined,
   agyPath: env.INTELLIGENCE_AGY_PATH || undefined,
+  codexPath: env.INTELLIGENCE_CODEX_PATH || undefined,
   claudeModel: env.INTELLIGENCE_CLAUDE_MODEL || undefined,
   agyModel: env.INTELLIGENCE_AGY_MODEL || undefined,
+  codexModel: env.INTELLIGENCE_CODEX_MODEL || undefined,
+  codexEffort: env.INTELLIGENCE_CODEX_EFFORT || undefined,
   claudeEffort: env.INTELLIGENCE_CLAUDE_EFFORT || undefined,
   timeoutMs: env.INTELLIGENCE_TIMEOUT_MS ? Number(env.INTELLIGENCE_TIMEOUT_MS) : undefined,
   maxConcurrent: env.INTELLIGENCE_MAX_CONCURRENT ? Number(env.INTELLIGENCE_MAX_CONCURRENT) : undefined,
@@ -119,7 +124,19 @@ const resolveOptions = (o: IntelligenceOptions) => {
     model: o.agyModel || AGY_DEFAULT_MODEL,
     effort: undefined, // agy does not support --effort
   };
-  return { claude, agy, maxConcurrent: Number.isFinite(o.maxConcurrent) && o.maxConcurrent! >= 1 ? Math.floor(o.maxConcurrent!) : DEFAULT_MAX_CONCURRENT };
+  const codex: ProviderConfig = {
+    ...claude,
+    command: o.codexPath || "codex",
+    model: o.codexModel,
+    effort: validateCodexEffort(o.codexEffort),
+  };
+  return { claude, agy, codex, models: normalizeModels(o.models), maxConcurrent: Number.isFinite(o.maxConcurrent) && o.maxConcurrent! >= 1 ? Math.floor(o.maxConcurrent!) : DEFAULT_MAX_CONCURRENT };
+};
+
+/** One or two distinct known providers, in the given order; anything else falls back to DEFAULT_MODELS. */
+export const normalizeModels = (models: readonly string[] | undefined): ProviderName[] => {
+  const picked = [...new Set((models ?? []).filter((m): m is ProviderName => (PROVIDER_NAMES as readonly string[]).includes(m)))].slice(0, 2);
+  return picked.length ? picked : [...DEFAULT_MODELS];
 };
 
 const invalid = (message: string, details?: unknown) => new AppError(400, "INTELLIGENCE_INPUT_INVALID", message, details);
@@ -169,12 +186,12 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
     citations: [],
     assumptions: [],
     disagreements: [],
-    providers: { claude: skipped("claude", "not run"), agy: skipped("agy", "not run") },
+    providers: Object.fromEntries(cfg.models.map((p) => [p, skipped(p, "not run")])),
     crossChecked: false,
     estimates: [],
     unavailable,
     strategy: { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null, unavailable: [{ field: "all", code: "NOT_DRAFTED", message: "no draft was produced, so the separate strategy call was not made" }] },
-    audit: { issues, excludedDocuments: excluded, auditSummary: null, auditedBy: null, independentAudit: false, limitations: [...LIMITATIONS] },
+    audit: { issues, excludedDocuments: excluded, auditSummary: null, draftedBy: null, auditedBy: null, independentAudit: false, limitations: [...LIMITATIONS] },
     generatedAt,
   };
 
@@ -203,12 +220,13 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
     return false;
   };
 
-  const roles = ([{ provider: "claude", cfg: cfg.claude }, { provider: "agy", cfg: cfg.agy }] as Role[]).filter((r) => usable(r.provider));
-  const other = (p: ProviderName): ProviderName => (p === "claude" ? "agy" : "claude");
-  const cfgOf = (p: ProviderName) => (p === "claude" ? cfg.claude : cfg.agy);
+  const cfgOf = (p: ProviderName): ProviderConfig => cfg[p];
+  const roles: Role[] = cfg.models.map((provider) => ({ provider, cfg: cfgOf(provider) })).filter((r) => usable(r.provider));
+  /** The independent auditor for a draft: the other SELECTED model (null when only one model was selected). */
+  const other = (p: ProviderName): ProviderName | null => cfg.models.find((m) => m !== p) ?? null;
 
-  // 1. Draft: Claude first, agy when Claude is expired OR when Claude's draft call TIMEOUT (bounded: at most one
-  //    fallback, since `roles` has at most 2 entries). Any other non-expiry failure (bad JSON, schema, ...) is not
+  // 1. Draft: the first selected model; the second one when the first is expired OR its draft call TIMEOUT (bounded:
+  //    at most one fallback, since at most 2 models are selected). Any other non-expiry failure (bad JSON, schema, ...) is not
   //    retried elsewhere -- only TIMEOUT gets a fallback, to avoid a blind retry loop on a likely-recurring error.
   //    A provider that times out here is recorded unavailable (code TIMEOUT) for the rest of this run: see the
   //    audit-candidate filter below, which then never calls it again as auditor in this run.
@@ -238,6 +256,7 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
     return result;
   }
 
+  result.audit.draftedBy = drafter;
   const verified = verifyProposal(input.asOf, input.ticker, input.documents, draft);
   issues.push(...verified.issues);
   result.citations = verified.citations;
@@ -317,7 +336,7 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
   async function auditAndAccept(drafter: ProviderName, draft: import("./types.js").Proposal): Promise<void> {
     const otherProvider = other(drafter);
     const candidates: { provider: ProviderName; independent: boolean }[] = [];
-    if (roles.some((r) => r.provider === otherProvider) && !unavailable.some((u) => u.provider === otherProvider)) candidates.push({ provider: otherProvider, independent: true });
+    if (otherProvider && roles.some((r) => r.provider === otherProvider) && !unavailable.some((u) => u.provider === otherProvider)) candidates.push({ provider: otherProvider, independent: true });
     candidates.push({ provider: drafter, independent: false });
 
     let audit: import("./types.js").Audit | null = null;
@@ -334,9 +353,9 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
         expire(cand.provider, out.status.code, out.status.message, out.cooldownMs, false);
         continue;
       }
-      if (cand.independent && cand.provider === "agy" && out.status.status === "error" && !signal.aborted) {
-        failTransient("agy", out.status.code, out.status.message); // no cooldown: agy is tried again on the next run
-        continue; // Claude (the drafter) audits instead
+      if (cand.independent && cand.provider !== "claude" && out.status.status === "error" && !signal.aborted) {
+        failTransient(cand.provider, out.status.code, out.status.message); // no cooldown: tried again on the next run
+        continue; // the drafter audits instead
       }
       issues.push({ code: "PROVIDER_UNAVAILABLE", path: cand.provider, message: `${out.status.message} (the audit failed for a reason other than an expired login/quota, so the draft is not accepted)` });
       return;
@@ -360,7 +379,11 @@ async function run(input: EvidenceInput, excluded: string[], o: IntelligenceOpti
     result.crossChecked = auditor.independent;
     if (!auditor.independent) {
       const why = unavailable.find((u) => u.provider === otherProvider);
-      result.audit.limitations.push(`Not cross-checked: ${otherProvider} was unavailable${why ? ` (${why.code})` : ""}, so ${drafter} audited its own draft in a separate call (not independent).`);
+      result.audit.limitations.push(
+        otherProvider
+          ? `Not cross-checked: ${otherProvider} was unavailable${why ? ` (${why.code})` : ""}, so ${drafter} audited its own draft in a separate call (not independent).`
+          : `Not cross-checked: only ${drafter} was selected, so it audited its own draft in a separate call (not independent).`,
+      );
     }
     result.audit.auditSummary = audit.summary;
     result.missingFields = [...new Set([...result.missingFields, ...audit.missingFields])];
@@ -401,7 +424,7 @@ export async function analyzeEvidence(raw: unknown, options: IntelligenceOptions
   const runner = cfg.claude.runner;
   if (!runnerIds.has(runner)) runnerIds.set(runner, nextRunnerId++);
   const key = createHash("sha256")
-    .update(JSON.stringify([input, excluded, cfg.claude.command, cfg.agy.command, cfg.claude.model, cfg.agy.model, cfg.claude.timeoutMs, runnerIds.get(runner)]))
+    .update(JSON.stringify([input, excluded, cfg.models, cfg.claude.command, cfg.agy.command, cfg.codex.command, cfg.claude.model, cfg.agy.model, cfg.codex.model, cfg.codex.effort, cfg.claude.timeoutMs, runnerIds.get(runner)]))
     .digest("hex");
 
   const signal = o.signal;
@@ -477,15 +500,17 @@ export async function checkReadiness(options: IntelligenceOptions = {}): Promise
       return { command: c.command, available: false, error: sanitize(String((e as Error)?.message ?? e)) };
     }
   };
-  const [claude, agy] = await Promise.all([probe(cfg.claude), probe(cfg.agy)]);
+  const [claude, agy, codex] = await Promise.all([probe(cfg.claude), probe(cfg.agy), probe(cfg.codex)]);
   return {
-    ready: claude.available || agy.available,
-    dual: claude.available && agy.available,
+    ready: claude.available || agy.available || codex.available,
+    dual: [claude, agy, codex].filter((p) => p.available).length >= 2,
     claude,
     agy,
+    codex,
     notes: [
       "Only binary presence is checked; logins and quotas are verified by a real analysis. An expired provider is skipped at run time (single-model result, not cross-checked).",
       "agy has no login command: sign in once by starting it interactively (npm run agy:login).",
+      "codex: sign in once with your ChatGPT account (`codex login`); OPENAI_API_KEY is never forwarded.",
     ],
   };
 }

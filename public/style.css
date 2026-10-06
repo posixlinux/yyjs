@@ -45,6 +45,10 @@ select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; ba
 .item .cap { color: var(--muted); font-size: .85rem; white-space: nowrap; }
 fieldset.modes { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 12px; padding: 8px 12px; }
 fieldset.modes label { font-weight: 400; margin: 4px 0; }
+fieldset.modes .sub-option { margin: 4px 0 8px 24px; }
+fieldset.modes .sub-option label { font-weight: 600; }
+fieldset.modes .sub-option select { width: 100%; max-width: 360px; }
+fieldset.modes .sub-option[aria-disabled=true] { opacity: .5; }
 button { background: var(--accent); color: var(--accent-fg); border: 0; border-radius: 8px; padding: 10px 18px; font: inherit; font-weight: 600; cursor: pointer; }
 button:disabled { opacity: .55; cursor: progress; }
 .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .8rem; font-weight: 600; background: var(--info-bg); }

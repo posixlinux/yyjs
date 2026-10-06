@@ -37,7 +37,20 @@
 
       <fieldset class="modes">
         <legend>분석 방식</legend>
-        <label><input type="radio" name="mode" value="analysis" checked> 전체 분석 (DART·Naver 수집 + Claude·agy(Antigravity) 검토 + 가치 계산)</label>
+        <label><input type="radio" name="mode" value="analysis" checked> 전체 분석 (DART·Naver 수집 + 모델 검토 + 가치 계산)</label>
+        <div class="sub-option">
+          <label for="models">분석 모델</label>
+          <select id="models">
+            <option value="claude" selected>Claude (기본)</option>
+            <option value="codex">Codex</option>
+            <option value="agy">agy (Antigravity · Gemini)</option>
+            <option value="claude,codex">Claude 작성 + Codex 교차검증</option>
+            <option value="codex,claude">Codex 작성 + Claude 교차검증</option>
+            <option value="claude,agy">Claude 작성 + agy 교차검증</option>
+            <option value="codex,agy">Codex 작성 + agy 교차검증</option>
+          </select>
+          <p class="hint">모델 하나만 고르면 그 모델이 초안 작성과 자체 감사를 모두 맡아 교차검증 없이 결과를 냅니다. 두 모델을 고르면 앞의 모델이 작성하고 뒤의 모델이 독립적으로 감사합니다.</p>
+        </div>
         <label><input type="radio" name="mode" value="research"> 증거 수집만 (모델 미사용, 쿼터 소모 없음)</label>
       </fieldset>
 

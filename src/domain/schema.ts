@@ -196,6 +196,14 @@ export const AnalysisRequestSchema = z
     asOf: date.optional(), // demo mode only; a public analysis always runs as of today (Asia/Seoul)
     mode: z.enum(["public", "demo"]).default("public"),
     competitors: competitorIds.optional(),
+    /** Public mode only. Models that analyse, in order: the first drafts, an optional second one independently
+     * cross-checks. Default: the server's INTELLIGENCE_MODELS (Claude). */
+    models: z
+      .array(z.enum(["claude", "codex", "agy"]))
+      .min(1)
+      .max(2)
+      .refine((m) => new Set(m).size === m.length, "models must be distinct")
+      .optional(),
   })
   .strict();
 

@@ -116,7 +116,7 @@ export function buildReport(a: Analysis, research?: Pick<AnalysisResult, "narrat
   if (swings.length) lines.push(`경고: 추정한 시장 규모가 전분기 대비 ${swings.map((m) => `${m.name} ${m.latestObserved.qoqPct! >= 0 ? "+" : ""}${m.latestObserved.qoqPct!.toFixed(0)}%`).join(", ")} 변동합니다 — 추정 방법과 단위를 반드시 검토하세요.`);
   if (g.estimated) lines.push(`주의: 매출 입력 ${g.total}개 중 ${g.estimated}개(${((1 - g.groundedRatio) * 100).toFixed(0)}%)가 출처에서 읽은 값이 아니라 다른 데이터로 추론한 추정치입니다. 결과는 그 불확실성을 그대로 물려받습니다(데이터 근거 수준: ${{ high: "높음", medium: "보통", low: "낮음" }[dataGrounding]}${knowledgeOnly ? `, 문서 없이 배경지식만으로 만든 추정 ${knowledgeOnly}건 포함` : ""}).`);
   if (research) {
-    if (research.crossChecked) lines.push("검토: Claude와 agy가 서로 독립적으로 교차검증했습니다.");
+    if (research.crossChecked) lines.push(`검토: ${research.audit.draftedBy ?? "초안 모델"}이(가) 작성하고 ${research.audit.auditedBy}이(가) 독립적으로 교차검증했습니다.`);
     else if (research.audit.auditedBy) lines.push(`검토: ${research.audit.auditedBy} 단일 모델이 초안과 별도 호출로 자체 감사했습니다(독립 교차검증 아님).`);
     else lines.push("검토: 모델 감사 없이 결정론적 검사(인용·숫자·날짜·추정 규칙)만 통과했습니다.");
   }

@@ -24,7 +24,7 @@ const WaitQuery = z.object({ wait: z.coerce.number().int().min(0).max(60).option
 export function buildApp(
   service: Service,
   research: ResearchService,
-  config: Pick<Config, "apiKey" | "demoEnabled" | "logLevel"> & { capabilities?: Record<string, boolean> },
+  config: Pick<Config, "apiKey" | "demoEnabled" | "logLevel"> & { capabilities?: Record<string, boolean>; defaultModels?: Config["defaultModels"] },
   universe: UniverseProvider = new UniverseProvider(),
   strategy?: StrategyService,
 ): FastifyInstance {
@@ -71,6 +71,7 @@ export function buildApp(
     apiKeyRequired: !!config.apiKey, // for public analysis/research jobs and strategy records
     jobs: research.jobs.stats(),
     capabilities: config.capabilities ?? {}, // booleans only, e.g. dartConfigured; never key material
+    defaultModels: config.defaultModels ?? ["claude"], // public analysis models when a request names none
   }));
 
   // ---- web UI (static files from ./public; no inline script/style, so a strict CSP applies) -------------------------
@@ -126,10 +127,11 @@ export function buildApp(
     const body = AnalysisRequestSchema.parse(req.body);
     if (body.mode !== "public") {
       if (body.competitors?.length) throw new AppError(400, "COMPETITORS_PUBLIC_ONLY", "competitors are collected only in mode=public");
+      if (body.models?.length) throw new AppError(400, "MODELS_PUBLIC_ONLY", "models apply only to mode=public (demo analysis calls no model)");
       return service.analyze({ ticker: body.ticker, asOf: body.asOf, mode: body.mode });
     }
     requireKey(req.headers);
-    const job = research.startAnalysis({ ticker: body.ticker, asOf: body.asOf, competitors: body.competitors });
+    const job = research.startAnalysis({ ticker: body.ticker, asOf: body.asOf, competitors: body.competitors, models: body.models });
     return reply.status(202).header("location", job.statusUrl).send(job);
   });
 

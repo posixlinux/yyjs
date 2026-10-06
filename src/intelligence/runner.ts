@@ -2,10 +2,10 @@ import { spawn } from "node:child_process";
 import { LIMITS, type RunRequest, type RunResult } from "./types.js";
 
 // Only these variables reach a CLI child: enough for auth/PATH/proxies, nothing that carries data-provider keys
-// (DART/NAVER) or paid fallbacks (ANTHROPIC_API_KEY, GOOGLE_API_KEY, GOOGLE_CLOUD_PROJECT...).
+// (DART/NAVER) or paid fallbacks (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, GOOGLE_CLOUD_PROJECT...).
 const ENV_ALLOWLIST = [
   "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "TERM",
-  "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "CLAUDE_CONFIG_DIR",
+  "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME",
   "SystemRoot", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "COMSPEC", "PATHEXT",
   "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "no_proxy", "all_proxy",
   "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",

@@ -22,10 +22,11 @@ const research = new ResearchService(
     // jobTimeoutMs is the SAME effective outer deadline JobManager enforces (config.jobs.jobTimeoutMs): passing it
     // through lets resolveOptions log a diagnostic when the per-call CLI timeout does not fit that budget. It never
     // shortens the configured per-call timeout -- the job's own AbortController (JOB_TIMEOUT) is the real backstop.
-    intelligence: (input, { signal }) => analyzeEvidence(input, { agyPath: config.agyPath, jobTimeoutMs: config.jobs.jobTimeoutMs, signal }),
+    intelligence: (input, { signal, models }) => analyzeEvidence(input, { agyPath: config.agyPath, jobTimeoutMs: config.jobs.jobTimeoutMs, signal, models }),
     now: config.now,
     secrets: config.secrets,
     strategyMinimumCashBufferKRW: config.strategyMinimumCashBufferKRW,
+    defaultModels: config.defaultModels,
   },
   config.jobs,
   (asOf) => service.resolveAsOf(asOf),

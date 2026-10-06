@@ -249,6 +249,7 @@ function renderEvidence(ev) {
   return section("수집된 증거", ...parts);
 }
 
+const MODEL_LABEL = { claude: "Claude", codex: "Codex", agy: "agy" };
 function renderResearch(r) {
   if (!r) return null;
   const parts = [];
@@ -261,7 +262,9 @@ function renderResearch(r) {
   if (n.industry) parts.push(el("div", { class: "box" }, el("strong", { text: "산업 " }), n.industry));
   if (n.marketSizing) parts.push(el("div", { class: "box" }, el("strong", { text: "시장 규모 산출 " }), n.marketSizing));
   if (n.competition) parts.push(el("div", { class: "box" }, el("strong", { text: "경쟁 구도 " }), n.competition));
-  if (r.status === "single_model") parts.push(el("div", { class: "box warn" }, el("strong", { text: "교차검증 없음: " }), "한쪽 모델의 로그인/쿼터가 만료되어 나머지 모델의 결과만 사용했습니다. 인용·숫자·날짜의 결정론적 검사는 모두 적용되었습니다."));
+  if (r.status === "single_model") parts.push(el("div", { class: "box warn" }, el("strong", { text: "교차검증 없음: " }), Object.keys(r.providers || {}).length > 1
+    ? "한쪽 모델의 로그인/쿼터가 만료되어 나머지 모델의 결과만 사용했습니다. 인용·숫자·날짜의 결정론적 검사는 모두 적용되었습니다."
+    : "모델 하나만 선택해 그 모델이 별도 호출로 자체 감사했습니다(독립 교차검증 아님). 인용·숫자·날짜의 결정론적 검사는 모두 적용되었습니다."));
   else if (!r.narrativeReviewed && (n.product || n.industry)) parts.push(el("p", { class: "small", text: "※ 서술은 두 모델의 교차검토를 통과하지 못한 초안입니다." }));
   const d = r.draftDataset;
   if (d) {
@@ -269,7 +272,7 @@ function renderResearch(r) {
     parts.push(el("details", {}, el("summary", { text: `초안 데이터셋 JSON — ${label}${d.serverRepaired ? ", 서버 보정 적용" : ""}` }),
       el("pre", { class: "json", text: JSON.stringify(d.dataset, null, 2) })));
   }
-  return section("모델 검토 (Claude + agy)", ...parts);
+  return section(`모델 검토 (${Object.keys(r.providers || {}).map((p) => MODEL_LABEL[p] || p).join(" + ") || "-"})`, ...parts);
 }
 
 function renderReport(rep) {
@@ -490,7 +493,7 @@ function renderJob(job, startedAt) {
     setText(statusBadge, label);
     const badgeClass = `badge ${color}`;
     if (statusBadge.className !== badgeClass) statusBadge.className = badgeClass;
-    setText(title, `${r.evidence?.company?.name || ""} ${job.request?.ticker || ticker} · ${(job.kind || kind) === "research" ? "증거 수집" : "전체 분석"}`.trim());
+    setText(title, `${r.evidence?.company?.name || ""} ${job.request?.ticker || ticker} · ${(job.kind || kind) === "research" ? "증거 수집" : `전체 분석${job.request?.models?.length ? ` (${job.request.models.map((m) => MODEL_LABEL[m] || m).join(" → ")})` : ""}`}`.trim());
     if (["queued", "running"].includes(job.status)) return;
     const kids = [];
     if (job.error) kids.push(el("div", { class: "box bad" }, el("strong", { text: `${job.error.code}: ` }), job.error.message));
@@ -532,6 +535,11 @@ function renderJob(job, startedAt) {
 
 // ---- run ----------------------------------------------------------------------------------------------------------
 
+// The model choice only applies to a full analysis.
+$("form").addEventListener("change", (e) => {
+  if (e.target && e.target.name === "mode") $("models").disabled = e.target.value === "research";
+});
+
 let running = false;
 // Long-poll: the server holds each status request until the job finishes or this many seconds pass, so the result
 // shows up as soon as it exists without fixed-interval polling.
@@ -543,6 +551,7 @@ $("form").addEventListener("submit", async (ev) => {
   if (!/^[0-9][0-9A-Z]{5}$/.test(ticker)) { $("ticker").focus(); return; }
   const mode = new FormData($("form")).get("mode");
   const body = { ticker };
+  const models = $("models").value.split(",").filter(Boolean);
   if (apiKeyRequired) { try { sessionStorage.setItem("yyKey", $("apiKey").value); } catch { /* storage unavailable */ } }
 
   running = true;
@@ -551,10 +560,10 @@ $("form").addEventListener("submit", async (ev) => {
   const out = $("out");
   let updateJob = null;
   try {
-    const started = await api(mode === "research" ? "/v1/research" : "/v1/analyses", { method: "POST", headers: headers(), body: JSON.stringify(mode === "research" ? body : { ...body, mode: "public" }) });
+    const started = await api(mode === "research" ? "/v1/research" : "/v1/analyses", { method: "POST", headers: headers(), body: JSON.stringify(mode === "research" ? body : { ...body, mode: "public", models }) });
     out.hidden = false;
     // Render once while waiting. Status updates must not replace the DOM (or reset selection/expanded details).
-    updateJob = renderJob({ ...started, status: started.status || "queued", kind: mode === "research" ? "research" : "analysis", request: body }, startedAt);
+    updateJob = renderJob({ ...started, status: started.status || "queued", kind: mode === "research" ? "research" : "analysis", request: mode === "research" ? body : { ...body, models } }, startedAt);
     // No client-side ceiling: the server owns job lifetime (per-call/whole-job timeouts), so this follows
     // queued/running through to whatever terminal status (completed/partial/failed) the server eventually reports.
     // A job that disappears (evicted after its retention TTL) surfaces as a normal JOB_NOT_FOUND error below.
@@ -579,6 +588,9 @@ $("form").addEventListener("submit", async (ev) => {
     apiKeyRequired = !!h.apiKeyRequired;
     $("keyRow").hidden = !apiKeyRequired;
     if (apiKeyRequired) { try { $("apiKey").value = sessionStorage.getItem("yyKey") || ""; } catch { /* ignore */ } }
+    // Preselect the server's default models (INTELLIGENCE_MODELS) when it is one of the listed choices.
+    const def = Array.isArray(h.defaultModels) ? h.defaultModels.join(",") : "";
+    if (def && Array.from($("models").options || []).some((o) => o.value === def)) $("models").value = def;
   } catch { /* health unavailable: keep defaults */ }
   loadUniverse();
 })();

@@ -4,7 +4,7 @@ import { seoulToday } from "../domain/time.js";
 import { relaxDataset } from "../domain/relax.js";
 import { classifySecurity, describeRejections } from "../domain/security.js";
 import { AppError } from "../errors.js";
-import type { AnalysisResult, EvidenceInput } from "../intelligence/types.js";
+import type { AnalysisResult, EvidenceInput, ProviderName } from "../intelligence/types.js";
 import { sanitize } from "../intelligence/runner.js";
 import { isExpiredCode } from "../intelligence/availability.js";
 import { analyze } from "../model/model.js";
@@ -16,7 +16,7 @@ import { deriveFundingPlan } from "../strategy/funding-derive.js";
 
 export type Collector = (input: { ticker: string; asOf: string; competitors?: string[] }, opts: { signal: AbortSignal }) => Promise<PublicEvidence>;
 /** `signal` aborts running CLI children (job timeout / server close). */
-export type Intelligence = (input: EvidenceInput, opts: { signal: AbortSignal }) => Promise<AnalysisResult>;
+export type Intelligence = (input: EvidenceInput, opts: { signal: AbortSignal; models?: ProviderName[] }) => Promise<AnalysisResult>;
 
 export type ResearchDeps = {
   collect: Collector;
@@ -27,6 +27,8 @@ export type ResearchDeps = {
   /** earnings-gap-auto/v1 automatic path (strategy/auto.ts): a portfolio assumption, never invented; undefined means
    * the funding-gap check uses 0 and says so explicitly (see AutoStrategyResult.notes). */
   strategyMinimumCashBufferKRW?: number;
+  /** Models for an analysis that does not choose them (first drafts, optional second cross-checks). Default ["claude"]. */
+  defaultModels?: ProviderName[];
 };
 
 /** blocking: no valuation is produced. warning: the valuation is still produced, but reported as provisional. */
@@ -57,11 +59,12 @@ export class ResearchService {
 
   // The analysis date is always today (Asia/Seoul): the collected quote, consensus and news are live snapshots, so a
   // past date could only be served with lookahead. A requested asOf is ignored.
-  startAnalysis(req: { ticker: string; asOf?: string; competitors?: string[] }) {
+  startAnalysis(req: { ticker: string; asOf?: string; competitors?: string[]; models?: ProviderName[] }) {
     this.requireCommonStock(req.ticker);
     const asOf = this.resolveAsOf();
     const competitors = req.competitors ?? [];
-    return this.submit("analysis", req.ticker, asOf, competitors, (ticker, a) => this.analysisWork(ticker, a, competitors));
+    const models = req.models?.length ? [...req.models] : [...(this.deps.defaultModels ?? ["claude"])];
+    return this.submit("analysis", req.ticker, asOf, competitors, (ticker, a) => this.analysisWork(ticker, a, competitors, models), models);
   }
 
   startResearch(req: { ticker: string; asOf?: string; competitors?: string[] }) {
@@ -88,12 +91,12 @@ export class ResearchService {
     return this.jobs.close();
   }
 
-  private submit(kind: JobKind, ticker: string, asOf: string, competitors: string[], work: (ticker: string, asOf: string) => Work) {
+  private submit(kind: JobKind, ticker: string, asOf: string, competitors: string[], work: (ticker: string, asOf: string) => Work, models?: ProviderName[]) {
     const cmp = [...competitors].sort();
     const { job, deduplicated } = this.jobs.submit(
       kind,
-      `${kind}:${ticker}:${asOf}${cmp.length ? `:${cmp.join(",")}` : ""}`,
-      { ticker, asOf, ...(kind === "analysis" && { mode: "public" }), ...(cmp.length && { competitors: cmp }) },
+      `${kind}:${ticker}:${asOf}${cmp.length ? `:${cmp.join(",")}` : ""}${models ? `|models:${models.join("+")}` : ""}`,
+      { ticker, asOf, ...(kind === "analysis" && { mode: "public" }), ...(cmp.length && { competitors: cmp }), ...(models && { models }) },
       work(ticker, asOf),
     );
     return { id: job.id, status: job.status, statusUrl: `${ROUTES[kind]}/${job.id}`, deduplicated };
@@ -175,7 +178,7 @@ export class ResearchService {
 
   // ---- full public analysis job -------------------------------------------------------------------------------
 
-  private analysisWork(ticker: string, asOf: string, competitors: string[]): Work {
+  private analysisWork(ticker: string, asOf: string, competitors: string[], models: ProviderName[]): Work {
     return async ({ signal }) => {
       const got = await this.collectEvidence(ticker, asOf, competitors, signal);
       if ("outcome" in got) return got.outcome;
@@ -203,7 +206,7 @@ export class ResearchService {
       if (built.documents.length === 0) block("NO_EVIDENCE_DOCUMENTS", "No attributable evidence documents were collected; models were not invoked");
       else {
         try {
-          research = await this.deps.intelligence({ ticker, asOf, documents: built.documents }, { signal });
+          research = await this.deps.intelligence({ ticker, asOf, documents: built.documents }, { signal, models });
         } catch (e) {
           if (signal.aborted) throw e;
           block("INTELLIGENCE_ERROR", this.msg(e));
@@ -220,8 +223,10 @@ export class ResearchService {
         const singleModel = research.status === "single_model";
         const expired = new Set(research.unavailable.map((u) => u.provider));
         for (const p of Object.values(research.providers)) if (p.status !== "ok" && !expired.has(p.provider)) warn(`PROVIDER_${p.status.toUpperCase()}`, `${p.provider}: ${p.code} - ${p.message}`);
+        const soleModel = (skipped: string) =>
+          research!.audit.draftedBy ?? Object.values(research!.providers).find((p) => p?.status === "ok" && p.provider !== skipped)?.provider;
         for (const u of research.unavailable)
-          notes.push(`${u.provider} 사용 불가(${u.code}) — ${u.skippedWithoutCall ? "만료가 확인되어 호출하지 않고 건너뛰었습니다" : isExpiredCode(u.code) ? "호출했으나 만료되어 사용하지 않았습니다" : "호출했으나 실패해 사용하지 않았습니다"}${singleModel ? ` (교차검증 없이 ${u.provider === "claude" ? "agy" : "claude"} 단일 모델 결과)` : ""}. 재사용 가능 시각(추정): ${u.retryAfter}`);
+          notes.push(`${u.provider} 사용 불가(${u.code}) — ${u.skippedWithoutCall ? "만료가 확인되어 호출하지 않고 건너뛰었습니다" : isExpiredCode(u.code) ? "호출했으나 만료되어 사용하지 않았습니다" : "호출했으나 실패해 사용하지 않았습니다"}${singleModel && soleModel(u.provider) ? ` (교차검증 없이 ${soleModel(u.provider)} 단일 모델 결과)` : ""}. 재사용 가능 시각(추정): ${u.retryAfter}`);
         const reviewed = (research.status === "accepted" || singleModel) && research.dataset ? research.dataset : null;
         const proposed = reviewed ?? research.provisionalDataset ?? null;
         if (!proposed) {

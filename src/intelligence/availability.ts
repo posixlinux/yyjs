@@ -17,7 +17,7 @@ export const defaultCooldownMs = (code: string): number => (code === "QUOTA" ? 3
  *  Also reads a clock-time reset such as "resets 2:20pm" / "resets at 3pm" (observed session/weekly-limit phrasing),
  *  relative to `now` (assumed today, or tomorrow if that time of day has already passed). */
 export function parseResetMs(text: string, now: Date = new Date()): number | undefined {
-  const dur = /resets?\s+in\s+((?:\d+\s*(?:hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\s*)+)/i.exec(text);
+  const dur = /(?:resets?|try again)\s+in\s+((?:\d+\s*(?:hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\s*)+)/i.exec(text);
   if (dur) {
     let ms = 0;
     for (const [, n, unit] of dur[1]!.matchAll(/(\d+)\s*(h|m|s)/gi)) ms += Number(n) * ({ h: 3_600_000, m: 60_000, s: 1000 }[unit!.toLowerCase() as "h" | "m" | "s"]);
