@@ -24,11 +24,13 @@ export type EngineOptions = {
   maxTrain: number;
   /** Candidate L2 strengths per training sample; each refit picks one on its own latest 20% (time-ordered). */
   lambdaGrid: number[];
+  /** Half-life in trading dates of the training-sample weights (recent sessions count more); 0 = equal weights. */
+  halfLife: number;
   /** Also train gradient-boosted trees in the first stage (the stacker weighs them against the linear model). */
   gbm: boolean;
 };
 
-export const DEFAULT_OPTIONS: EngineOptions = { step: 20, minTrain: 250, maxTrain: 6000, lambdaGrid: [1], gbm: true };
+export const DEFAULT_OPTIONS: EngineOptions = { step: 20, minTrain: 250, maxTrain: 6000, lambdaGrid: [1], gbm: true, halfLife: 120 };
 
 type Sample = { ticker: string; date: string; x: number[]; fwd: number[]; endDate: (string | null)[] };
 
@@ -93,12 +95,31 @@ export const volScale = (x: number[], h: number) => {
   return (Number.isFinite(v) ? Math.max(v, 0.003) : 0.02) * Math.sqrt(h);
 };
 
+/**
+ * Exponential recency weights by trading date, normalized to mean 1. The half-life is stretched when needed so the
+ * effective sample size stays >= MIN_ESS rows (geometric weights give about 2.885 x half-life dates' worth): a pool
+ * of many stocks adapts quickly to a regime change, a single stock keeps (almost) all of its short history.
+ */
+const MIN_ESS = 1500;
+export function recencyWeights(dates: string[], halfLife: number): number[] | undefined {
+  if (!(halfLife > 0) || !dates.length) return undefined;
+  const uniq = [...new Set(dates)].sort();
+  const perDate = dates.length / uniq.length;
+  const h = Math.max(halfLife, MIN_ESS / (2.885 * perDate));
+  const age = new Map(uniq.map((d, i) => [d, uniq.length - 1 - i]));
+  const raw = dates.map((d) => 0.5 ** (age.get(d)! / h));
+  const m = raw.reduce((a, v) => a + v, 0) / raw.length;
+  return raw.map((v) => v / m);
+}
+
 type Fitted = { scaler: Scaler; logistic: Linear; ridge: Linear; gbm: Gbm | null; baseRate: number };
 
 function fit(train: Sample[], hi: number, o: EngineOptions): Fitted | null {
   const rows = train.filter((s) => Number.isFinite(s.fwd[hi]!) && s.fwd[hi] !== 0);
   if (rows.length < Math.min(o.minTrain, 60)) return null;
   const X0 = rows.map((s) => s.x);
+  // Exponential recency weights by trading date (normalized to mean 1, so lambda keeps its meaning).
+  const w = recencyWeights(rows.map((s) => s.date), o.halfLife);
   const scaler = fitScaler(X0);
   const X = X0.map((x) => transform(scaler, x));
   const y: number[] = rows.map((s) => (s.fwd[hi]! > 0 ? 1 : 0));
@@ -126,17 +147,17 @@ function fit(train: Sample[], hi: number, o: EngineOptions): Fitted | null {
   if (rows.length - cut >= 30) {
     const Xa = X.slice(0, cut);
     for (const lam of o.lambdaGrid) {
-      const l = logLoss(fitLogistic(Xa, y.slice(0, cut), lam * cut, 12), cut);
+      const l = logLoss(fitLogistic(Xa, y.slice(0, cut), lam * cut, 12, w?.slice(0, cut)), cut);
       if (l < lossL) (lossL = l), (bestL = lam);
-      const m = mse(fitRidge(Xa, rw.slice(0, cut), lam * cut), cut);
+      const m = mse(fitRidge(Xa, rw.slice(0, cut), lam * cut, w?.slice(0, cut)), cut);
       if (m < lossR) (lossR = m), (bestR = lam);
     }
   } else bestL = bestR = o.lambdaGrid.at(-1)!;
   return {
     scaler,
-    logistic: fitLogistic(X, y, bestL * rows.length, 12),
-    ridge: fitRidge(X, rw, bestR * rows.length),
-    gbm: o.gbm ? fitGbm(X, y) : null,
+    logistic: fitLogistic(X, y, bestL * rows.length, 12, w),
+    ridge: fitRidge(X, rw, bestR * rows.length, w),
+    gbm: o.gbm ? fitGbm(X, y, { weights: w }) : null,
     baseRate: y.reduce((s, v) => s + v, 0) / y.length,
   };
 }
@@ -193,14 +214,15 @@ export const META_MIN_ROWS = 300;
 export type Meta = { cls: Linear; reg: Linear; n: number };
 
 /** Fits the stage-two models on first-stage out-of-sample rows (all of them must have known outcomes). */
-export function fitMeta(rows: OosPrediction[]): Meta | null {
+export function fitMeta(rows: OosPrediction[], halfLife = 0): Meta | null {
   if (rows.length < META_MIN_ROWS) return null;
+  const w = recencyWeights(rows.map((o) => o.date), halfLife);
   const y = rows.map((o) => (o.actual > 0 ? 1 : 0));
   const act = rows.map((o) => o.actual);
   const lo = quantile(act, 0.01), hi = quantile(act, 0.99);
   return {
-    cls: fitLogistic(rows.map(metaX), y, 1e-3 * rows.length, 30),
-    reg: fitRidge(rows.map(metaR), act.map((v) => Math.max(lo, Math.min(hi, v))), 1e-6 * rows.length),
+    cls: fitLogistic(rows.map(metaX), y, 1e-3 * rows.length, 30, w),
+    reg: fitRidge(rows.map(metaR), act.map((v) => Math.max(lo, Math.min(hi, v))), 1e-6 * rows.length, w),
     n: rows.length,
   };
 }
@@ -210,7 +232,7 @@ export const metaPredict = (m: Meta, o: { p: number; pg: number; r: number; past
  * Walk-forward over the first-stage predictions: at each date the meta model is trained only on rows whose outcome
  * window had closed by then. Returns second-stage out-of-sample rows (p and r replaced).
  */
-export function stack(oos: OosPrediction[], step = 20): OosPrediction[] {
+export function stack(oos: OosPrediction[], step = 20, halfLife = 0): OosPrediction[] {
   const dates = [...new Set(oos.map((o) => o.date))].sort();
   const byDate = new Map<string, OosPrediction[]>();
   for (const o of oos) (byDate.get(o.date) ?? byDate.set(o.date, []).get(o.date)!).push(o);
@@ -219,7 +241,7 @@ export function stack(oos: OosPrediction[], step = 20): OosPrediction[] {
   let since = Infinity;
   for (const d of dates) {
     if (since >= step) {
-      const m = fitMeta(oos.filter((o) => o.endDate <= d));
+      const m = fitMeta(oos.filter((o) => o.endDate <= d), halfLife);
       if (m) (meta = m), (since = 0);
     }
     since++;
@@ -377,11 +399,11 @@ export function forecastMany(series: Series[], o: EngineOptions = DEFAULT_OPTION
   const lastOf = new Map(want.map((s) => [s.ticker, samples.findLast((x) => x.ticker === s.ticker)!]));
   for (const [hi, h] of HORIZONS.entries()) {
     const first = walkForward(samples, hi, o);
-    const oosAll = stack(first, o.step);
+    const oosAll = stack(first, o.step, o.halfLife);
     pooled.push(backtestStats(oosAll, h));
     const model = fit(samples.filter((s) => Number.isFinite(s.fwd[hi]!)).slice(-o.maxTrain), hi, o);
     if (!model) throw new Error(`Not enough history to train the ${h}-session model`);
-    const meta = fitMeta(first);
+    const meta = fitMeta(first, o.halfLife);
     // Calibrate on every out-of-sample prediction (pooled is steadier than one stock's alone).
     const calib = oosAll.length >= 100 ? fitPlatt(oosAll.map((x) => x.p), oosAll.map((x) => (x.actual > 0 ? 1 : 0))) : null;
     // Expected return, in volatility units: OOS slope of realized on predicted (clamped to [0, 1], which shrinks a

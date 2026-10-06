@@ -107,19 +107,26 @@ export function fitLogistic(X: number[][], y: number[], lambda: number, iters = 
 
 export const linear = (m: Linear, x: number[]) => x.reduce((s, v, j) => s + v * m.w[j]!, m.b);
 
-/** Ridge regression (intercept unpenalized) on standardized X. */
-export function fitRidge(X: number[][], y: number[], lambda: number): Linear {
+/** Ridge regression (intercept unpenalized) on standardized X, optionally sample-weighted. */
+export function fitRidge(X: number[][], y: number[], lambda: number, weights?: number[]): Linear {
   const n = X.length, d = X[0]?.length ?? 0;
-  const my = y.reduce((s, v) => s + v, 0) / Math.max(1, n);
+  const wt = (i: number) => weights?.[i] ?? 1;
+  let W = 0;
+  for (let i = 0; i < n; i++) W += wt(i);
+  W = Math.max(W, 1e-12);
+  const my = y.reduce((s, v, i) => s + v * wt(i), 0) / W;
   const mx = new Array<number>(d).fill(0);
-  for (const r of X) for (let j = 0; j < d; j++) mx[j] += r[j]! / n;
+  X.forEach((r, i) => {
+    for (let j = 0; j < d; j++) mx[j] += (r[j]! * wt(i)) / W;
+  });
   const A = Array.from({ length: d }, () => new Array<number>(d).fill(0));
   const c = new Array<number>(d).fill(0);
   for (let i = 0; i < n; i++) {
     const r = X[i]!;
+    const wi = wt(i);
     const yi = y[i]! - my;
     for (let j = 0; j < d; j++) {
-      const xj = r[j]! - mx[j]!;
+      const xj = (r[j]! - mx[j]!) * wi;
       c[j] += xj * yi;
       for (let k = 0; k <= j; k++) A[j]![k] += xj * (r[k]! - mx[k]!);
     }
@@ -186,7 +193,7 @@ const binOf = (e: number[], v: number) => {
   return lo; // 0..e.length
 };
 
-export function fitGbm(X: number[][], y: number[], o: { rounds?: number; rate?: number; minLeaf?: number; lambda?: number } = {}): Gbm {
+export function fitGbm(X: number[][], y: number[], o: { rounds?: number; rate?: number; minLeaf?: number; lambda?: number; weights?: number[] } = {}): Gbm {
   const rounds = o.rounds ?? 60, rate = o.rate ?? 0.05, minLeaf = o.minLeaf ?? Math.max(30, Math.floor(X.length * 0.02)), lam = o.lambda ?? 5;
   const n = X.length, d = X[0]?.length ?? 0;
   const edges = binEdges(X);
@@ -230,8 +237,9 @@ export function fitGbm(X: number[][], y: number[], o: { rounds?: number; rate?: 
     const g = new Array<number>(n), h = new Array<number>(n);
     for (let i = 0; i < n; i++) {
       const p = sigmoid(F[i]!);
-      g[i] = p - y[i]!;
-      h[i] = Math.max(1e-6, p * (1 - p));
+      const w = o.weights?.[i] ?? 1;
+      g[i] = (p - y[i]!) * w;
+      h[i] = Math.max(1e-6, p * (1 - p)) * w;
     }
     const sum = (idx: number[]) => idx.reduce((a, i) => [a[0]! + g[i]!, a[1]! + h[i]!], [0, 0]);
     const [f, t, gain] = bestSplit(all, g, h);

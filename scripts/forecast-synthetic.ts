@@ -17,7 +17,7 @@ function rng(seed: number) {
 const day = (i: number) => new Date(Date.UTC(2023, 0, 2) + i * 86_400_000).toISOString().slice(0, 10);
 
 /** r_t = phi r_{t-1} + kappa * (index move) + volume-linked drift + noise */
-function market(n: number, seed: number, o: { phi?: number; volSignal?: number; idx?: number[] } = {}): Bar[] {
+function market(n: number, seed: number, o: { phi?: number; phi2?: number; volSignal?: number; idx?: number[] } = {}): Bar[] {
   const g = rng(seed);
   let r = 0, c = 10_000;
   const bars: Bar[] = [];
@@ -25,7 +25,7 @@ function market(n: number, seed: number, o: { phi?: number; volSignal?: number; 
   for (let i = 0; i < n; i++) {
     const prevShock = volShock;
     volShock = g();
-    r = (o.phi ?? 0) * r + (o.volSignal ?? 0) * 0.02 * Math.sign(prevShock) * (Math.abs(prevShock) > 1 ? 1 : 0) + 0.02 * g() + (o.idx ? o.idx[i]! : 0);
+    r = (i < n / 2 || o.phi2 === undefined ? o.phi ?? 0 : o.phi2) * r + (o.volSignal ?? 0) * 0.02 * Math.sign(prevShock) * (Math.abs(prevShock) > 1 ? 1 : 0) + 0.02 * g() + (o.idx ? o.idx[i]! : 0);
     const prev = c;
     c = c * Math.exp(r);
     bars.push({ date: day(i), open: prev, high: Math.max(prev, c) * 1.004, low: Math.min(prev, c) * 0.996, close: c, volume: 1e6 * Math.exp(0.5 * volShock) });
@@ -34,9 +34,10 @@ function market(n: number, seed: number, o: { phi?: number; volSignal?: number; 
 }
 
 const N = Number(process.env.N ?? 700);
-const OPTS = { ...DEFAULT_OPTIONS, gbm: process.env.GBM !== "0" };
+const OPTS = { ...DEFAULT_OPTIONS, gbm: process.env.GBM !== "0", halfLife: Number(process.env.HALF_LIFE ?? DEFAULT_OPTIONS.halfLife) };
 const ONLY = process.env.ONLY;
-const scenarios: [string, { phi?: number; volSignal?: number }, number][] = [
+const scenarios: [string, { phi?: number; phi2?: number; volSignal?: number }, number][] = [
+  ["regime shift +0.2→-0.2 x8", { phi: 0.2, phi2: -0.2 }, 8],
   ["random walk x8", {}, 8],
   ["momentum phi=0.15 x8", { phi: 0.15 }, 8],
   ["reversal phi=-0.15 x8", { phi: -0.15 }, 8],
@@ -55,7 +56,7 @@ for (const [name, o, k] of scenarios.filter(([n]) => !ONLY || n.includes(ONLY)))
     const first = walkForward(s, hi, OPTS);
     const a = backtestStats(first, hi + 1);
     const g = backtestStats(first.map((x) => ({ ...x, p: x.pg })), hi + 1);
-    const b = backtestStats(stack(first, OPTS.step), hi + 1);
+    const b = backtestStats(stack(first, OPTS.step, OPTS.halfLife), hi + 1);
     cells.push(`h${hi + 1}: lin ${(a.accuracy! * 100).toFixed(1)} gbm ${(g.accuracy! * 100).toFixed(1)} → stack ${(b.accuracy! * 100).toFixed(1)} (mom ${(b.momentumAccuracy! * 100).toFixed(1)}, Δbrier ${(b.brier! - b.brierBaseRate!).toFixed(4)}, ${b.edge})`);
   }
   console.log(`${name.padEnd(24)} ${cells.join(" | ")}`);
