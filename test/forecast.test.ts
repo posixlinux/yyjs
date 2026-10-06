@@ -411,3 +411,43 @@ describe("pooled confidence", () => {
     expect(noEdge.results.every((r) => r.horizons.every((h) => h.confidence === "low" && !h.actionable))).toBe(true);
   }, 300_000);
 });
+
+describe("investor flows", () => {
+  it("parses Naver-style trend rows loosely and skips rows it cannot read", async () => {
+    const { parseFlows } = await import("../src/forecast/history.js");
+    expect(parseFlows([
+      { bizdate: "20261006", foreignerPureBuyQuant: "+1,200", organPureBuyQuant: "-300", individualPureBuyQuant: "-900" },
+      { bizdate: "20261005", foreignerPureBuyQuant: "-50" },
+      { bizdate: "bad", foreignerPureBuyQuant: "1" },
+      { bizdate: "20261002", somethingElse: "1" },
+    ])).toEqual([
+      { date: "2026-10-05", foreign: -50, organ: null },
+      { date: "2026-10-06", foreign: 1200, organ: -300 },
+    ]);
+    expect(parseFlows({ not: "a list" })).toEqual([]);
+  });
+
+  it("learns a planted foreign-buying signal that prices alone do not reveal", async () => {
+    const g = (seed: number) => {
+      let a = seed >>> 0;
+      return () => ((a = (a * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1;
+    };
+    const index = market(700, 0, 7);
+    const series = Array.from({ length: 8 }, (_, j) => {
+      const u = g(1000 + j);
+      const noise = market(700, 0, 500 + j); // returns from noise, plus drift from yesterday's foreign buying
+      const flow = noise.map(() => u() * 2e5);
+      let c = 10_000;
+      const bars = noise.map((b, i) => {
+        const r = Math.log(b.close / (i ? noise[i - 1]!.close : b.close)) + (i ? 0.012 * Math.sign(flow[i - 1]!) : 0);
+        c *= Math.exp(r);
+        return { ...b, close: c, open: c, high: c * 1.004, low: c * 0.996, volume: 1e6 };
+      });
+      return { ticker: `8${String(j).padStart(4, "0")}0`, bars, index, flows: bars.map((b, i) => ({ date: b.date, foreign: flow[i]!, organ: 0 })) };
+    });
+    const withFlows = forecastMany(series);
+    const without = forecastMany(series.map(({ flows: _f, ...s }) => s));
+    expect(withFlows.pooled[0]!.edge).toBe("detected");
+    expect(withFlows.pooled[0]!.accuracy!).toBeGreaterThan(without.pooled[0]!.accuracy! + 0.05);
+  }, 300_000);
+});

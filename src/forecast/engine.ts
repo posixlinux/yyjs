@@ -1,5 +1,5 @@
 import { context, features, FEATURE_NAMES, forwardReturn, MIN_HISTORY } from "./features.js";
-import type { Bar } from "./history.js";
+import type { Bar, Flow } from "./history.js";
 import { applyPlatt, fitGbm, fitLogistic, fitPlatt, fitRidge, fitScaler, gbmProb, linear, quantile, sigmoid, transform, type Gbm, type Linear, type Scaler } from "./model.js";
 
 // Short-term (1..3 session) direction and return forecast with an honest walk-forward backtest. Every prediction in
@@ -13,7 +13,7 @@ export const MIN_HISTORY_FOR = MIN_HISTORY + 1;
 export type Horizon = (typeof HORIZONS)[number];
 
 /** `fx`: USD/KRW reference rates by date (optional; features stay NaN without it). */
-export type Series = { ticker: string; bars: Bar[]; index: Bar[]; fx?: Bar[] };
+export type Series = { ticker: string; bars: Bar[]; index: Bar[]; fx?: Bar[]; flows?: Flow[] };
 
 export type EngineOptions = {
   /** Retrain every `step` test dates. */
@@ -71,7 +71,7 @@ function peerStats(rows: { date: string; x: number[] }[]) {
 export function buildSamples(series: Series[]): Sample[] {
   const out: Sample[] = [];
   for (const s of series) {
-    const ctx = context(s.bars, s.index, s.fx);
+    const ctx = context(s.bars, s.index, s.fx, s.flows);
     for (let t = MIN_HISTORY - 1; t < s.bars.length; t++) {
       out.push({
         ticker: s.ticker,

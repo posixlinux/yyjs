@@ -8,7 +8,7 @@ import { loadConfig } from "../src/config.js";
 import { ForecastService } from "../src/forecast/service.js";
 import { UniverseProvider } from "../src/research/universe.js";
 import { createHttp } from "../src/collection/http.js";
-import { loadIndex, loadStock, loadUsdKrw } from "../src/forecast/history.js";
+import { loadFlows, loadIndex, loadStock, loadUsdKrw } from "../src/forecast/history.js";
 
 const argv = process.argv.slice(2);
 const flag = (name: string) => {
@@ -34,6 +34,12 @@ if (argv.includes("--check")) {
       console.log(idx.length ? `✔ ${s.exchange} 지수: ${idx.length}거래일, 최근 ${idx.at(-1)?.date} ${idx.at(-1)?.close}` : `✘ ${s.exchange} 지수: 응답은 왔지만 시세 행이 없습니다`);
     } catch (e) {
       console.log(`✘ ${s.exchange} 지수: ${(e as Error).message} (지수 특징 없이 예측합니다)`);
+    }
+    try {
+      const fl = await loadFlows(http, ticker, 2);
+      console.log(fl.length ? `✔ 외국인·기관 순매수: ${fl.length}거래일 ${fl[0]?.date}~${fl.at(-1)?.date} (외국인 값 ${fl.filter((f) => f.foreign !== null).length}, 기관 값 ${fl.filter((f) => f.organ !== null).length})` : "✘ 외국인·기관 순매수: 인식할 수 있는 행이 없습니다 (수급 특징 없이 예측합니다)");
+    } catch (e) {
+      console.log(`✘ 외국인·기관 순매수: ${(e as Error).message} (수급 특징 없이 예측합니다)`);
     }
     try {
       const fx = await loadUsdKrw(http, b[0]!.date, b.at(-1)!.date);

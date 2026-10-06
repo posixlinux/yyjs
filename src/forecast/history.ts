@@ -120,3 +120,46 @@ export function dropUnfinishedSession(bars: Bar[], now: Date): Bar[] {
   const minutes = k.getUTCHours() * 60 + k.getUTCMinutes();
   return bars.length && bars.at(-1)!.date === today && minutes < 15 * 60 + 40 ? bars.slice(0, -1) : bars;
 }
+
+/** Net buying by foreign and institutional investors for one session, in shares (positive = net buy). */
+export type Flow = { date: string; foreign: number | null; organ: number | null };
+
+const signedAmount = (v: unknown): number | null => {
+  const t = (typeof v === "number" ? String(v) : typeof v === "string" ? v : "").replace(/[,+\s]/g, "");
+  return /^-?\d+(\.\d+)?$/.test(t) ? Number(t) : null;
+};
+
+/**
+ * Investor net buying from Naver's investor-trend rows. The field names were not verifiable against live responses
+ * in development, so they are matched loosely (bizdate / localTradedAt; foreigner*PureBuy*, organ*PureBuy*); rows
+ * that match nothing are skipped and the caller treats an empty result as "no flow data".
+ */
+export function parseFlows(rows: unknown): Flow[] {
+  if (!Array.isArray(rows)) return [];
+  const out = new Map<string, Flow>();
+  for (const r of rows.map(asRecord)) {
+    if (!r) continue;
+    const rawDate = str(r.bizdate ?? r.localTradedAt ?? r.tradeDate);
+    const date = /^\d{8}$/.test(rawDate) ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}` : rawDate.slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const pick = (re: RegExp) => {
+      const k = Object.keys(r).find((x) => re.test(x));
+      return k ? signedAmount(r[k]) : null;
+    };
+    const foreign = pick(/^foreigner.*pure.*buy.*(quant|volume)?$/i), organ = pick(/^organ.*pure.*buy.*(quant|volume)?$/i);
+    if (foreign === null && organ === null) continue;
+    out.set(date, { date, foreign, organ });
+  }
+  return [...out.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+export async function loadFlows(http: HttpClient, ticker: string, maxPages = 12, ttlMs = 10 * 60_000): Promise<Flow[]> {
+  const all = new Map<string, Flow>();
+  for (let page = 1; page <= maxPages; page++) {
+    const raw = await http.json(`${API}/stock/${ticker}/trend?pageSize=${PAGE_SIZE}&page=${page}`, { headers: HEADERS, ttlMs });
+    const rows = parseFlows(raw);
+    for (const f of rows) all.set(f.date, f);
+    if (!Array.isArray(raw) || raw.length < PAGE_SIZE || !rows.length) break;
+  }
+  return [...all.values()].sort((a, b) => a.date.localeCompare(b.date));
+}

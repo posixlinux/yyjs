@@ -1,4 +1,4 @@
-import type { Bar } from "./history.js";
+import type { Bar, Flow } from "./history.js";
 
 // Point-in-time features: the feature vector for day t reads bars[0..t] only (and index bars dated <= t), so a
 // walk-forward backtest never sees the future. A value that cannot be computed is NaN and is imputed by the model.
@@ -12,6 +12,7 @@ export const FEATURE_NAMES = [
   "high120Gap", "low120Gap", "downStreak", "upStreak",
   "idxRet20", "idxRet60", "idxMa60Gap",
   "fxRet1", "fxRet5", "fxRet20",
+  "foreign1", "foreign5", "organ1", "organ5",
 ] as const;
 export type FeatureName = (typeof FEATURE_NAMES)[number];
 
@@ -39,7 +40,7 @@ export function alignIndex(bars: Bar[], index: Bar[]): number[] {
   return out;
 }
 
-export type FeatureContext = { bars: Bar[]; ret: number[]; idx: number[]; idxRet: number[]; fx: number[] };
+export type FeatureContext = { bars: Bar[]; ret: number[]; idx: number[]; idxRet: number[]; fx: number[]; flows: (Flow | undefined)[] };
 
 /**
  * USD/KRW aligned to the stock's dates with a one-day lag: the ECB reference rate for day d is published around
@@ -55,16 +56,17 @@ export function alignLagged(bars: Bar[], series: Bar[]): number[] {
   return out;
 }
 
-export function context(bars: Bar[], index: Bar[], fx: Bar[] = []): FeatureContext {
+export function context(bars: Bar[], index: Bar[], fx: Bar[] = [], flows: Flow[] = []): FeatureContext {
   const idx = alignIndex(bars, index);
+  const byDate = new Map(flows.map((f) => [f.date, f]));
   const idxRet = idx.map((v, i) => (i === 0 || !(v > 0) || !(idx[i - 1]! > 0) ? NaN : ln(v / idx[i - 1]!)));
-  return { bars, ret: logReturns(bars), idx, idxRet, fx: alignLagged(bars, fx) };
+  return { bars, ret: logReturns(bars), idx, idxRet, fx: alignLagged(bars, fx), flows: bars.map((b) => byDate.get(b.date)) };
 }
 
 const window = (xs: number[], t: number, n: number) => xs.slice(Math.max(0, t - n + 1), t + 1).filter((x) => Number.isFinite(x));
 
 export function features(c: FeatureContext, t: number): number[] {
-  const { bars, ret, idx, idxRet, fx } = c;
+  const { bars, ret, idx, idxRet, fx, flows } = c;
   const close = bars[t]!.close;
   const back = (n: number) => (t - n >= 0 ? ln(close / bars[t - n]!.close) : NaN);
   const ma = (n: number) => (t - n + 1 >= 0 ? mean(bars.slice(t - n + 1, t + 1).map((b) => b.close)) : NaN);
@@ -123,7 +125,20 @@ export function features(c: FeatureContext, t: number): number[] {
       return w.length >= 50 ? idx[t]! / mean(w) - 1 : NaN;
     })() : NaN,
     fxBack(fx, t, 1), fxBack(fx, t, 5), fxBack(fx, t, 20),
+    // Net buying in shares relative to the 20-session average volume (same-day flows are published after the close).
+    flowShare(flows, t, 1, "foreign", avgVol), flowShare(flows, t, 5, "foreign", avgVol), flowShare(flows, t, 1, "organ", avgVol), flowShare(flows, t, 5, "organ", avgVol),
   ];
+}
+
+function flowShare(flows: (Flow | undefined)[], t: number, n: number, who: "foreign" | "organ", avgVol: number): number {
+  if (!(avgVol > 0)) return NaN;
+  let sum = 0;
+  for (let i = t - n + 1; i <= t; i++) {
+    const v = i >= 0 ? flows[i]?.[who] : undefined;
+    if (v === null || v === undefined) return NaN;
+    sum += v;
+  }
+  return sum / (avgVol * n);
 }
 
 const fxBack = (fx: number[], t: number, n: number) => (t - n >= 0 && fx[t]! > 0 && fx[t - n]! > 0 ? ln(fx[t]! / fx[t - n]!) : NaN);

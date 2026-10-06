@@ -5,7 +5,7 @@ import { AppError } from "../errors.js";
 import type { UniverseProvider } from "../research/universe.js";
 import type { ListedExchange } from "../domain/security.js";
 import { DEFAULT_OPTIONS, MIN_HISTORY_FOR, type EngineOptions, type ForecastResult, type Series } from "./engine.js";
-import { adjustCorporateActions, dropUnfinishedSession, loadIndex, loadStock, loadUsdKrw, type Bar, type StockHistory } from "./history.js";
+import { adjustCorporateActions, dropUnfinishedSession, loadFlows, loadIndex, loadStock, loadUsdKrw, type Bar, type Flow, type StockHistory } from "./history.js";
 import { runEngine, runMany } from "./runner.js";
 
 // Short-term forecast service: loads the target's history and that of liquid peers on the same exchange (pooled
@@ -68,6 +68,13 @@ export class ForecastService {
   private stocks = new Map<string, { at: number; value: Promise<Adjusted> }>();
   private rankings = new Map<string, { at: number; value: Promise<Awaited<ReturnType<ForecastService["rankNow"]>>> }>();
   private indexes = new Map<string, { at: number; value: Promise<Bar[]> }>();
+  private flowCache = new Map<string, { at: number; value: Promise<Flow[]> }>();
+
+  /** Investor flows are optional: a missing or unrecognized response just leaves the flow features empty. */
+  private flows(http: ReturnType<ForecastService["http"]>, ticker: string, pages: number, sk: string): Promise<Flow[]> {
+    // A failure is cached as "no flows" too: an endpoint that is missing should not be re-asked for every forecast.
+    return this.cached(this.flowCache, `${ticker}|${pages}|${sk}`, () => loadFlows(http, ticker, pages).catch(() => [] as Flow[]));
+  }
 
   /** USD/KRW over the bars' span; [] (features stay empty) when the rate source is unreachable. */
   private async fx(http: ReturnType<ForecastService["http"]>, bars: Bar[], notes: string[]): Promise<Bar[]> {
@@ -127,7 +134,7 @@ export class ForecastService {
     if (hit && now - hit.at < 30 * 60_000) return { ...hit.result, peerFailures: [] };
 
     const pages = this.deps.pages ?? 12;
-    const http = this.http((2 + pages * 2) * (2 + Math.min(MAX_PEERS, opts.peers?.length ?? peerCount)));
+    const http = this.http((3 + pages * 3) * (2 + Math.min(MAX_PEERS, opts.peers?.length ?? peerCount)));
     const at = new Date(now);
     const sk = sessionKey(at);
     const stock = (t: string) => this.cached(this.stocks, `${t}|${pages}|${sk}`, () => loadAdjusted(http, t, pages, at));
@@ -149,7 +156,7 @@ export class ForecastService {
     let target;
     try {
       const s = await stock(ticker);
-      target = { ...s, index: await index(s.exchange), indexName: s.exchange };
+      target = { ...s, index: await index(s.exchange), indexName: s.exchange, flows: await this.flows(http, ticker, pages, sk) };
     } catch (e) {
       if (e instanceof CollectionError && e.code === "not_listed") throw new AppError(422, "NOT_LISTED", e.message);
       throw new AppError(502, "HISTORY_UNAVAILABLE", `Could not load ${ticker}'s price history: ${(e as Error).message}`);
@@ -161,7 +168,7 @@ export class ForecastService {
     for (let i = 0; i < tickers.length; i += 4) {
       const got = await Promise.allSettled(tickers.slice(i, i + 4).map(async (t) => {
         const s = await stock(t);
-        return { ticker: s.ticker, bars: s.bars, index: await index(s.exchange) };
+        return { ticker: s.ticker, bars: s.bars, index: await index(s.exchange), flows: await this.flows(http, t, pages, sk) };
       }));
       got.forEach((g, j) => (g.status === "fulfilled" ? peers.push(g.value) : peerFailures.push(tickers[i + j]!)));
     }
@@ -169,13 +176,14 @@ export class ForecastService {
     const fx = await this.fx(http, target.index.length ? target.index : target.bars, fxNotes);
     let result: ForecastResult;
     try {
-      result = await runEngine({ ticker, bars: target.bars, index: target.index, fx }, peers.map((p) => ({ ...p, fx })), { ...DEFAULT_OPTIONS, ...this.deps.options });
+      result = await runEngine({ ticker, bars: target.bars, index: target.index, fx, flows: target.flows }, peers.map((p) => ({ ...p, fx })), { ...DEFAULT_OPTIONS, ...this.deps.options });
     } catch (e) {
       const m = (e as Error).message;
       if (/^Need at least|^Not enough history/.test(m)) throw new AppError(422, "INSUFFICIENT_HISTORY", m);
       throw new AppError(503, "FORECAST_FAILED", `The forecast computation failed: ${m}`, undefined, "Retry later; a computation that exceeded its time limit was stopped.");
     }
     result.notes.push(...indexNotes, ...fxNotes);
+    if (!target.flows.length) result.notes.push("외국인·기관 순매수 자료를 받지 못해 수급 특징 없이 계산했습니다.");
     if (target.truncatedBefore) result.notes.push(`${target.truncatedBefore}에 가격제한폭을 넘는 분할 비율이 아닌 변동(재상장·기준가 재설정 등)이 있어 그 이전 시세는 쓰지 않았습니다.`);
     if (target.adjusted.length) result.notes.push(`가격제한폭(±30%)을 넘는 변동을 액면분할·병합으로 보고 이전 가격을 보정했습니다: ${target.adjusted.join(", ")}.`);
     if (target.name) result.notes.push(`${target.name} (${target.exchange}), 시장 지수 ${target.indexName} 사용.`);
@@ -207,7 +215,7 @@ export class ForecastService {
       throw new AppError(502, "UNIVERSE_UNAVAILABLE", "Could not load the KOSPI/KOSDAQ stock list from Naver Finance");
     }
     const pages = this.deps.pages ?? 12;
-    const http = this.http((2 + pages) * (count + 2));
+    const http = this.http((3 + pages * 2) * (count + 2));
     const at = (this.deps.now ?? (() => new Date()))();
     const sk = sessionKey(at);
     const indexNotes: string[] = [];
@@ -219,7 +227,8 @@ export class ForecastService {
     const failures: string[] = [];
     for (let i = 0; i < tickers.length; i += 4) {
       const got = await Promise.allSettled(tickers.slice(i, i + 4).map((t) => this.cached(this.stocks, `${t.ticker}|${pages}|${sk}`, () => loadAdjusted(http, t.ticker, pages, at))));
-      got.forEach((g, j) => (g.status === "fulfilled" ? series.push({ ticker: g.value.ticker, bars: g.value.bars, index }) : failures.push(tickers[i + j]!.ticker)));
+      const flows = await Promise.all(tickers.slice(i, i + 4).map((t) => this.flows(http, t.ticker, pages, sk)));
+      got.forEach((g, j) => (g.status === "fulfilled" ? series.push({ ticker: g.value.ticker, bars: g.value.bars, index, flows: flows[j] }) : failures.push(tickers[i + j]!.ticker)));
     }
     // Too-short histories (recent listings) cannot be forecast; say so instead of dropping them silently.
     const short = series.filter((s) => s.bars.length < MIN_HISTORY_FOR).map((s) => s.ticker);
