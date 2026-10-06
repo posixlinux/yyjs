@@ -97,7 +97,9 @@ const predict = (f: Fitted, x: number[]) => {
   return { p: sigmoid(linear(f.logistic, z)), r: linear(f.ridge, z) };
 };
 
-export type OosPrediction = { ticker: string; date: string; p: number; r: number; baseRate: number; actual: number; past: number };
+const PAST = (["ret1", "ret2", "ret3"] as const).map((n) => FEATURE_NAMES.indexOf(n));
+
+export type OosPrediction = { ticker: string; date: string; endDate: string; p: number; r: number; baseRate: number; actual: number; past: number; ret1: number };
 
 /** Walk-forward out-of-sample predictions for horizon index `hi` (0 -> 1 session). */
 export function walkForward(samples: Sample[], hi: number, o: EngineOptions = DEFAULT_OPTIONS): OosPrediction[] {
@@ -122,8 +124,54 @@ export function walkForward(samples: Sample[], hi: number, o: EngineOptions = DE
       const actual = s.fwd[hi]!;
       if (!Number.isFinite(actual)) continue;
       const { p, r } = predict(model, s.x);
-      out.push({ ticker: s.ticker, date: d, p, r, baseRate: model.baseRate, actual, past: s.x[FEATURE_NAMES.indexOf(hi === 0 ? "ret1" : hi === 1 ? "ret2" : "ret3")]! });
+      out.push({ ticker: s.ticker, date: d, endDate: s.endDate[hi]!, p, r, baseRate: model.baseRate, actual, past: s.x[PAST[hi]!]!, ret1: s.x[PAST[0]!]! });
     }
+  }
+  return out;
+}
+
+// ---- second stage: stack the model with the simple rules ---------------------------------------------------------
+
+const logit = (p: number) => Math.log(Math.max(1e-6, p) / Math.max(1e-6, 1 - p));
+/** Meta features: the model's log-odds and the signs of the last h-session and last-session moves. */
+const metaX = (o: { p: number; past: number; ret1: number }) => [logit(o.p), Math.sign(o.past) || 0, Math.sign(o.ret1) || 0];
+const metaR = (o: { r: number; past: number }) => [o.r, Number.isFinite(o.past) ? o.past : 0];
+
+export type Meta = { cls: Linear; reg: Linear; n: number };
+
+/** Fits the stage-two models on first-stage out-of-sample rows (all of them must have known outcomes). */
+export function fitMeta(rows: OosPrediction[]): Meta | null {
+  if (rows.length < 100) return null;
+  const y = rows.map((o) => (o.actual > 0 ? 1 : 0));
+  const act = rows.map((o) => o.actual);
+  const lo = quantile(act, 0.01), hi = quantile(act, 0.99);
+  return {
+    cls: fitLogistic(rows.map(metaX), y, 1e-3 * rows.length, 30),
+    reg: fitRidge(rows.map(metaR), act.map((v) => Math.max(lo, Math.min(hi, v))), 1e-6 * rows.length),
+    n: rows.length,
+  };
+}
+export const metaPredict = (m: Meta, o: { p: number; r: number; past: number; ret1: number }) => ({ p: sigmoid(linear(m.cls, metaX(o))), r: linear(m.reg, metaR(o)) });
+
+/**
+ * Walk-forward over the first-stage predictions: at each date the meta model is trained only on rows whose outcome
+ * window had closed by then. Returns second-stage out-of-sample rows (p and r replaced).
+ */
+export function stack(oos: OosPrediction[], step = 20): OosPrediction[] {
+  const dates = [...new Set(oos.map((o) => o.date))].sort();
+  const byDate = new Map<string, OosPrediction[]>();
+  for (const o of oos) (byDate.get(o.date) ?? byDate.set(o.date, []).get(o.date)!).push(o);
+  const out: OosPrediction[] = [];
+  let meta: Meta | null = null;
+  let since = Infinity;
+  for (const d of dates) {
+    if (since >= step) {
+      const m = fitMeta(oos.filter((o) => o.endDate <= d));
+      if (m) (meta = m), (since = 0);
+    }
+    since++;
+    if (!meta) continue;
+    for (const o of byDate.get(d)!) out.push({ ...o, ...metaPredict(meta, o) });
   }
   return out;
 }
@@ -259,12 +307,16 @@ export function forecast(target: Series, peers: Series[] = [], o: EngineOptions 
   const lastClose = target.bars[last]!.close;
   const horizons: HorizonForecast[] = [];
   for (const [hi, h] of HORIZONS.entries()) {
-    const oosAll = walkForward(samples, hi, o);
+    const first = walkForward(samples, hi, o);
+    const oosAll = stack(first, o.step);
     const oos = oosAll.filter((x) => x.ticker === target.ticker);
     const stats = backtestStats(oos, h);
     const model = fit(samples.filter((s) => Number.isFinite(s.fwd[hi]!)).slice(-o.maxTrain), hi, o);
     if (!model) throw new Error(`Not enough history to train the ${h}-session model`);
-    const raw = predict(model, xNow);
+    const raw0 = predict(model, xNow);
+    const meta = fitMeta(first);
+    const now = { ...raw0, past: xNow[PAST[hi]!]!, ret1: xNow[PAST[0]!]! };
+    const raw = meta ? metaPredict(meta, now) : raw0;
     // Calibrate on every out-of-sample prediction (pooled is steadier than the target's alone).
     const calib = oosAll.length >= 100 ? fitPlatt(oosAll.map((x) => x.p), oosAll.map((x) => (x.actual > 0 ? 1 : 0))) : null;
     const pUp = calib ? applyPlatt(calib, raw.p) : model.baseRate;
