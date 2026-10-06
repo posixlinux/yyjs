@@ -5,7 +5,7 @@ import { CollectionError } from "../collection/types.js";
 import { AppError } from "../errors.js";
 import type { UniverseProvider } from "../research/universe.js";
 import type { ListedExchange } from "../domain/security.js";
-import { DEFAULT_OPTIONS, type EngineOptions, type ForecastResult, type Series } from "./engine.js";
+import { DEFAULT_OPTIONS, MIN_HISTORY_FOR, type EngineOptions, type ForecastResult, type Series } from "./engine.js";
 import { adjustCorporateActions, loadHistory, loadIndex, loadStock, loadUsdKrw, type Bar, type StockHistory } from "./history.js";
 import { runEngine, runMany } from "./runner.js";
 
@@ -187,7 +187,10 @@ export class ForecastService {
       const got = await Promise.allSettled(tickers.slice(i, i + 4).map((t) => this.cached(this.stocks, `${t.ticker}|${pages}`, () => loadAdjusted(http, t.ticker, pages))));
       got.forEach((g, j) => (g.status === "fulfilled" ? series.push({ ticker: g.value.ticker, bars: g.value.bars, index }) : failures.push(tickers[i + j]!.ticker)));
     }
-    if (series.length < 3) throw new AppError(502, "HISTORY_UNAVAILABLE", "Too few price histories could be loaded to rank");
+    // Too-short histories (recent listings) cannot be forecast; say so instead of dropping them silently.
+    const short = series.filter((s) => s.bars.length < MIN_HISTORY_FOR).map((s) => s.ticker);
+    failures.push(...short.map((t) => `${t} (상장 후 ${MIN_HISTORY_FOR}거래일 미만)`));
+    if (series.length - short.length < 3) throw new AppError(502, "HISTORY_UNAVAILABLE", "Too few price histories could be loaded to rank");
     const fxNotes: string[] = [];
     const fx = await this.fx(http, index, fxNotes);
     const { results, pooled } = await runMany(series.map((s) => ({ ...s, fx })), { ...DEFAULT_OPTIONS, ...this.deps.options });
@@ -250,7 +253,10 @@ export class ForecastService {
 
   /** Scores every logged forecast against the closes that followed it (fetches each ticker's recent bars once). */
   async scoreLog(): Promise<{ scores: ForecastScore[]; summary: ReturnType<typeof summarizeForecastScores> }> {
-    const log = await this.readLog();
+    // The same stock and session forecast twice (e.g. a forecast and a ranking) is scored once: the latest record.
+    const latest = new Map<string, ForecastLogRecord>();
+    for (const r of await this.readLog()) latest.set(`${r.ticker}|${r.asOfDate}`, r);
+    const log = [...latest.values()];
     const http = this.http(4 * (new Set(log.map((r) => r.ticker)).size + 1));
     const bars = new Map<string, Bar[]>();
     for (const t of new Set(log.map((r) => r.ticker))) {

@@ -210,16 +210,17 @@ describe("forecast service and API", () => {
   it("ranks the largest stocks of an exchange by the probability of a rise (one pooled model)", async () => {
     const index = market(320, 0, 6);
     const markets: Record<string, Bar[]> = Object.fromEntries(["111110", "222220", "333330", "444440", "555550"].map((t, i) => [t, market(320, 0.3, 70 + i)]));
+    markets["777770"] = market(40, 0, 99); // a recent listing: too short to forecast
     const { f } = naverFake(markets, index);
-    const universe = { get: async () => ({ fetchedAt: "2026-10-06T00:00:00Z", scanned: 6, items: [...Object.keys(markets), "666660"].map((t, i) => ({ ticker: t, name: `Co${i}`, exchange: "KOSPI", marketCapKRW: 100 - i })) }) };
+    const universe = { get: async () => ({ fetchedAt: "2026-10-06T00:00:00Z", scanned: 7, items: [...Object.keys(markets), "666660"].map((t, i) => ({ ticker: t, name: `Co${i}`, exchange: "KOSPI", marketCapKRW: 100 - i })) }) };
     const svc = new ForecastService({ fetch: f, pages: 6, universe: universe as never });
     const base = await setup();
     const app = buildApp(base.service, base.research, base.config, undefined, undefined, svc);
-    const res = await app.inject({ method: "GET", url: "/v1/forecast-ranking?count=6&horizon=1" });
+    const res = await app.inject({ method: "GET", url: "/v1/forecast-ranking?count=7&horizon=1" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.ranked).toHaveLength(5);
-    expect(body.failures).toEqual(["666660"]);
+    expect(body.failures).toEqual(["666660", "777770 (상장 후 62거래일 미만)"]);
     const p = body.ranked.map((r: { probabilityUp: number }) => r.probabilityUp);
     expect([...p].sort((a, b) => b - a)).toEqual(p);
     expect(body.ranked[0].name).toMatch(/^Co/);
@@ -270,4 +271,18 @@ describe("robustness to sparse data", () => {
     }
     expect(f.horizons[0]!.backtest.edge).toBe("detected"); // momentum still found without OHLV or index
   }, 180_000);
+});
+
+describe("forecast log scoring", () => {
+  it("scores a stock-session forecast once even when it was logged twice", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    const bars = market(200, 0, 3);
+    const { f } = naverFake({ "111110": bars }, market(200, 0, 4));
+    const logDir = await mkdtemp(path.join(tmpdir(), "fs-"));
+    const rec = { schemaVersion: 1, recordedAt: "x", ticker: "111110", asOfDate: bars[150]!.date, lastCloseKRW: bars[150]!.close, peers: [], horizons: [1, 2, 3].map((h) => ({ horizon: h, probabilityUp: 0.6, direction: "up", confidence: "low", expectedReturnPct: 0.5, range80Pct: [-2, 3], backtestAccuracy: 0.5, edge: "none" })) };
+    await writeFile(path.join(logDir, "forecasts.jsonl"), `${JSON.stringify({ ...rec, recordedAt: "a" })}\n${JSON.stringify({ ...rec, recordedAt: "b" })}\n`);
+    const { scores, summary } = await new ForecastService({ fetch: f, logDir, pages: 4 }).scoreLog();
+    expect(scores).toHaveLength(3);
+    expect(summary.all.n).toBe(3);
+  });
 });
