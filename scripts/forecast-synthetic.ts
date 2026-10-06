@@ -34,6 +34,8 @@ function market(n: number, seed: number, o: { phi?: number; volSignal?: number; 
 }
 
 const N = Number(process.env.N ?? 700);
+const OPTS = { ...DEFAULT_OPTIONS, gbm: process.env.GBM !== "0" };
+const ONLY = process.env.ONLY;
 const scenarios: [string, { phi?: number; volSignal?: number }, number][] = [
   ["random walk x8", {}, 8],
   ["momentum phi=0.15 x8", { phi: 0.15 }, 8],
@@ -45,15 +47,16 @@ const idxG = rng(999);
 const idxRet = Array.from({ length: N }, () => 0.01 * idxG());
 let lvl = 1000;
 const index: Bar[] = idxRet.map((x, i) => ((lvl *= Math.exp(x)), { date: day(i), open: null, high: null, low: null, close: lvl, volume: null }));
-for (const [name, o, k] of scenarios) {
+for (const [name, o, k] of scenarios.filter(([n]) => !ONLY || n.includes(ONLY))) {
   const series = Array.from({ length: k }, (_, j) => ({ ticker: String(100000 + j * 10), bars: market(N, 1000 * j + name.length, o), index }));
   const s = buildSamples(series);
   const cells: string[] = [];
   for (const hi of [0, 1, 2]) {
-    const first = walkForward(s, hi, DEFAULT_OPTIONS);
+    const first = walkForward(s, hi, OPTS);
     const a = backtestStats(first, hi + 1);
-    const b = backtestStats(stack(first, DEFAULT_OPTIONS.step), hi + 1);
-    cells.push(`h${hi + 1}: model ${(a.accuracy! * 100).toFixed(1)} → stacked ${(b.accuracy! * 100).toFixed(1)} (mom ${(b.momentumAccuracy! * 100).toFixed(1)}, Δbrier ${(b.brier! - b.brierBaseRate!).toFixed(4)}, ${b.edge})`);
+    const g = backtestStats(first.map((x) => ({ ...x, p: x.pg })), hi + 1);
+    const b = backtestStats(stack(first, OPTS.step), hi + 1);
+    cells.push(`h${hi + 1}: lin ${(a.accuracy! * 100).toFixed(1)} gbm ${(g.accuracy! * 100).toFixed(1)} → stack ${(b.accuracy! * 100).toFixed(1)} (mom ${(b.momentumAccuracy! * 100).toFixed(1)}, Δbrier ${(b.brier! - b.brierBaseRate!).toFixed(4)}, ${b.edge})`);
   }
   console.log(`${name.padEnd(24)} ${cells.join(" | ")}`);
 }

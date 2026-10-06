@@ -150,3 +150,115 @@ export const quantile = (xs: number[], q: number): number => {
   const lo = Math.floor(pos), hi = Math.ceil(pos);
   return s[lo]! + (s[hi]! - s[lo]!) * (pos - lo);
 };
+
+// ---- gradient-boosted depth-2 trees (logistic loss) -------------------------------------------------------------
+// Captures thresholds and interactions a linear model misses (e.g. "a volume spike AND a down day"). Features are
+// pre-binned on training quantiles, every split is chosen on histogram sums, and leaves are shrunk Newton steps,
+// so it is fast, deterministic and hard to overfit with the defaults below.
+
+export type Stump = { f: number; t: number; left: Stump | number; right: Stump | number };
+export type Gbm = { base: number; trees: Stump[]; rate: number; edges: number[][] };
+
+const BINS = 16;
+
+function binEdges(X: number[][]): number[][] {
+  const d = X[0]?.length ?? 0;
+  const edges: number[][] = [];
+  for (let j = 0; j < d; j++) {
+    const col = X.map((r) => r[j]!).filter(Number.isFinite).sort((a, b) => a - b);
+    const e: number[] = [];
+    for (let k = 1; k < BINS; k++) {
+      const v = col.length ? col[Math.floor((k / BINS) * (col.length - 1))]! : 0;
+      if (!e.length || v > e.at(-1)!) e.push(v);
+    }
+    edges.push(e);
+  }
+  return edges;
+}
+const binOf = (e: number[], v: number) => {
+  if (!Number.isFinite(v)) return 0;
+  let lo = 0, hi = e.length;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (v > e[m]!) lo = m + 1;
+    else hi = m;
+  }
+  return lo; // 0..e.length
+};
+
+export function fitGbm(X: number[][], y: number[], o: { rounds?: number; rate?: number; minLeaf?: number; lambda?: number } = {}): Gbm {
+  const rounds = o.rounds ?? 60, rate = o.rate ?? 0.05, minLeaf = o.minLeaf ?? Math.max(30, Math.floor(X.length * 0.02)), lam = o.lambda ?? 5;
+  const n = X.length, d = X[0]?.length ?? 0;
+  const edges = binEdges(X);
+  const B = X.map((r) => r.map((v, j) => binOf(edges[j]!, v)));
+  const pos = y.reduce((s, v) => s + v, 0) / Math.max(1, n);
+  const base = Math.log(Math.max(1e-6, pos) / Math.max(1e-6, 1 - pos));
+  const F = new Array<number>(n).fill(base);
+  const trees: Stump[] = [];
+  const leaf = (G: number, H: number) => -G / (H + lam);
+  // Best split of `idx` on any feature: returns [feature, bin threshold, gain].
+  const bestSplit = (idx: number[], g: number[], h: number[]) => {
+    let best: [number, number, number] = [-1, 0, 0];
+    let Gt = 0, Ht = 0;
+    for (const i of idx) (Gt += g[i]!), (Ht += h[i]!);
+    const parent = (Gt * Gt) / (Ht + lam);
+    for (let j = 0; j < d; j++) {
+      const nb = edges[j]!.length + 1;
+      if (nb < 2) continue;
+      const G = new Array<number>(nb).fill(0), H = new Array<number>(nb).fill(0), C = new Array<number>(nb).fill(0);
+      for (const i of idx) {
+        const b = B[i]![j]!;
+        G[b] += g[i]!;
+        H[b] += h[i]!;
+        C[b]++;
+      }
+      let gl = 0, hl = 0, cl = 0;
+      for (let b = 0; b < nb - 1; b++) {
+        gl += G[b]!;
+        hl += H[b]!;
+        cl += C[b]!;
+        if (cl < minLeaf || idx.length - cl < minLeaf) continue;
+        const gr = Gt - gl, hr = Ht - hl;
+        const gain = (gl * gl) / (hl + lam) + (gr * gr) / (hr + lam) - parent;
+        if (gain > best[2]) best = [j, b, gain];
+      }
+    }
+    return best;
+  };
+  const all = Array.from({ length: n }, (_, i) => i);
+  for (let r = 0; r < rounds; r++) {
+    const g = new Array<number>(n), h = new Array<number>(n);
+    for (let i = 0; i < n; i++) {
+      const p = sigmoid(F[i]!);
+      g[i] = p - y[i]!;
+      h[i] = Math.max(1e-6, p * (1 - p));
+    }
+    const sum = (idx: number[]) => idx.reduce((a, i) => [a[0]! + g[i]!, a[1]! + h[i]!], [0, 0]);
+    const [f, t, gain] = bestSplit(all, g, h);
+    if (f < 0 || gain <= 0) break;
+    const L = all.filter((i) => B[i]![f]! <= t), R = all.filter((i) => B[i]![f]! > t);
+    const child = (idx: number[]): Stump | number => {
+      const [cf, ct, cg] = bestSplit(idx, g, h);
+      if (cf < 0 || cg <= 0) {
+        const [G, H] = sum(idx);
+        return leaf(G, H);
+      }
+      const l = idx.filter((i) => B[i]![cf]! <= ct), rr = idx.filter((i) => B[i]![cf]! > ct);
+      const [Gl, Hl] = sum(l), [Gr, Hr] = sum(rr);
+      return { f: cf, t: ct, left: leaf(Gl, Hl), right: leaf(Gr, Hr) };
+    };
+    const tree: Stump = { f, t, left: child(L), right: child(R) };
+    trees.push(tree);
+    for (let i = 0; i < n; i++) F[i] += rate * evalTree(tree, B[i]!);
+  }
+  return { base, trees, rate, edges };
+}
+
+function evalTree(t: Stump | number, b: number[]): number {
+  return typeof t === "number" ? t : evalTree(b[t.f]! <= t.t ? t.left : t.right, b);
+}
+
+export function gbmProb(m: Gbm, x: number[]): number {
+  const b = x.map((v, j) => binOf(m.edges[j]!, v));
+  return sigmoid(m.trees.reduce((s, t) => s + m.rate * evalTree(t, b), m.base));
+}

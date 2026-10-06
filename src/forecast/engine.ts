@@ -1,6 +1,6 @@
 import { context, features, FEATURE_NAMES, forwardReturn, MIN_HISTORY } from "./features.js";
 import type { Bar } from "./history.js";
-import { applyPlatt, fitLogistic, fitPlatt, fitRidge, fitScaler, linear, quantile, sigmoid, transform, type Linear, type Scaler } from "./model.js";
+import { applyPlatt, fitGbm, fitLogistic, fitPlatt, fitRidge, fitScaler, gbmProb, linear, quantile, sigmoid, transform, type Gbm, type Linear, type Scaler } from "./model.js";
 
 // Short-term (1..3 session) direction and return forecast with an honest walk-forward backtest. Every prediction in
 // the backtest is made with a model trained only on samples whose outcome was already known at that date; the final
@@ -21,11 +21,46 @@ export type EngineOptions = {
   maxTrain: number;
   /** Candidate L2 strengths per training sample; each refit picks one on its own latest 20% (time-ordered). */
   lambdaGrid: number[];
+  /** Also train gradient-boosted trees in the first stage (the stacker weighs them against the linear model). */
+  gbm: boolean;
 };
 
-export const DEFAULT_OPTIONS: EngineOptions = { step: 20, minTrain: 250, maxTrain: 6000, lambdaGrid: [1] };
+export const DEFAULT_OPTIONS: EngineOptions = { step: 20, minTrain: 250, maxTrain: 6000, lambdaGrid: [1], gbm: true };
 
 type Sample = { ticker: string; date: string; x: number[]; fwd: number[]; endDate: (string | null)[] };
+
+// Cross-sectional and calendar features appended to the per-stock ones: the pooled stocks' average move that day
+// (breadth beyond the index), the stock's move relative to it, and weekday/month-turn effects. All are known at t.
+export const CROSS_NAMES = ["peerRet1", "peerRet5", "relRet1", "relRet5", "peerUpShare", "monday", "friday", "monthEnd", "monthStart"] as const;
+const I_RET1 = FEATURE_NAMES.indexOf("ret1"), I_RET5 = FEATURE_NAMES.indexOf("ret5");
+
+function crossRow(x: number[], date: string, peers: { ret1: number; ret5: number; up: number } | undefined): number[] {
+  const dow = new Date(`${date}T00:00:00Z`).getUTCDay();
+  const dom = Number(date.slice(8, 10));
+  return [
+    peers?.ret1 ?? NaN, peers?.ret5 ?? NaN,
+    peers ? x[I_RET1]! - peers.ret1 : NaN, peers ? x[I_RET5]! - peers.ret5 : NaN,
+    peers?.up ?? NaN,
+    dow === 1 ? 1 : 0, dow === 5 ? 1 : 0, dom >= 26 ? 1 : 0, dom <= 3 ? 1 : 0,
+  ];
+}
+
+/** Per-date average of the pooled stocks' 1- and 5-session returns and share of rising stocks (>= 3 stocks). */
+function peerStats(rows: { date: string; x: number[] }[]) {
+  const acc = new Map<string, { r1: number; r5: number; up: number; n: number }>();
+  for (const { date, x } of rows) {
+    if (!Number.isFinite(x[I_RET1]!) || !Number.isFinite(x[I_RET5]!)) continue;
+    const a = acc.get(date) ?? { r1: 0, r5: 0, up: 0, n: 0 };
+    a.r1 += x[I_RET1]!;
+    a.r5 += x[I_RET5]!;
+    a.up += x[I_RET1]! > 0 ? 1 : 0;
+    a.n++;
+    acc.set(date, a);
+  }
+  const out = new Map<string, { ret1: number; ret5: number; up: number }>();
+  for (const [d, a] of acc) if (a.n >= 3) out.set(d, { ret1: a.r1 / a.n, ret5: a.r5 / a.n, up: a.up / a.n });
+  return out;
+}
 
 /** Feature rows for every session with enough history; `fwd[h-1]` is NaN while the outcome is unknown. */
 export function buildSamples(series: Series[]): Sample[] {
@@ -42,10 +77,12 @@ export function buildSamples(series: Series[]): Sample[] {
       });
     }
   }
+  const peers = peerStats(out);
+  for (const s of out) s.x = [...s.x, ...crossRow(s.x, s.date, peers.get(s.date))];
   return out.sort((a, b) => a.date.localeCompare(b.date) || a.ticker.localeCompare(b.ticker));
 }
 
-type Fitted = { scaler: Scaler; logistic: Linear; ridge: Linear; baseRate: number };
+type Fitted = { scaler: Scaler; logistic: Linear; ridge: Linear; gbm: Gbm | null; baseRate: number };
 
 function fit(train: Sample[], hi: number, o: EngineOptions): Fitted | null {
   const rows = train.filter((s) => Number.isFinite(s.fwd[hi]!) && s.fwd[hi] !== 0);
@@ -88,18 +125,20 @@ function fit(train: Sample[], hi: number, o: EngineOptions): Fitted | null {
     scaler,
     logistic: fitLogistic(X, y, bestL * rows.length, 12),
     ridge: fitRidge(X, rw, bestR * rows.length),
+    gbm: o.gbm ? fitGbm(X, y) : null,
     baseRate: y.reduce((s, v) => s + v, 0) / y.length,
   };
 }
 
 const predict = (f: Fitted, x: number[]) => {
   const z = transform(f.scaler, x);
-  return { p: sigmoid(linear(f.logistic, z)), r: linear(f.ridge, z) };
+  const p = sigmoid(linear(f.logistic, z));
+  return { p, r: linear(f.ridge, z), pg: f.gbm ? gbmProb(f.gbm, z) : p };
 };
 
 const PAST = (["ret1", "ret2", "ret3"] as const).map((n) => FEATURE_NAMES.indexOf(n));
 
-export type OosPrediction = { ticker: string; date: string; endDate: string; p: number; r: number; baseRate: number; actual: number; past: number; ret1: number };
+export type OosPrediction = { ticker: string; date: string; endDate: string; p: number; pg: number; r: number; baseRate: number; actual: number; past: number; ret1: number };
 
 /** Walk-forward out-of-sample predictions for horizon index `hi` (0 -> 1 session). */
 export function walkForward(samples: Sample[], hi: number, o: EngineOptions = DEFAULT_OPTIONS): OosPrediction[] {
@@ -123,8 +162,8 @@ export function walkForward(samples: Sample[], hi: number, o: EngineOptions = DE
     for (const s of byDate.get(d)!) {
       const actual = s.fwd[hi]!;
       if (!Number.isFinite(actual)) continue;
-      const { p, r } = predict(model, s.x);
-      out.push({ ticker: s.ticker, date: d, endDate: s.endDate[hi]!, p, r, baseRate: model.baseRate, actual, past: s.x[PAST[hi]!]!, ret1: s.x[PAST[0]!]! });
+      const { p, pg, r } = predict(model, s.x);
+      out.push({ ticker: s.ticker, date: d, endDate: s.endDate[hi]!, p, pg, r, baseRate: model.baseRate, actual, past: s.x[PAST[hi]!]!, ret1: s.x[PAST[0]!]! });
     }
   }
   return out;
@@ -134,24 +173,27 @@ export function walkForward(samples: Sample[], hi: number, o: EngineOptions = DE
 
 const logit = (p: number) => Math.log(Math.max(1e-6, p) / Math.max(1e-6, 1 - p));
 /** Meta features: the model's log-odds and the signs of the last h-session and last-session moves. */
-const metaX = (o: { p: number; past: number; ret1: number }) => [logit(o.p), Math.sign(o.past) || 0, Math.sign(o.ret1) || 0];
+const metaX = (o: { p: number; pg: number; past: number; ret1: number }) => [logit((o.p + o.pg) / 2), Math.sign(o.past) || 0, Math.sign(o.ret1) || 0];
 const metaR = (o: { r: number; past: number }) => [o.r, Number.isFinite(o.past) ? o.past : 0];
+
+/** Below this many resolved first-stage rows the stacker is not trusted: the first-stage average is used as is. */
+export const META_MIN_ROWS = 300;
 
 export type Meta = { cls: Linear; reg: Linear; n: number };
 
 /** Fits the stage-two models on first-stage out-of-sample rows (all of them must have known outcomes). */
 export function fitMeta(rows: OosPrediction[]): Meta | null {
-  if (rows.length < 100) return null;
+  if (rows.length < META_MIN_ROWS) return null;
   const y = rows.map((o) => (o.actual > 0 ? 1 : 0));
   const act = rows.map((o) => o.actual);
   const lo = quantile(act, 0.01), hi = quantile(act, 0.99);
   return {
-    cls: fitLogistic(rows.map(metaX), y, 1e-3 * rows.length, 30),
+    cls: fitLogistic(rows.map(metaX), y, 0.05 * rows.length, 30),
     reg: fitRidge(rows.map(metaR), act.map((v) => Math.max(lo, Math.min(hi, v))), 1e-6 * rows.length),
     n: rows.length,
   };
 }
-export const metaPredict = (m: Meta, o: { p: number; r: number; past: number; ret1: number }) => ({ p: sigmoid(linear(m.cls, metaX(o))), r: linear(m.reg, metaR(o)) });
+export const metaPredict = (m: Meta, o: { p: number; pg: number; r: number; past: number; ret1: number }) => ({ p: sigmoid(linear(m.cls, metaX(o))), r: linear(m.reg, metaR(o)) });
 
 /**
  * Walk-forward over the first-stage predictions: at each date the meta model is trained only on rows whose outcome
@@ -170,8 +212,7 @@ export function stack(oos: OosPrediction[], step = 20): OosPrediction[] {
       if (m) (meta = m), (since = 0);
     }
     since++;
-    if (!meta) continue;
-    for (const o of byDate.get(d)!) out.push({ ...o, ...metaPredict(meta, o) });
+    for (const o of byDate.get(d)!) out.push(meta ? { ...o, ...metaPredict(meta, o) } : { ...o, p: (o.p + o.pg) / 2 });
   }
   return out;
 }
@@ -302,8 +343,8 @@ export function forecast(target: Series, peers: Series[] = [], o: EngineOptions 
   const samples = buildSamples(all);
   const last = target.bars.length - 1;
   if (last < MIN_HISTORY) throw new Error(`Need at least ${MIN_HISTORY + 1} sessions of ${target.ticker}; have ${target.bars.length}`);
-  const ctx = context(target.bars, target.index);
-  const xNow = features(ctx, last);
+  const lastDate = target.bars[last]!.date;
+  const xNow = samples.find((s) => s.ticker === target.ticker && s.date === lastDate)!.x;
   const lastClose = target.bars[last]!.close;
   const horizons: HorizonForecast[] = [];
   for (const [hi, h] of HORIZONS.entries()) {
@@ -316,7 +357,7 @@ export function forecast(target: Series, peers: Series[] = [], o: EngineOptions 
     const raw0 = predict(model, xNow);
     const meta = fitMeta(first);
     const now = { ...raw0, past: xNow[PAST[hi]!]!, ret1: xNow[PAST[0]!]! };
-    const raw = meta ? metaPredict(meta, now) : raw0;
+    const raw = meta ? metaPredict(meta, now) : { ...raw0, p: (raw0.p + raw0.pg) / 2 };
     // Calibrate on every out-of-sample prediction (pooled is steadier than the target's alone).
     const calib = oosAll.length >= 100 ? fitPlatt(oosAll.map((x) => x.p), oosAll.map((x) => (x.actual > 0 ? 1 : 0))) : null;
     const pUp = calib ? applyPlatt(calib, raw.p) : model.baseRate;
@@ -354,5 +395,5 @@ export function forecast(target: Series, peers: Series[] = [], o: EngineOptions 
     "투자 권고가 아닙니다. 가격은 네이버 일별 종가(액면분할·배당 미조정)입니다.",
   ];
   if (horizons.every((h) => h.backtest.edge === "none")) notes.unshift("어느 기간도 워크포워드 백테스트에서 단순 기준(동전·항상 같은 방향)을 유의하게 넘지 못했습니다. 이번 방향은 동전 던지기로 보세요.");
-  return { ticker: target.ticker, asOfDate: target.bars[last]!.date, lastCloseKRW: lastClose, horizons, trainedOn: { tickers: all.map((s) => s.ticker), samples: samples.length }, featureNames: FEATURE_NAMES, notes };
+  return { ticker: target.ticker, asOfDate: target.bars[last]!.date, lastCloseKRW: lastClose, horizons, trainedOn: { tickers: all.map((s) => s.ticker), samples: samples.length }, featureNames: [...FEATURE_NAMES, ...CROSS_NAMES], notes };
 }
