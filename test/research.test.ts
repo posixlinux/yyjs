@@ -11,7 +11,6 @@ import { formatDoctor, runDoctor } from "../src/research/doctor.js";
 import { buildDocuments, kstDate, truncateStatement } from "../src/research/evidence.js";
 import { AS_OF, makeDataset, NOW, tmpDir } from "../test/fixture.js";
 import { setup, type TestApp } from "../test/app.js";
-import { writeFile, mkdir } from "node:fs/promises";
 import { makeSingleQuarterCandidate } from "../test/strategy/fixture.js";
 
 // ---- fakes -----------------------------------------------------------------------------------------------------
@@ -103,7 +102,7 @@ function accepted(dataset: Dataset | null = makeDataset(), over: Partial<Analysi
     estimates: [],
     unavailable: [],
     strategy: { forecast: null, currentConsensus: null, priorConsensus: null, catalyst: null, unavailable: [{ field: "all", code: "NOT_PROVIDED", message: "the model did not provide the required strategy object" }] },
-    audit: { issues: [], excludedDocuments: [], auditSummary: "ok", auditedBy: "agy", independentAudit: true, limitations: [] },
+    audit: { issues: [], excludedDocuments: [], auditSummary: "ok", draftedBy: "claude", auditedBy: "agy", independentAudit: true, limitations: [] },
     generatedAt: NOW.toISOString(),
     ...over,
   };
@@ -189,7 +188,7 @@ describe("POST /v1/analyses (public default)", () => {
 
   it("defaults asOf to the Asia/Seoul calendar date (UTC 20:00 is already the next day in Seoul)", async () => {
     const now = new Date("2026-01-15T20:00:00Z");
-    const collect = vi.fn(async () => evidence());
+    const collect = vi.fn(async (_input: { asOf: string }) => evidence());
     const { app } = await setup({}, now, { collect, intelligence: async () => accepted(null) });
     const job = (await submit(app, { ticker: "111110" })).json();
     const { body } = await poll(app, job.statusUrl);
@@ -301,7 +300,7 @@ describe("partial results never carry a valuation", () => {
     const partial = accepted(null, {
       missingFields: ["shares.dilutedCommon", "markets[0].observations"],
       narrative: { product: "주력 제품은 반도체", industry: "업황은 회복 국면" },
-      audit: { issues: [{ code: "NO_DATASET", path: "dataset", message: "x" }], excludedDocuments: [], auditSummary: null, auditedBy: null, independentAudit: false, limitations: [] },
+      audit: { issues: [{ code: "NO_DATASET", path: "dataset", message: "x" }], excludedDocuments: [], auditSummary: null, draftedBy: null, auditedBy: null, independentAudit: false, limitations: [] },
     });
     const { body, intelligence } = await partialCase(ev, partial);
     noPrices(body);
@@ -345,7 +344,7 @@ describe("partial results never carry a valuation", () => {
     ds.competitors = [
       { id: "c1", name: "Alpha", marketId: "m1", revenue: ["2025Q1", "2025Q2", "2025Q3", "2025Q4"].map((q) => ({ quarter: q, revenue: 3e8, currency: "USD", basis: "quarterly" as const, source: { ...src, manualReference: "MODEL_ESTIMATE: 지식" }, estimate: { method: "model_knowledge" as const, basedOn: [], rationale: "분석가 지식" } })) },
     ];
-    const single = accepted(ds, { status: "single_model", crossChecked: false, audit: { issues: [], excludedDocuments: [], auditSummary: "ok", auditedBy: "claude", independentAudit: false, limitations: [] }, providers: { claude: ok("claude"), agy: err("agy", "QUOTA") }, unavailable: [{ provider: "agy", code: "QUOTA", message: "m", retryAfter: "2026-09-29T09:00:00.000Z", skippedWithoutCall: true }] });
+    const single = accepted(ds, { status: "single_model", crossChecked: false, audit: { issues: [], excludedDocuments: [], auditSummary: "ok", draftedBy: "claude", auditedBy: "claude", independentAudit: false, limitations: [] }, providers: { claude: ok("claude"), agy: err("agy", "QUOTA") }, unavailable: [{ provider: "agy", code: "QUOTA", message: "m", retryAfter: "2026-09-29T09:00:00.000Z", skippedWithoutCall: true }] });
     const { body } = await partialCase(evidence(), single);
     expect(body.status).toBe("completed");
     const r = body.result.report;
@@ -482,7 +481,7 @@ describe("partial results never carry a valuation", () => {
 
   it("a draft the review did not accept is valued provisionally when it passed the hard checks", async () => {
     const issues = [{ code: "AUDIT_UNCONFIRMED", path: "quote.priceKRW", message: "not confirmed" }];
-    const draft = accepted(null, { status: "partial", provisionalDataset: makeDataset(), audit: { issues, excludedDocuments: [], auditSummary: "x", auditedBy: "agy", independentAudit: true, limitations: [] } });
+    const draft = accepted(null, { status: "partial", provisionalDataset: makeDataset(), audit: { issues, excludedDocuments: [], auditSummary: "x", draftedBy: "claude", auditedBy: "agy", independentAudit: true, limitations: [] } });
     const { body } = await partialCase(evidence(), draft);
     expect(body.status).toBe("partial");
     expect(body.result.valuation).toMatchObject({ status: "available", grade: "provisional" });
@@ -493,7 +492,7 @@ describe("partial results never carry a valuation", () => {
 
   it("returns the raw draft dataset as rejected when the review produced no usable dataset", async () => {
     const raw = { ...makeDataset(), quote: { priceKRW: -1 } };
-    const draft = accepted(null, { status: "rejected", draftDataset: raw });
+    const draft = accepted(null, { status: "partial", draftDataset: raw });
     const { body } = await partialCase(evidence(), draft);
     noPrices(body);
     expect(body.result.partialReasons.map((r: any) => r.code)).toContain("RESEARCH_NOT_ACCEPTED");
@@ -627,7 +626,7 @@ describe("API_KEY protects costly jobs and mutations", () => {
     const config = loadConfig({ DART_API_KEY: "DARTSECRETVALUE", NAVER_CLIENT_ID: "id-value", NAVER_CLIENT_SECRET: "sec-value", API_KEY: "APIKEYVALUE", EDINET_API_KEY: "EDINETSECRET" });
     const { app } = await setup({ capabilities: config.capabilities, apiKey: config.apiKey });
     const body = (await app.inject({ url: "/health" })).body;
-    expect(JSON.parse(body).capabilities).toEqual({ dartConfigured: true, naverSearchConfigured: true, secConfigured: false, edinetConfigured: true });
+    expect(JSON.parse(body).capabilities).toEqual({ dartConfigured: true, naverSearchConfigured: true, secConfigured: false, edinetConfigured: true, shortTermForecast: false });
     for (const v of ["DARTSECRETVALUE", "sec-value", "APIKEYVALUE", "EDINETSECRET"]) expect(body).not.toContain(v);
     expect(config.secrets()).toEqual(expect.arrayContaining(["DARTSECRETVALUE", "APIKEYVALUE", "EDINETSECRET"]));
   });
@@ -1407,5 +1406,30 @@ describe("doctor and scripts", () => {
     expect(login).toContain("ENV_ALLOWLIST"); // the login child gets an allowlisted environment, never API-key variables
     expect(login).not.toMatch(/GOOGLE_API_KEY|GOOGLE_CLOUD_PROJECT/);
     expect(await readFile(".env.example", "utf8")).not.toMatch(/=\s*[A-Za-z0-9]{20,}/);
+  });
+});
+
+describe("market-data sanity checks and the prediction log", () => {
+  it("marks a P/E outside the traded range provisional, grades it, and logs the prediction", async () => {
+    const recorded: unknown[] = [];
+    const perReference = { ttmEpsKRW: 4000, quarters: ["2025Q1", "2025Q2", "2025Q3", "2025Q4"], latestClose: { date: "2026-01-10", closeKRW: 50000 }, current: 25, window: { from: "2025-06-01", to: "2026-01-10", sessions: 150, min: 20, median: 25, max: 30 }, sourceUrls: [] };
+    const t = await setup({}, NOW, { collect: async () => evidence({ market: { perReference } }), intelligence: async () => accepted(), recordPrediction: async (r) => void recorded.push(r) });
+    const job = (await submit(t.app)).json();
+    const { body } = await poll(t.app, job.statusUrl);
+    expect(body.result.partialReasons.map((r: any) => r.code)).toContain("PE_OUTSIDE_OBSERVED_RANGE");
+    expect(body.result.valuation.grade).toBe("provisional");
+    expect(body.result.recommendationQuality.tier).toBe("low");
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ jobId: job.id, ticker: "111110", valuation: { grade: "provisional" }, warnings: expect.arrayContaining(["PE_OUTSIDE_OBSERVED_RANGE"]) });
+  });
+
+  it("keeps a valuation verified when the P/E sits in the traded range, and survives a failing log", async () => {
+    const perReference = { ttmEpsKRW: 4000, quarters: ["2025Q1", "2025Q2", "2025Q3", "2025Q4"], latestClose: { date: "2026-01-10", closeKRW: 50000 }, current: 12, window: { from: "2025-06-01", to: "2026-01-10", sessions: 150, min: 8, median: 11, max: 14 }, sourceUrls: [] };
+    const t = await setup({}, NOW, { collect: async () => evidence({ market: { perReference } }), intelligence: async () => accepted(), recordPrediction: async () => { throw new Error("disk full"); } });
+    const job = (await submit(t.app)).json();
+    const { body } = await poll(t.app, job.statusUrl);
+    expect(body.result.partialReasons.map((r: any) => r.code)).not.toContain("PE_OUTSIDE_OBSERVED_RANGE");
+    expect(body.result.notes.join(" ")).toMatch(/예측 기록/);
+    expect(body.result.analysis).not.toBeNull();
   });
 });

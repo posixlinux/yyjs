@@ -14,6 +14,8 @@ import { registerStrategyRoutes } from "./strategy.js";
 import { DEFAULT_HYPOTHESIS_PARAMS } from "../strategy/config.js";
 import { STRATEGY_VERSION } from "../strategy/version.js";
 import type { StrategyService } from "../strategy/service.js";
+import type { ForecastService } from "../forecast/service.js";
+import { classifySecurity, describeRejections, KRX_TICKER } from "../domain/security.js";
 
 const digest = (s: string) => createHash("sha256").update(s).digest();
 const TickerParam = z.object({ ticker: z.string().regex(/^\d{6}$/, "six-digit KOSPI ticker") });
@@ -27,6 +29,7 @@ export function buildApp(
   config: Pick<Config, "apiKey" | "demoEnabled" | "logLevel"> & { capabilities?: Record<string, boolean>; defaultModels?: Config["defaultModels"] },
   universe: UniverseProvider = new UniverseProvider(),
   strategy?: StrategyService,
+  forecasts?: ForecastService,
 ): FastifyInstance {
   const app = Fastify({
     bodyLimit: 1_000_000, // requests are small; oversize -> 413
@@ -70,7 +73,7 @@ export function buildApp(
     demoEnabled: config.demoEnabled,
     apiKeyRequired: !!config.apiKey, // for public analysis/research jobs and strategy records
     jobs: research.jobs.stats(),
-    capabilities: config.capabilities ?? {}, // booleans only, e.g. dartConfigured; never key material
+    capabilities: { ...(config.capabilities ?? {}), shortTermForecast: !!forecasts }, // booleans only; never key material
     defaultModels: config.defaultModels ?? ["claude"], // public analysis models when a request names none
   }));
 
@@ -154,6 +157,32 @@ export function buildApp(
     const { wait } = WaitQuery.parse(req.query);
     return research.waitJob(IdParam.parse(req.params).id, "research", (wait ?? 0) * 1000);
   });
+
+  // Short-term (1..3 session) direction/return forecast with its walk-forward backtest (src/forecast). Optional.
+  if (forecasts) {
+    const ForecastQuery = z.object({
+      peers: z.string().max(400).optional().transform((v) => (v ? v.split(",").map((x) => x.trim().toUpperCase()).filter(Boolean) : undefined)),
+      peerCount: z.coerce.number().int().min(0).max(40).optional(),
+    });
+    app.get("/v1/forecast/:ticker", async (req) => {
+      requireKey(req.headers);
+      const { ticker } = z.object({ ticker: z.string().regex(KRX_TICKER, "six-character KOSPI/KOSDAQ ticker") }).parse(req.params);
+      const q = ForecastQuery.parse(req.query);
+      if (q.peers?.some((p) => !KRX_TICKER.test(p))) throw new AppError(400, "VALIDATION_ERROR", "peers must be comma-separated six-character KRX tickers");
+      const r = classifySecurity({ ticker });
+      if (r.length) throw new AppError(422, "NOT_COMMON_STOCK", `Ticker ${ticker} is not a KOSPI/KOSDAQ common stock: ${describeRejections(r)}`, r);
+      return forecasts.run(ticker, { peers: q.peers, peerCount: q.peerCount });
+    });
+    app.get("/v1/forecast-ranking", async (req) => {
+      requireKey(req.headers);
+      const q = z.object({ exchange: z.enum(["KOSPI", "KOSDAQ"]).default("KOSPI"), count: z.coerce.number().int().min(3).max(40).default(30), horizon: z.coerce.number().int().min(1).max(3).default(1) }).parse(req.query);
+      return forecasts.rank({ exchange: q.exchange, count: q.count, horizon: q.horizon as 1 | 2 | 3 });
+    });
+    app.get("/v1/forecast-scores", async (req) => {
+      requireKey(req.headers);
+      return forecasts.scoreLog();
+    });
+  }
 
   // earnings-gap-auto/v1 research/paper-trading slice (docs/STRATEGY_SPEC.md); a separate experiment surface from
   // the product-market model above. Optional: absent unless main.ts wires a StrategyService, so existing deployments

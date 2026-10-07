@@ -175,3 +175,34 @@ describe("scenario model (fixture: market 1e9 USD, share 10%, fx 1000, margin 20
     expect(JSON.stringify(a)).not.toMatch(/probabilit(y|ies)":/);
   });
 });
+
+describe("trailing-four-quarter EPS", () => {
+  it("applies the P/E to three reported quarters plus the forecast quarter when they are available", () => {
+    const ds = makeDataset();
+    const plain = analyze(ds, AS_OF);
+    const t = plain.targetQuarter; // 2026Q1
+    expect(t).toBe("2026Q1");
+    const reported = [{ quarter: "2025Q2", epsKRW: 100 }, { quarter: "2025Q3", epsKRW: 200 }, { quarter: "2025Q4", epsKRW: 300 }];
+    const a = analyze(ds, AS_OF, { reportedEps: reported });
+    for (const [i, s] of a.scenarios.entries()) {
+      const v = s.valuation, p = plain.scenarios[i]!.valuation;
+      if (v.status !== "available" || p.status !== "available") throw new Error("expected available");
+      expect(p.epsBasis).toBe("quarter_x4");
+      expect(v.epsBasis).toBe("ttm_actual_plus_forecast");
+      expect(v.annualizedEpsKRW).toBeCloseTo(600 + v.quarterlyEpsKRW, 6);
+      expect(v.targetPriceKRW).toBeCloseTo((600 + v.quarterlyEpsKRW) * v.peMultiple, 6);
+    }
+  });
+
+  it("falls back to quarter x 4 and says which reported quarter was missing", () => {
+    const a = analyze(makeDataset(), AS_OF, { reportedEps: [{ quarter: "2025Q3", epsKRW: 1 }, { quarter: "2025Q4", epsKRW: 1 }] });
+    const v = a.scenarios[0]!.valuation;
+    expect(v.status === "available" && v.epsBasis).toBe("quarter_x4");
+    expect(a.dataQuality.warnings.join(" ")).toMatch(/2025Q2.*x 4/);
+  });
+
+  it("refuses a P/E price when trailing EPS is not positive", () => {
+    const a = analyze(makeDataset(), AS_OF, { reportedEps: [{ quarter: "2025Q2", epsKRW: -1e9 }, { quarter: "2025Q3", epsKRW: 0 }, { quarter: "2025Q4", epsKRW: 0 }] });
+    expect(a.scenarios.every((s) => s.valuation.status === "unavailable")).toBe(true);
+  });
+});

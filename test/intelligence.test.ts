@@ -118,8 +118,8 @@ describe("dual-provider acceptance", () => {
     expect(r.audit.issues).toEqual([]);
     expect(r.status).toBe("accepted");
     expect(r.dataset?.company.ticker).toBe("005930");
-    expect(r.providers.claude.status).toBe("ok");
-    expect(r.providers.agy.status).toBe("ok");
+    expect(r.providers.claude!.status).toBe("ok");
+    expect(r.providers.agy!.status).toBe("ok");
     expect(r.citations).toHaveLength(8);
     expect(r.audit.limitations.join(" ")).toMatch(/cannot prove/);
   });
@@ -150,7 +150,7 @@ describe("dual-provider acceptance", () => {
     expect(seen.map(isAuditPrompt)).toEqual([false, true]); // all checks ran: draft, then a separate audit call
     expect(seen[1]!.stdin).toContain("같은 모델이 작성했습니다"); // the self-audit prompt is adversarial
     expect(r.dataset?.company.ticker).toBe("005930");
-    expect(r.providers.agy.code).toBe("CLI_NOT_FOUND");
+    expect(r.providers.agy!.code).toBe("CLI_NOT_FOUND");
     expect(r.unavailable).toMatchObject([{ provider: "agy", code: "CLI_NOT_FOUND", skippedWithoutCall: false }]);
     expect(r.audit.limitations.join(" ")).toMatch(/Not cross-checked.*audited its own draft/);
     expect(r.narrative).not.toBeNull();
@@ -486,8 +486,8 @@ describe("provider failures", () => {
   ])("claude %s -> %s: not an expiry, so agy is not asked to take over", async (_n, res, code) => {
     let agyCalls = 0;
     const r = await analyzeEvidence(input(), opts(route(() => res as RunResult, () => (agyCalls++, agyOut(audit())))));
-    expect(r.providers.claude.code).toBe(code);
-    expect(r.providers.agy.status).toBe("skipped");
+    expect(r.providers.claude!.code).toBe(code);
+    expect(r.providers.agy!.status).toBe("skipped");
     expect(r.status).toBe("unavailable");
     expect(r.dataset).toBeNull();
     expect(r.unavailable).toEqual([]);
@@ -496,22 +496,22 @@ describe("provider failures", () => {
 
   it("BAD_JSON describes the reply's shape (cut off vs prose) without quoting it", async () => {
     const r = await run(ok(JSON.stringify({ subtype: "success", result: '{"dataset":{"company":{"name":"비밀 원문' })));
-    expect(r.providers.claude.code).toBe("BAD_JSON");
-    expect(r.providers.claude.message).toContain("startsWithBrace=true endsWithBrace=false");
-    expect(r.providers.claude.message).toContain("cut off");
-    expect(r.providers.claude.message).not.toContain("비밀");
+    expect(r.providers.claude!.code).toBe("BAD_JSON");
+    expect(r.providers.claude!.message).toContain("startsWithBrace=true endsWithBrace=false");
+    expect(r.providers.claude!.message).toContain("cut off");
+    expect(r.providers.claude!.message).not.toContain("비밀");
   });
 
   it("a reply holding two fenced JSON objects is not BAD_JSON: the last schema-valid one is used", async () => {
     const two = "```json\n" + JSON.stringify(proposal()) + "\n```\n\nCorrected:\n\n```json\n" + JSON.stringify(proposal()) + "\n```";
     const r = await run(ok(JSON.stringify({ subtype: "success", result: two })));
-    expect(r.providers.claude.code).toBe("OK");
+    expect(r.providers.claude!.code).toBe("OK");
   });
 
   it("a schema-valid object followed by a non-matching one still uses the valid one", async () => {
     const text = "```json\n" + JSON.stringify(proposal()) + '\n{"note":"a brace } in a string"}\n```';
     const r = await run(ok(JSON.stringify({ subtype: "success", result: text })));
-    expect(r.providers.claude.code).toBe("OK");
+    expect(r.providers.claude!.code).toBe("OK");
   });
 
   it("claude draft TIMEOUT falls back to a healthy agy for the draft, and claude is never called again as auditor in that run", async () => {
@@ -526,7 +526,7 @@ describe("provider failures", () => {
       ),
     );
     expect(r.providers.claude).toMatchObject({ status: "error", code: "TIMEOUT" });
-    expect(r.providers.agy.status).toBe("ok");
+    expect(r.providers.agy!.status).toBe("ok");
     expect(r.status).toBe("single_model"); // agy drafted AND self-audited: claude, having timed out, is excluded as auditor
     expect(r.crossChecked).toBe(false);
     expect(r.audit).toMatchObject({ auditedBy: "agy", independentAudit: false });
@@ -537,7 +537,7 @@ describe("provider failures", () => {
 
   it("agy denied_actions (it tried a tool) invalidate the audit", async () => {
     const r = await analyzeEvidence(input(), opts(route(() => claudeOut(proposal()), () => agyOut(audit(), { denied_actions: [{ action: "command", display_name: "RunCommand" }] }))));
-    expect(r.providers.agy.code).toBe("TOOL_USE_DETECTED");
+    expect(r.providers.agy!.code).toBe("TOOL_USE_DETECTED");
     expect(r.dataset).toBeNull();
     expect(r.status).toBe("partial");
   });
@@ -545,7 +545,7 @@ describe("provider failures", () => {
   it("a quota envelope that agy printed before our kill timer fired is still recognised as expiry", async () => {
     const late = { ...agyErr(QUOTA_MSG), timedOut: true, exitCode: null };
     const r = await analyzeEvidence(input(), opts(route(claudeBoth(), () => late)));
-    expect(r.providers.agy.code).toBe("QUOTA");
+    expect(r.providers.agy!.code).toBe("QUOTA");
     expect(r.status).toBe("single_model");
   });
 
@@ -553,9 +553,9 @@ describe("provider failures", () => {
     const T = Date.parse("2026-09-29T00:00:00Z");
     const msg = `RESOURCE_EXHAUSTED key AIzaSyA1234567890123456789012345 at /home/x/.gemini Resets in 2h30m.`;
     const r = await analyzeEvidence(input(), opts(route(claudeBoth(), () => agyErr(msg)), { now: () => new Date(T) }));
-    expect(r.providers.agy.code).toBe("QUOTA");
-    expect(r.providers.agy.message).not.toContain("AIza");
-    expect(r.providers.agy.message).not.toContain("/home/x");
+    expect(r.providers.agy!.code).toBe("QUOTA");
+    expect(r.providers.agy!.message).not.toContain("AIza");
+    expect(r.providers.agy!.message).not.toContain("/home/x");
     expect(r.status).toBe("single_model");
     expect(r.unavailable[0]!.retryAfter).toBe(new Date(T + 2.5 * 3_600_000).toISOString());
   });
@@ -564,7 +564,7 @@ describe("provider failures", () => {
     let agyCalls = 0;
     const runner = () => route(claudeBoth(), () => (agyCalls++, ok("<html>")));
     const r = await analyzeEvidence(input(), opts(runner()));
-    expect(r.providers.agy.code).toBe("BAD_ENVELOPE");
+    expect(r.providers.agy!.code).toBe("BAD_ENVELOPE");
     expect(r.status).toBe("single_model");
     expect(r.audit).toMatchObject({ auditedBy: "claude", independentAudit: false });
     expect(r.unavailable).toMatchObject([{ provider: "agy", code: "BAD_ENVELOPE", skippedWithoutCall: false }]);
@@ -579,7 +579,7 @@ describe("provider failures", () => {
     expect(r.status).toBe("single_model");
     expect(r.dataset?.company.ticker).toBe("005930");
     expect(seen.map(isAuditPrompt)).toEqual([false, true]);
-    expect(r.providers.agy.code).toBe("TIMEOUT");
+    expect(r.providers.agy!.code).toBe("TIMEOUT");
     expect(issueCodes(r)).not.toContain("PROVIDER_UNAVAILABLE");
   });
 
@@ -591,9 +591,9 @@ describe("provider failures", () => {
   });
 
   it("agy returning status ERROR without a quota/login hint is BAD_ENVELOPE; an empty response is too", async () => {
-    expect((await analyzeEvidence(input(), opts(route(() => claudeOut(proposal()), () => agyErr("Internal error"))))).providers.agy.code).toBe("BAD_ENVELOPE");
+    expect((await analyzeEvidence(input(), opts(route(() => claudeOut(proposal()), () => agyErr("Internal error"))))).providers.agy!.code).toBe("BAD_ENVELOPE");
     const empty = ok(JSON.stringify({ status: "SUCCESS", response: "  " }));
-    expect((await analyzeEvidence(input(), opts(route(() => claudeOut(proposal()), () => empty)))).providers.agy.code).toBe("BAD_ENVELOPE");
+    expect((await analyzeEvidence(input(), opts(route(() => claudeOut(proposal()), () => empty)))).providers.agy!.code).toBe("BAD_ENVELOPE");
   });
 
   it("a throwing runner is contained", async () => {
@@ -813,7 +813,7 @@ describe("isolation and injection", () => {
     let calls = 0;
     const r = await analyzeEvidence({ ...input(), documents: [doc("a"), doc("b"), doc("c")] }, opts(route(() => claudeOut(proposal({ dataset: null, citations: [], missingFields: ["x"] })), () => (calls++, agyOut(audit())))));
     expect(calls).toBe(0);
-    expect(r.providers.agy.code).toBe("OUTPUT_LIMIT");
+    expect(r.providers.agy!.code).toBe("OUTPUT_LIMIT");
     expect(r.unavailable).toMatchObject([{ provider: "agy", code: "OUTPUT_LIMIT", retryAfter: r.generatedAt }]); // this run only: too large is not an expiry
   });
 
@@ -1068,7 +1068,7 @@ describe("expired providers are skipped, not failed", () => {
     const runner = route(() => ({ ...ok(""), exitCode: 1, stderr: "Please log in" }), (r) => (seen.push(r), agyBoth()(r)));
     const r = await analyzeEvidence(input(), opts(runner));
     expect(r.providers.claude).toMatchObject({ status: "error", code: "AUTH_REQUIRED" });
-    expect(r.providers.agy.status).toBe("ok");
+    expect(r.providers.agy!.status).toBe("ok");
     expect(seen.map(isAuditPrompt)).toEqual([false, true]);
     expect(seen[0]!.args[0]).toContain("초안을 작성");
     expect(r.status).toBe("single_model");
@@ -1081,7 +1081,7 @@ describe("expired providers are skipped, not failed", () => {
   it("Claude's own quota message inside an is_error envelope counts as expiry", async () => {
     const limit = ok(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "You've hit your limit · resets 3pm" }));
     const r = await analyzeEvidence(input(), opts(route(() => limit, agyBoth())));
-    expect(r.providers.claude.code).toBe("QUOTA");
+    expect(r.providers.claude!.code).toBe("QUOTA");
     expect(r.status).toBe("single_model");
   });
 
@@ -1089,13 +1089,13 @@ describe("expired providers are skipped, not failed", () => {
     const T = Date.parse("2026-09-29T13:00:00Z"); // 22:00 KST, well before any 2:20pm/3pm target -> resets "tomorrow"
     const session = ok(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "You have hit your session limit · resets 2:20pm" }));
     const r = await analyzeEvidence(input(), opts(route(() => session, agyBoth()), at(T)));
-    expect(r.providers.claude.code).toBe("QUOTA");
+    expect(r.providers.claude!.code).toBe("QUOTA");
     expect(r.status).toBe("single_model");
     expect(r.unavailable).toContainEqual(expect.objectContaining({ provider: "claude", code: "QUOTA" }));
 
     const weekly = { ...ok(""), exitCode: 1, stderr: "You've hit your weekly limit, resets in 2h30m." };
     const r2 = await analyzeEvidence(input(), opts(route(() => weekly, agyBoth()), at(T)));
-    expect(r2.providers.claude.code).toBe("QUOTA");
+    expect(r2.providers.claude!.code).toBe("QUOTA");
     expect(r2.status).toBe("single_model");
   });
 
@@ -1128,7 +1128,7 @@ describe("expired providers are skipped, not failed", () => {
     let agyCalls = 0;
     const runner = route(() => claudeOut(proposal()), () => (agyCalls++, { ...ok(""), timedOut: true, exitCode: null }));
     const a = await analyzeEvidence(input(), opts(runner, at(T0)));
-    expect(a.providers.agy.code).toBe("TIMEOUT");
+    expect(a.providers.agy!.code).toBe("TIMEOUT");
     expect(a.status).toBe("partial");
     await analyzeEvidence(input(), opts(runner, at(T0 + 1000)));
     expect(agyCalls).toBe(2);

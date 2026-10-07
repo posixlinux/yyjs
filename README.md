@@ -24,6 +24,10 @@ flowchart TD
   I --> K["다음 분기말 비관·기본·낙관 가격"]
 ```
 
+## 단기 주가 예측 (1~3거래일)
+
+다음 1~3거래일 뒤 **상승/하락 확률과 예상 등락률·80% 범위**를 워크포워드 백테스트와 함께 냅니다(LLM 미사용). 웹 화면의 **단기 주가 예측** 모드와 **오를 확률 순위** 버튼, `GET /v1/forecast/:ticker`, `GET /v1/forecast-ranking`, `npm run forecast -- 005930` / `npm run forecast -- --rank`. 예측은 `data/records/forecasts.jsonl`에 기록되고 `npm run forecast -- --score`로 실제 종가와 채점합니다. 방법·자료·한계는 [docs/FORECAST.md](docs/FORECAST.md).
+
 ## 빠른 시작
 
 사전 준비: Node.js ≥ 22, **Claude Code CLI(`claude`)가 PATH에 있고 로그인되어 있을 것**(기본 분석 모델). 선택 사항: OpenAI Codex CLI(`codex`, ChatGPT 계정 로그인), Antigravity CLI(`agy`)와 Google 계정. 분석 모델은 요청마다 고릅니다(아래 "분석 모델 선택").
@@ -276,6 +280,10 @@ npm run typecheck    # src·test·scripts 전체 타입 검사 (npm run build �
 npm run doctor       # 환경 점검 (--json 지원)
 npm run smoke:public -- 005930             # 실제 Naver(+DART 키 있으면 DART) 수집 스모크, LLM 미사용 (--no-dart 로 DART 제외)
 npm run smoke:job                          # 실제 수집기로 HTTP POST /v1/research → 폴링 (인프로세스, LLM 미사용)
+npm run forecast -- --check                # 단기 예측 자료 출처 점검 (시세·지수·환율·종목 목록)
+npm run forecast -- 005930                 # 1~3거래일 예측 + 백테스트 (--rank 순위, --score 채점)
+npm run forecast:synthetic                 # 단기 예측 합성 벤치마크 (네트워크 불필요)
+npm run predictions:score                  # 분석 예측 기록(목표가·한 분기 추정)을 실제 EPS·주가로 채점
 ```
 
 ```

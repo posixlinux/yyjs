@@ -15,7 +15,7 @@ import {
 } from "../src/intelligence/index.js";
 import { buildEnv } from "../src/intelligence/runner.js";
 import { parseModels } from "../src/config.js";
-import { setup } from "../test/app.js";
+import { setup } from "./app.js";
 
 const HOME = mkdtempSync(join(tmpdir(), "intel-codex-home-"));
 afterAll(() => rmSync(HOME, { recursive: true, force: true }));
@@ -82,13 +82,9 @@ const audit = (over: Record<string, unknown> = {}) => ({
 const ok = (stdout: string): RunResult => ({ stdout, stderr: "", exitCode: 0, timedOut: false, outputLimitExceeded: false });
 const claudeOut = (p: unknown) => ok(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "```json\n" + JSON.stringify(p) + "\n```" }));
 const agyOut = (a: unknown, extra: Record<string, unknown> = {}) => ok(JSON.stringify({ conversation_id: "c", status: "SUCCESS", response: JSON.stringify(a), usage: {}, ...extra }));
-const agyErr = (error: string) => ok(JSON.stringify({ conversation_id: "c", status: "ERROR", response: "", error, usage: {} }));
-const QUOTA_MSG = "API error (attempt 5): RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h30m.";
 
 // A provider that both drafts and (when the other one is expired) audits its own draft answers by prompt type.
 const isAuditPrompt = (r: RunRequest) => r.stdin.includes("독립 감사인") || r.args.some((a) => a.includes("독립 감사인"));
-const claudeBoth = (p: unknown = proposal(), a: unknown = audit()) => (r: RunRequest) => claudeOut(isAuditPrompt(r) ? a : p);
-const agyBoth = (p: unknown = proposal(), a: unknown = audit()) => (r: RunRequest) => agyOut(isAuditPrompt(r) ? a : p);
 
 const CLAUDE = "/opt/bin/claude";
 const AGY = "/opt/bin/agy";

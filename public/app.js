@@ -303,7 +303,13 @@ function renderReport(rep) {
   return section("분석 보고", ...parts);
 }
 
-function renderAnalysis(a, valuation) {
+const TIER = { high: ["추천 신뢰 등급 높음", "ok"], medium: ["추천 신뢰 등급 보통", "warn"], low: ["추천 신뢰 등급 낮음", "bad"] };
+const TIER_REASON = { PE_OUTSIDE_OBSERVED_RANGE: "가정한 PER이 실제 거래된 PER 범위를 벗어남", CONSENSUS_GAP_LARGE: "기본 시나리오가 컨센서스와 30% 넘게 다름", "provisional valuation": "잠정 가격", "single model (no cross-check)": "단일 모델(교차검증 없음)" };
+function renderQuality(q) {
+  if (!q || !q.tier) return null;
+  return el("p", {}, badge(TIER, q.tier), q.reasons.length ? ` ${q.reasons.map((x) => TIER_REASON[x] || x.replace(/^data grounding /, "데이터 근거 ")).join(" · ")}` : " 모든 점검 통과");
+}
+function renderAnalysis(a, valuation, quality) {
   if (!a) return null;
   const sc = a.scenarios || [];
   const th = el("tr", {}, el("th", { text: "" }), ...sc.map((s) => el("th", { text: { bear: "비관", base: "기본", bull: "낙관" }[s.scenario] || s.scenario })));
@@ -315,18 +321,19 @@ function renderAnalysis(a, valuation) {
       line("귀속 매출", (s) => big(s.totals && s.totals.revenueKRW)),
       line("영업이익", (s) => big(s.totals && s.totals.operatingProfitKRW)),
       line("보통주 귀속이익", (s) => big(s.totals && s.totals.commonEarningsKRW)),
-      line("연환산 EPS", (s) => (v(s).status === "available" ? won(v(s).annualizedEpsKRW) : "-")),
+      line("연간 EPS(PER 적용)", (s) => (v(s).status === "available" ? `${won(v(s).annualizedEpsKRW)}${v(s).epsBasis === "quarter_x4" ? " (분기×4)" : " (최근 3분기 실적+예측)"}` : "-")),
       line("적용 PER", (s) => (v(s).status === "available" ? `${v(s).peMultiple}배` : "-")),
       line("목표가(프록시)", (s) => (v(s).status === "available" ? won(v(s).targetPriceKRW) : "산출 불가")),
       line("현재가 대비", (s) => (v(s).status === "available" ? pct(v(s).upsidePct) : "-")),
     )));
   return section(`가치 계산 — 목표 분기 ${a.targetQuarter || ""}`,
     el("p", { class: "small", text: `현재가 ${won(a.facts && a.facts.quote && a.facts.quote.priceKRW)} 기준 · 밸류에이션 상태: ${valuation ? valuation.status : "-"}` }),
+    renderQuality(quality),
     valuation && valuation.grade === "provisional"
       ? el("div", { class: "box warn" }, el("strong", { text: "잠정 가격: " }), "일부 검증을 통과하지 못했거나 서버가 보정한 입력으로 계산했습니다. 아래 '주의 사항'을 확인하세요.")
       : null,
     table,
-    el("p", { class: "small", text: "목표가는 (다음 분기 EPS × 4) × 시나리오 PER 이며 실제 주가 예측이 아닌 밸류에이션 프록시입니다." }),
+    el("p", { class: "small", text: "목표가는 연간 EPS(직전 3개 분기 실적 + 예측 분기, 실적이 없으면 예측 분기 × 4) × 시나리오 PER 이며 실제 주가 예측이 아닌 밸류에이션 프록시입니다." }),
     (a.dataQuality && a.dataQuality.warnings || []).length ? el("ul", { class: "plain" }, a.dataQuality.warnings.map((w) => el("li", { text: w }))) : null,
     el("details", {}, el("summary", { text: "한계" }), el("ul", { class: "plain" }, (a.limitations || []).map((w) => el("li", { text: w })))));
 }
@@ -509,7 +516,7 @@ function renderJob(job, startedAt) {
 
     const rep = renderReport(r.report);
     if (rep) kids.push(rep);
-    const a = renderAnalysis(r.analysis, r.valuation);
+    const a = renderAnalysis(r.analysis, r.valuation, r.recommendationQuality);
     if (a) kids.push(a);
     for (const x of [renderStrategyAuto(r.strategyAuto), renderResearch(r.research), renderEvidence(r.evidence)]) if (x) kids.push(x);
 
@@ -533,11 +540,74 @@ function renderJob(job, startedAt) {
   return updateAndMaybeStop;
 }
 
+// ---- short-term forecast ----------------------------------------------------------------------------------------
+
+const CONF = { high: ["높음", "ok"], medium: ["보통", "warn"], low: ["낮음 · 우위 없음", "bad"] };
+const rate = (v) => (typeof v === "number" && Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : "-");
+function renderForecast(r) {
+  const rows = r.horizons.map((h) => {
+    const up = h.direction === "up";
+    const b = h.backtest;
+    return el("tr", {},
+      el("td", { text: `${h.horizon}거래일 후` }),
+      el("td", {}, el("strong", { text: up ? "▲ 상승" : "▼ 하락" }), ` ${rate(up ? h.probabilityUp : 1 - h.probabilityUp)}`),
+      el("td", { text: `${pct(h.expectedReturnPct)} (${won(h.expectedPriceKRW)})` }),
+      el("td", { text: `${pct(h.range80Pct[0])} ~ ${pct(h.range80Pct[1])}` }),
+      el("td", {}, badge(CONF, h.confidence), h.actionable ? el("span", { class: "badge ok", text: "비용 넘는 기대수익" }) : null),
+      el("td", { text: `${rate(b.accuracy)} (n=${b.n}; 항상상승 ${rate(b.alwaysUpAccuracy)}, 모멘텀 ${rate(b.momentumAccuracy)}; 확신 상위30% ${rate(b.confidentAccuracy)}; 80% 범위 실제 적중 ${rate(b.range80Coverage)})` }));
+  });
+  return el("div", {},
+    el("h2", { text: `${r.ticker} 단기 주가 예측` }),
+    el("p", { class: "small", text: `기준일 ${r.asOfDate} 종가 ${won(r.lastCloseKRW)} · 학습 종목 ${r.trainedOn.tickers.length}개 · 표본 ${r.trainedOn.samples.toLocaleString("ko-KR")}개` }),
+    el("div", { class: "tablewrap" }, el("table", {},
+      el("thead", {}, el("tr", {}, ...["기간", "방향·확률", "예상 등락(가격)", "80% 범위", "신뢰도", "백테스트 적중률"].map((t) => el("th", { text: t })))),
+      el("tbody", {}, ...rows))),
+    el("ul", { class: "small" }, ...r.notes.map((n) => el("li", { text: n }))),
+    el("p", { class: "small", text: "확률은 과거 표본 외(out-of-sample) 예측으로 보정한 값입니다. 백테스트에서 단순 기준(항상 상승·모멘텀)을 유의하게 넘지 못하면 신뢰도 '낮음'이며, 그 방향은 동전 던지기와 다르지 않습니다. 투자 권고가 아닙니다." }));
+}
+
+function renderRanking(r) {
+  const b = r.pooledBacktest;
+  return el("div", {},
+    el("h2", { text: `${r.exchange} 상위 종목 ${r.horizon}거래일 상승 확률 순위` }),
+    el("p", { class: "small", text: `종목군 워크포워드 백테스트: 적중 ${rate(b.accuracy)} (n=${b.n}; 항상상승 ${rate(b.alwaysUpAccuracy)}, 모멘텀 ${rate(b.momentumAccuracy)}; 80% 범위 실제 적중 ${rate(b.range80Coverage)}) · 우위 ${b.edge === "detected" ? "있음" : "없음"}` }),
+    el("div", { class: "tablewrap" }, el("table", {},
+      el("thead", {}, el("tr", {}, ...["순위", "종목", "상승 확률", "예상 등락", "80% 범위", "신뢰도", "종목 백테스트"].map((t) => el("th", { text: t })))),
+      el("tbody", {}, ...r.ranked.map((x, i) => el("tr", {},
+        el("td", { text: String(i + 1) }),
+        el("td", { text: `${x.name || ""} (${x.ticker})` }),
+        el("td", { text: rate(x.probabilityUp) }),
+        el("td", { text: `${pct(x.expectedReturnPct)} (${won(x.lastCloseKRW * (1 + x.expectedReturnPct / 100))})` }),
+        el("td", { text: `${pct(x.range80Pct[0])} ~ ${pct(x.range80Pct[1])}` }),
+        el("td", {}, badge(CONF, x.confidence), x.actionable ? el("span", { class: "badge ok", text: "비용 넘는 기대수익" }) : null),
+        el("td", { text: `${rate(x.backtestAccuracy)} (n=${x.backtestN})` })))))),
+    el("ul", { class: "small" }, ...r.notes.map((n) => el("li", { text: n }))));
+}
+
+$("rank").addEventListener("click", async () => {
+  if (running) return;
+  running = true;
+  $("go").disabled = $("rank").disabled = true;
+  const out = $("out");
+  out.hidden = false;
+  const ex = $("rankExchange") ? $("rankExchange").value : "KOSPI";
+  const hz = $("rankHorizon") ? $("rankHorizon").value : "1";
+  out.replaceChildren(el("p", { class: "small", text: `${ex === "KOSDAQ" ? "코스닥" : "코스피"} 상위 30종목의 시세 이력을 받아 한 번에 학습·백테스트하는 중입니다 (1~2분)…` }));
+  try {
+    out.replaceChildren(renderRanking(await api(`/v1/forecast-ranking?exchange=${ex}&count=30&horizon=${hz}`, { headers: headers() })));
+  } catch (e) {
+    out.replaceChildren(el("div", { class: "box bad" }, el("strong", { text: `${e.code || "ERROR"}: ` }), e.message));
+  } finally {
+    running = false;
+    $("go").disabled = $("rank").disabled = false;
+  }
+});
+
 // ---- run ----------------------------------------------------------------------------------------------------------
 
 // The model choice only applies to a full analysis.
 $("form").addEventListener("change", (e) => {
-  if (e.target && e.target.name === "mode") $("models").disabled = e.target.value === "research";
+  if (e.target && e.target.name === "mode") $("models").disabled = e.target.value !== "analysis";
 });
 
 let running = false;
@@ -560,6 +630,12 @@ $("form").addEventListener("submit", async (ev) => {
   const out = $("out");
   let updateJob = null;
   try {
+    if (mode === "forecast") {
+      out.hidden = false;
+      out.replaceChildren(el("p", { class: "small", text: "시세 이력을 내려받아 학습·백테스트하는 중입니다 (동종 대형주 20개 포함, 30초~1분)…" }));
+      out.replaceChildren(renderForecast(await api(`/v1/forecast/${ticker}`, { headers: headers() })));
+      return;
+    }
     const started = await api(mode === "research" ? "/v1/research" : "/v1/analyses", { method: "POST", headers: headers(), body: JSON.stringify(mode === "research" ? body : { ...body, mode: "public", models }) });
     out.hidden = false;
     // Render once while waiting. Status updates must not replace the DOM (or reset selection/expanded details).

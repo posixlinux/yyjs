@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { compareQuarterlyConsensus } from "../src/strategy/quarterly-consensus.js";
 import { computeForecastBridge } from "../src/strategy/earnings.js";
 import { evaluateAutoStrategy } from "../src/strategy/auto.js";
-import { DECISION_AT, makeSingleQuarterForecast } from "../test/strategy/fixture.js";
+import { DECISION_AT, makeSingleQuarterForecast } from "./strategy/fixture.js";
 import type { QuarterlyConsensus } from "../src/collection/types.js";
 
 const forecast = makeSingleQuarterForecast();

@@ -4,7 +4,7 @@ import { AuditSchema, ProposalSchema } from "../src/intelligence/types.js";
 import { verifyProposal } from "../src/intelligence/verify.js";
 import { analyze } from "../src/model/model.js";
 import { JobManager } from "../src/research/jobs.js";
-import { AS_OF, makeDataset } from "../test/fixture.js";
+import { AS_OF, makeDataset } from "./fixture.js";
 
 const proposal = (dataset: unknown) => ({ dataset, missingFields: [], narrative: { product: "p", industry: "i" }, citations: [], assumptions: [], limitations: [] });
 

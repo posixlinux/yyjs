@@ -17,7 +17,10 @@
     "agy:login": "node scripts/agy-login.mjs",
     "smoke:public": "tsx --env-file-if-exists=.env scripts/smoke-public.ts",
     "smoke:job": "tsx --env-file-if-exists=.env scripts/smoke-job.ts",
-    "strategy": "tsx --env-file-if-exists=.env scripts/strategy-cli.ts"
+    "strategy": "tsx --env-file-if-exists=.env scripts/strategy-cli.ts",
+    "forecast:synthetic": "tsx scripts/forecast-synthetic.ts",
+    "forecast": "tsx --env-file-if-exists=.env scripts/forecast-cli.ts",
+    "predictions:score": "tsx --env-file-if-exists=.env scripts/score-predictions.ts"
   },
   "dependencies": {
     "fastify": "^5.12.5",

@@ -60,8 +60,27 @@ export function projectMarket(p: {
   );
 }
 
-/** Pure analysis of a dataset that already passed validateStatic + validateAsOf. */
-export function analyze(input: Dataset, asOf: string) {
+/** A reported quarter's EPS (KRW/share) from an external table, used to complete trailing-four-quarter EPS. */
+export type ReportedEps = { quarter: string; epsKRW: number };
+
+/**
+ * Trailing-four-quarter EPS for the target quarter: the three reported quarters before it plus the forecast quarter.
+ * Null (with the reason) when any of the three is missing; the caller then falls back to quarter x 4.
+ */
+export function trailingEps(target: number, forecastEpsKRW: number, reported: ReportedEps[]) {
+  const prior = [target - 3, target - 2, target - 1].map((i) => ({ quarter: formatQuarter(i), epsKRW: reported.find((r) => r.quarter === formatQuarter(i))?.epsKRW }));
+  const missing = prior.filter((x) => x.epsKRW === undefined).map((x) => x.quarter);
+  if (missing.length) return { ok: false as const, missing };
+  const components = [...prior.map((x) => ({ quarter: x.quarter, epsKRW: x.epsKRW!, kind: "actual" as const })), { quarter: formatQuarter(target), epsKRW: forecastEpsKRW, kind: "forecast" as const }];
+  return { ok: true as const, components, epsKRW: components.reduce((t, x) => t + x.epsKRW, 0) };
+}
+
+/**
+ * Pure analysis of a dataset that already passed validateStatic + validateAsOf. With `reportedEps` covering the three
+ * quarters before the target, the P/E is applied to trailing-four-quarter EPS (three actuals + the forecast quarter);
+ * otherwise to the forecast quarter x 4, which ignores seasonality.
+ */
+export function analyze(input: Dataset, asOf: string, opts: { reportedEps?: ReportedEps[] } = {}) {
   // Estimated market totals below the identified players are lifted first; the lift is reported in dataQuality.
   const { dataset: ds, adjustments } = adjustEstimatedMarkets(input);
   const target = targetQuarterIndex(ds, asOf);
@@ -181,9 +200,18 @@ export function analyze(input: Dataset, asOf: string) {
       commonEarningsKRW > 0
         ? (() => {
             const quarterlyEpsKRW = commonEarningsKRW / ds.shares.dilutedCommon;
-            const annualizedEpsKRW = quarterlyEpsKRW * 4;
+            const ttm = trailingEps(target, quarterlyEpsKRW, opts.reportedEps ?? []);
+            if (ttm.ok && !(ttm.epsKRW > 0))
+              return { status: "unavailable" as const, reason: `Trailing-four-quarter EPS (${ttm.components.map((c) => c.quarter).join("+")}) is not positive; P/E valuation is undefined.` };
+            // annualizedEpsKRW is the EPS the P/E is applied to; epsBasis says how it was formed.
+            const annualizedEpsKRW = ttm.ok ? ttm.epsKRW : quarterlyEpsKRW * 4;
+            const epsBasis = ttm.ok ? ("ttm_actual_plus_forecast" as const) : ("quarter_x4" as const);
             const targetPriceKRW = annualizedEpsKRW * pe;
-            return { status: "available" as const, quarterlyEpsKRW, annualizedEpsKRW, peMultiple: pe, targetPriceKRW, upsidePct: (targetPriceKRW / quote - 1) * 100 };
+            return {
+              status: "available" as const, quarterlyEpsKRW, annualizedEpsKRW, epsBasis,
+              ttmComponents: ttm.ok ? ttm.components : null, ttmMissingQuarters: ttm.ok ? [] : ttm.missing,
+              peMultiple: pe, targetPriceKRW, upsidePct: (targetPriceKRW / quote - 1) * 100,
+            };
           })()
         : { status: "unavailable" as const, reason: "Common-share attributable earnings are not positive; P/E valuation is undefined." };
 
@@ -202,7 +230,10 @@ export function analyze(input: Dataset, asOf: string) {
     const n = target - parseQuarter(m.observations.at(-1)!.quarter);
     if (n >= 3) warnings.push(`Market ${m.id} projection extrapolates ${n} quarters from its latest observation.`);
   }
-  if (scenarios.some((x) => x.valuation.status === "unavailable")) warnings.push("At least one scenario has non-positive common earnings; its valuation is unavailable.");
+  if (scenarios.some((x) => x.valuation.status === "unavailable")) warnings.push("At least one scenario has non-positive common or trailing earnings; its valuation is unavailable.");
+  const x4 = scenarios.find((x) => x.valuation.status === "available" && x.valuation.epsBasis === "quarter_x4")?.valuation;
+  if (x4 && x4.status === "available")
+    warnings.push(`Reported EPS for ${x4.ttmMissingQuarters.join(", ")} was not available, so the P/E is applied to the target quarter's EPS x 4, which ignores seasonality.`);
   const estimates = listEstimates(ds);
   const ground = groundedness(ds);
   if (estimates.length)
@@ -263,7 +294,7 @@ export function analyze(input: Dataset, asOf: string) {
     },
     provenance,
     limitations: [
-      "targetPriceKRW is a valuation proxy (annualized next-quarter EPS x scenario P/E), NOT a forecast of the realized market price. Annualization is EPS x 4 and ignores seasonality and cyclicality of the remaining quarters.",
+      "targetPriceKRW is a valuation proxy (annual EPS x scenario P/E), NOT a forecast of the realized market price. Annual EPS is the three reported quarters before the target plus the forecast quarter (epsBasis ttm_actual_plus_forecast; reported EPS comes from Naver's table, whose consolidated/diluted basis is not stated) or, when those are unavailable, the forecast quarter x 4 (epsBasis quarter_x4), which ignores seasonality.",
       "Scenarios are bear/base/bull assumptions supplied in the dataset; no probabilities or confidence levels are implied.",
       "Market share is revenue share within the same global product scope, quarter and currency; volume shares must not be used.",
       "All FX conversion uses the single dated rate in the dataset; historical FX drift between quarters is not modelled.",

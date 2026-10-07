@@ -100,7 +100,7 @@ const SOURCE = readFileSync(APP_JS_PATH, "utf8");
 type Elements = Record<string, StubNode>;
 
 function buildContext() {
-  const ids = ["q", "qToggle", "market", "sort", "models", "list", "listInfo", "ticker", "asOf", "apiKey", "keyRow", "go", "out", "form"];
+  const ids = ["q", "qToggle", "market", "sort", "models", "list", "listInfo", "ticker", "asOf", "apiKey", "keyRow", "go", "rank", "out", "form"];
   const elements: Elements = {};
   for (const id of ids) elements[id] = makeNode("stub");
 

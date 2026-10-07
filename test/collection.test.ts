@@ -227,7 +227,7 @@ function dartHandler(over: { key?: string; list?: (u: URL) => Response; corp?: (
     if (u.searchParams.get("crtfc_key") !== key) return json({ status: "010", message: "등록되지 않은 키입니다." });
     switch (u.pathname) {
       case "/api/corpCode.xml":
-        return over.corp ? over.corp() : new Response(zip({ "CORPCODE.xml": CORP_XML }));
+        return over.corp ? over.corp() : new Response(new Uint8Array(zip({ "CORPCODE.xml": CORP_XML })));
       case "/api/company.json":
         return json({ status: "000", corp_name: "삼성전자", stock_code: "005930", corp_cls: "Y", acc_mt: "12", ...over.company });
       case "/api/list.json":
@@ -238,7 +238,7 @@ function dartHandler(over: { key?: string; list?: (u: URL) => Response; corp?: (
         return json({ status: "000", list: hit.rows.map((r) => ({ rcept_no: hit.rcept, ...(r as object) })) }); // row fields may override
       }
       case "/api/document.xml":
-        return new Response(zip({ [`${u.searchParams.get("rcept_no")}.xml`]: DOC_XML }));
+        return new Response(new Uint8Array(zip({ [`${u.searchParams.get("rcept_no")}.xml`]: DOC_XML })));
       case "/api/stockTotqySttus.json":
         if (u.searchParams.get("bsns_year") !== "2026" || u.searchParams.get("reprt_code") !== "11012") return json({ status: "013", message: "조회된 데이타가 없습니다." });
         return json({ status: "000", list: [
@@ -365,7 +365,7 @@ describe("Naver provider", () => {
   });
 
   it("accepts KOSDAQ listings", async () => {
-    const e = await run(fake((u) => (u.pathname.endsWith("/basic") ? json(basic({ stockExchangeType: { name: "KOSDAQ", code: "KQ", nameEng: "KOSDAQ" } })) : naverHandler(u))));
+    const e = await run(fake((u, i) => (u.pathname.endsWith("/basic") ? json(basic({ stockExchangeType: { name: "KOSDAQ", code: "KQ", nameEng: "KOSDAQ" } })) : naverHandler(u, i))));
     expect(e.issues.some((i) => i.code === "not_listed")).toBe(false);
     expect(e.company.exchange).toBe("KOSDAQ");
     expect(e.market.quote).not.toBeNull();
@@ -383,7 +383,7 @@ describe("Naver provider", () => {
   });
 
   it("rejects a response for a different ticker", async () => {
-    const e = await run(fake((u) => (u.pathname.endsWith("/basic") ? json(basic({ itemCode: "000660" })) : undefined)));
+    const e = await run(fake((u, i) => (u.pathname.endsWith("/basic") ? json(basic({ itemCode: "000660" })) : undefined)));
     expect(e.providers.naver.status).toBe("failed");
     expect(e.issues.some((i) => i.code === "invalid_response")).toBe(true);
   });
@@ -797,7 +797,7 @@ describe("ZIP handling", () => {
   });
 
   it("surfaces a corrupt document ZIP as a DART issue", async () => {
-    const f = fake(either(naverHandler, (u) => (u.pathname === "/api/document.xml" ? new Response(zip({ "x.xml": "hello" }).subarray(0, 40)) : undefined), dartHandler()));
+    const f = fake(either(naverHandler, (u) => (u.pathname === "/api/document.xml" ? new Response(new Uint8Array(zip({ "x.xml": "hello" })).subarray(0, 40)) : undefined), dartHandler()));
     const e = await run(f, { ...withKey, maxDocuments: 1 });
     expect(e.providers.dart.status).toBe("partial");
     expect(e.issues.some((i) => i.code === "invalid_response" || i.code === "invalid_zip")).toBe(true);
@@ -850,7 +850,7 @@ describe("DART exchange disclosures (pblntf_ty I)", () => {
     either(
       naverHandler,
       (u) => (u.pathname === "/api/list.json" && u.searchParams.get("pblntf_ty") === "I" ? json({ status: "000", total_page: 1, list: DISCLOSURES }) : undefined),
-      (u) => (u.pathname === "/api/document.xml" && u.searchParams.get("rcept_no")!.includes("9000") ? new Response(zip({ "d.xml": IR_XML })) : undefined),
+      (u) => (u.pathname === "/api/document.xml" && u.searchParams.get("rcept_no")!.includes("9000") ? new Response(new Uint8Array(zip({ "d.xml": IR_XML }))) : undefined),
       dartHandler(),
     );
 
@@ -903,7 +903,7 @@ describe("DART share / EPS extraction budget", () => {
   });
   it("reports diluted shares as missing when no share evidence exists", async () => {
     const doc = `<DOCUMENT><TITLE>II. 사업의 내용</TITLE><P>x</P></DOCUMENT>`;
-    const f = fake(either(naverHandler, (u) => (u.pathname === "/api/document.xml" ? new Response(zip({ "d.xml": doc })) : u.pathname === "/api/stockTotqySttus.json" ? json({ status: "013" }) : undefined), dartHandler()));
+    const f = fake(either(naverHandler, (u) => (u.pathname === "/api/document.xml" ? new Response(new Uint8Array(zip({ "d.xml": doc }))) : u.pathname === "/api/stockTotqySttus.json" ? json({ status: "013" }) : undefined), dartHandler()));
     const e = await run(f, withKey);
     expect(e.filings.excerpts.some((x) => x.category === "shares")).toBe(false);
     expect(e.filings.shareCounts).toEqual([]);
